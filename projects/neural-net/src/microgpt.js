@@ -49,6 +49,9 @@ export class MicroGPT {
    */
   forward(input) {
     const seqLen = input.cols;
+    this._lastSeqLen = seqLen;
+    this._lastBatchSize = input.rows;
+    this._lastNormOutCols = seqLen * this.dModel;
     
     // Embedding + positional encoding
     let x = this.embedding.forward(input);
@@ -73,6 +76,44 @@ export class MicroGPT {
     
     // Project to vocab
     return this.outputProj.forward(lastPos);
+  }
+  
+  /**
+   * Full backward pass through entire model
+   * dOutput: gradient from loss [batch, vocabSize]
+   * Returns gradient w.r.t. input (usually not needed)
+   */
+  backward(dOutput) {
+    const seqLen = this._lastSeqLen;
+    const batchSize = this._lastBatchSize;
+    
+    // Backward through output projection: [batch, vocabSize] → [batch, dModel]
+    let grad = this.outputProj.backward(dOutput);
+    
+    // Scatter gradient back to last position: [batch, dModel] → [batch, seqLen * dModel]
+    const dNormOut = Matrix.zeros(batchSize, this._lastNormOutCols);
+    for (let b = 0; b < batchSize; b++) {
+      const offset = (seqLen - 1) * this.dModel;
+      for (let d = 0; d < this.dModel; d++) {
+        dNormOut.set(b, offset + d, grad.get(b, d));
+      }
+    }
+    
+    // Backward through layer norm
+    grad = this.outputNorm.backward(dNormOut);
+    
+    // Backward through transformer blocks (reverse order)
+    for (let i = this.transformerBlocks.length - 1; i >= 0; i--) {
+      grad = this.transformerBlocks[i].backward(grad);
+    }
+    
+    // Backward through PE (gradient passes through — PE is additive constant)
+    grad = this.pe.backward(grad);
+    
+    // Backward through embedding
+    this.embedding.backward(grad);
+    
+    return grad;
   }
   
   /**
@@ -113,11 +154,15 @@ export class MicroGPT {
         const loss = this.loss.compute(output, target);
         epochLoss += loss;
         
-        // Backward through output projection only (simplified training)
+        // Backward through entire model (not just output projection)
         let grad = this.loss.gradient(output, target);
-        this.outputProj.backward(grad);
+        this.backward(grad);
         
-        // Update output projection and embedding
+        // Update all layers
+        for (const block of this.transformerBlocks) {
+          block.update(learningRate);
+        }
+        this.outputNorm.update(learningRate);
         this.outputProj.update(learningRate, 0, 'sgd');
         if (this.embedding.dWeights) this.embedding.update(learningRate);
         

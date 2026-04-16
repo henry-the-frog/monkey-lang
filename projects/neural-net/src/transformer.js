@@ -189,6 +189,11 @@ export class TransformerEncoderBlock {
     
     // Feedforward per position + residual
     this._ffInput = normed1;
+    this._seqLen = seqLen;
+    this._batchSize = batchSize;
+    // Cache per-position forward states for backward
+    this._ffStates = [];
+    
     const ffOut = new Matrix(batchSize, input.cols);
     
     for (let b = 0; b < batchSize; b++) {
@@ -200,7 +205,14 @@ export class TransformerEncoderBlock {
         
         // FF1 → ReLU → FF2
         const ff1Out = this.ff1.forward(posVec);
+        // Cache ff1 state
+        const ff1State = { input: this.ff1.input, z: this.ff1.z, a: this.ff1.a };
+        
         const ff2Out = this.ff2.forward(ff1Out);
+        // Cache ff2 state
+        const ff2State = { input: this.ff2.input, z: this.ff2.z, a: this.ff2.a };
+        
+        this._ffStates.push({ ff1: ff1State, ff2: ff2State });
         
         for (let d = 0; d < this.dModel; d++)
           ffOut.set(b, t * this.dModel + d, ff2Out.get(0, d));
@@ -212,13 +224,90 @@ export class TransformerEncoderBlock {
   }
   
   backward(dOutput) {
-    // Simplified backward through the block
+    const seqLen = this._seqLen;
+    const batchSize = this._batchSize;
+    
+    // Backward through norm2
     const dNorm2 = this.norm2.backward(dOutput);
-    // Residual: gradient flows to both FF and skip connection
-    const dFF = dNorm2; // simplified
-    const dNorm1 = this.norm1.backward(dFF);
-    const dAttn = this.attention.backward(dNorm1);
-    return addMatrices(dAttn, dNorm1); // Residual gradient
+    
+    // Residual 2: gradient splits to both FF output and skip (normed1)
+    const dFFOut = dNorm2;
+    const dSkip2 = dNorm2;
+    
+    // Backward through feedforward per position
+    // Accumulate gradients across all positions
+    const dNormed1FromFF = new Matrix(batchSize, dOutput.cols);
+    
+    let accumFF1DW = null, accumFF1DB = null;
+    let accumFF2DW = null, accumFF2DB = null;
+    
+    let posIdx = 0;
+    for (let b = 0; b < batchSize; b++) {
+      for (let t = 0; t < seqLen; t++) {
+        // Extract position gradient
+        const dPosVec = new Matrix(1, this.dModel);
+        for (let d = 0; d < this.dModel; d++)
+          dPosVec.set(0, d, dFFOut.get(b, t * this.dModel + d));
+        
+        // Restore cached state for ff2 backward
+        const state = this._ffStates[posIdx];
+        this.ff2.input = state.ff2.input;
+        this.ff2.z = state.ff2.z;
+        this.ff2.a = state.ff2.a;
+        
+        // Backward ff2
+        const dFF1Out = this.ff2.backward(dPosVec);
+        if (accumFF2DW) {
+          accumFF2DW = accumFF2DW.add(this.ff2.dWeights);
+          accumFF2DB = accumFF2DB.add(this.ff2.dBiases);
+        } else {
+          accumFF2DW = this.ff2.dWeights;
+          accumFF2DB = this.ff2.dBiases;
+        }
+        
+        // Restore cached state for ff1 backward
+        this.ff1.input = state.ff1.input;
+        this.ff1.z = state.ff1.z;
+        this.ff1.a = state.ff1.a;
+        
+        // Backward ff1
+        const dPosInput = this.ff1.backward(dFF1Out);
+        if (accumFF1DW) {
+          accumFF1DW = accumFF1DW.add(this.ff1.dWeights);
+          accumFF1DB = accumFF1DB.add(this.ff1.dBiases);
+        } else {
+          accumFF1DW = this.ff1.dWeights;
+          accumFF1DB = this.ff1.dBiases;
+        }
+        
+        for (let d = 0; d < this.dModel; d++)
+          dNormed1FromFF.set(b, t * this.dModel + d, dPosInput.get(0, d));
+        
+        posIdx++;
+      }
+    }
+    
+    // Set accumulated gradients
+    this.ff1.dWeights = accumFF1DW;
+    this.ff1.dBiases = accumFF1DB;
+    this.ff2.dWeights = accumFF2DW;
+    this.ff2.dBiases = accumFF2DB;
+    
+    // Total gradient on normed1 = from FF + from skip
+    const dNormed1 = addMatrices(dNormed1FromFF, dSkip2);
+    
+    // Backward through norm1
+    const dResidual1 = this.norm1.backward(dNormed1);
+    
+    // Residual 1: gradient splits to attention output and skip (input)
+    const dAttnOut = dResidual1;
+    const dSkip1 = dResidual1;
+    
+    // Backward through attention
+    const dInput = this.attention.backward(dAttnOut);
+    
+    // Total gradient on input = from attention + from skip
+    return addMatrices(dInput, dSkip1);
   }
   
   update(learningRate) {

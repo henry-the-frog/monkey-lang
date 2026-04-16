@@ -43,6 +43,68 @@ describe('MicroGPT', () => {
     // Loss should decrease (or at least not explode)
     assert.ok(isFinite(history[history.length - 1]), 'Loss should be finite');
   });
+
+  it('full backward pass trains all layers (not just output projection)', () => {
+    const gpt = new MicroGPT({ vocabSize: 20, dModel: 8, numHeads: 2, numLayers: 1, maxSeqLen: 4 });
+    
+    // Snapshot ALL initial weights (sum, not a single element)
+    const ff1Sum = () => {
+      let s = 0;
+      for (let i = 0; i < gpt.transformerBlocks[0].ff1.weights.rows; i++)
+        for (let j = 0; j < gpt.transformerBlocks[0].ff1.weights.cols; j++)
+          s += gpt.transformerBlocks[0].ff1.weights.get(i, j);
+      return s;
+    };
+    const ff2Sum = () => {
+      let s = 0;
+      for (let i = 0; i < gpt.transformerBlocks[0].ff2.weights.rows; i++)
+        for (let j = 0; j < gpt.transformerBlocks[0].ff2.weights.cols; j++)
+          s += gpt.transformerBlocks[0].ff2.weights.get(i, j);
+      return s;
+    };
+    
+    const ff1Before = ff1Sum();
+    const ff2Before = ff2Sum();
+    
+    const sequences = [];
+    for (let i = 0; i < 10; i++) sequences.push([1, 2, 3, 1, 2]);
+    
+    gpt.train(sequences, { epochs: 10, learningRate: 0.01 });
+    
+    const ff1After = ff1Sum();
+    const ff2After = ff2Sum();
+    
+    assert.ok(Math.abs(ff1Before - ff1After) > 1e-10, 
+      `FF1 weight sum should change during training (diff=${Math.abs(ff1Before - ff1After)})`);
+    assert.ok(Math.abs(ff2Before - ff2After) > 1e-10, 
+      `FF2 weight sum should change during training (diff=${Math.abs(ff2Before - ff2After)})`);
+  });
+
+  it('backward produces gradients for all components', () => {
+    const gpt = new MicroGPT({ vocabSize: 20, dModel: 8, numHeads: 2, numLayers: 1, maxSeqLen: 4 });
+    
+    const input = Matrix.fromArray([[1, 2, 3]]);
+    const target = Matrix.zeros(1, 20);
+    target.set(0, 1, 1); // next token = 1
+    
+    // Forward
+    for (const l of gpt.allLayers) l.training = true;
+    const output = gpt.forward(input);
+    const grad = gpt.loss.gradient(output, target);
+    gpt.backward(grad);
+    
+    // Check gradients exist
+    assert.ok(gpt.outputProj.dWeights, 'outputProj should have gradients');
+    assert.ok(gpt.transformerBlocks[0].ff1.dWeights, 'ff1 should have gradients');
+    assert.ok(gpt.transformerBlocks[0].ff2.dWeights, 'ff2 should have gradients');
+    
+    // Check gradients are non-zero
+    let ff1GradNorm = 0;
+    for (let i = 0; i < gpt.transformerBlocks[0].ff1.dWeights.rows; i++)
+      for (let j = 0; j < gpt.transformerBlocks[0].ff1.dWeights.cols; j++)
+        ff1GradNorm += Math.abs(gpt.transformerBlocks[0].ff1.dWeights.get(i, j));
+    assert.ok(ff1GradNorm > 0, 'ff1 gradients should be non-zero');
+  });
 });
 
 describe('Text encoding', () => {
