@@ -160,9 +160,9 @@ export class Conv1D {
   }
 
   update(learningRate) {
-    const batchSize = this.input.rows;
-    this.filters = this.filters.sub(this.dFilters.mul(learningRate / batchSize));
-    this.biases = this.biases.sub(this.dBiases.mul(learningRate / batchSize));
+    // backward() already averages gradients over batch, so don't divide again
+    this.filters = this.filters.sub(this.dFilters.mul(learningRate));
+    this.biases = this.biases.sub(this.dBiases.mul(learningRate));
   }
 
   paramCount() {
