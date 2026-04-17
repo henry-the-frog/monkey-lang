@@ -10,10 +10,11 @@ import { Matrix } from './matrix.js';
  * This implements single-head attention from "Attention Is All You Need" (Vaswani et al. 2017)
  */
 export class SelfAttention {
-  constructor(dModel, { dropout = 0 } = {}) {
+  constructor(dModel, { dropout = 0, causal = false } = {}) {
     this.dModel = dModel;
     this.scale = 1 / Math.sqrt(dModel);
     this.dropoutRate = dropout;
+    this.causal = causal;
     
     // Weight matrices for Q, K, V projections
     const scale = Math.sqrt(2 / (dModel + dModel));
@@ -74,6 +75,15 @@ export class SelfAttention {
       
       // Attention scores: QK^T / sqrt(d_k) → [seqLen, seqLen]
       const scores = Q.dot(K.T()).mul(this.scale);
+      
+      // Apply causal mask: positions can only attend to previous positions
+      if (this.causal) {
+        for (let i = 0; i < seqLen; i++) {
+          for (let j = i + 1; j < seqLen; j++) {
+            scores.set(i, j, -1e9); // -inf before softmax → 0 attention
+          }
+        }
+      }
       
       // Softmax over last dimension (each row)
       const attnWeights = softmaxRows(scores);
