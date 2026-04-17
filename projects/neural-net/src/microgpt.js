@@ -3,6 +3,7 @@
 
 import { Matrix } from './matrix.js';
 import { Dense } from './layer.js';
+import { clipByGlobalNorm } from './gradient-clip.js';
 import { Embedding } from './embedding.js';
 import { PositionalEncoding, LayerNorm, TransformerEncoderBlock } from './transformer.js';
 import { getLoss } from './loss.js';
@@ -120,7 +121,7 @@ export class MicroGPT {
    * Train on sequence data
    * sequences: array of token ID arrays (each is a training sequence)
    */
-  train(sequences, { epochs = 10, learningRate = 0.001, verbose = false, warmupSteps = 0, minLR = 0 } = {}) {
+  train(sequences, { epochs = 10, learningRate = 0.001, verbose = false, warmupSteps = 0, minLR = 0, maxGradNorm = 0 } = {}) {
     const history = [];
     let globalStep = 0;
     const totalSteps = epochs * sequences.length;
@@ -172,6 +173,25 @@ export class MicroGPT {
         // Backward through entire model (not just output projection)
         let grad = this.loss.gradient(output, target);
         this.backward(grad);
+        
+        // Gradient clipping (prevents exploding gradients in transformers)
+        if (maxGradNorm > 0) {
+          const allGrads = [];
+          for (const block of this.transformerBlocks) {
+            if (block.ff1.dWeights) allGrads.push(block.ff1.dWeights);
+            if (block.ff2.dWeights) allGrads.push(block.ff2.dWeights);
+          }
+          if (this.outputProj.dWeights) allGrads.push(this.outputProj.dWeights);
+          if (allGrads.length > 0) {
+            const { grads: clipped } = clipByGlobalNorm(allGrads, maxGradNorm);
+            let gi = 0;
+            for (const block of this.transformerBlocks) {
+              if (block.ff1.dWeights) block.ff1.dWeights = clipped[gi++];
+              if (block.ff2.dWeights) block.ff2.dWeights = clipped[gi++];
+            }
+            if (this.outputProj.dWeights) this.outputProj.dWeights = clipped[gi++];
+          }
+        }
         
         // Update all layers
         for (const block of this.transformerBlocks) {
