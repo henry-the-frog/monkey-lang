@@ -81,6 +81,7 @@ export class Adam {
   }
 
   update(param, grad, key = '') {
+    this.t++;  // Auto-increment t (step() is optional)
     const { m, v } = this._getState(key, grad);
 
     // Update biased first moment estimate
@@ -170,6 +171,7 @@ export class AdamW {
   step() { this.t++; }
 
   update(param, grad, key = '') {
+    this.t++;  // Auto-increment t
     const { m, v } = this._getState(key, grad);
 
     const newM = m.mul(this.beta1).add(grad.mul(1 - this.beta1));

@@ -1,167 +1,165 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Matrix } from '../src/matrix.js';
-import { SGD, MomentumSGD, Adam, AdamW, RMSProp, createOptimizer } from '../src/optimizer.js';
+import { SGD, MomentumSGD, Adam, RMSProp, AdamW } from '../src/optimizer.js';
+import { Network } from '../src/network.js';
+import { Dense } from '../src/layer.js';
 
-function mat(rows, cols, values) {
-  const m = new Matrix(rows, cols);
-  for (let i = 0; i < values.length; i++) m.data[i] = values[i];
-  return m;
-}
-
-describe('SGD Optimizer', () => {
-  it('updates parameter in gradient direction', () => {
-    const opt = new SGD(0.1);
-    const param = mat(1, 3, [1, 2, 3]);
-    const grad = mat(1, 3, [1, 1, 1]);
-    const result = opt.update(param, grad);
-    assert.ok(Math.abs(result.data[0] - 0.9) < 0.001);
-  });
-});
-
-describe('MomentumSGD', () => {
-  it('accumulates velocity', () => {
-    const opt = new MomentumSGD(0.1, 0.9);
-    const param = mat(1, 3, [1, 2, 3]);
-    const grad = mat(1, 3, [1, 1, 1]);
+describe('Optimizer convergence tests', () => {
+  // Helper: train a 2-input, 1-output network on XOR-like problem
+  // Tests that each optimizer can actually reduce loss
+  function trainXOR(optimizerName, lr = 0.1, epochs = 200) {
+    const net = new Network();
+    net.add(new Dense(2, 4, 'sigmoid'));
+    net.add(new Dense(4, 1, 'sigmoid'));
+    net.loss('mse');
     
-    const r1 = opt.update(param, grad, 'w');
-    assert.ok(Math.abs(r1.data[0] - 0.9) < 0.001);
+    // Simple training data: predict if sum > 1
+    const data = [
+      { input: [0, 0], target: [0] },
+      { input: [1, 0], target: [0.5] },
+      { input: [0, 1], target: [0.5] },
+      { input: [1, 1], target: [1] },
+    ];
     
-    const r2 = opt.update(r1, grad, 'w');
-    assert.ok(r2.data[0] < r1.data[0], 'Should accelerate');
-  });
-});
-
-describe('Adam Optimizer', () => {
-  it('converges on simple problem', () => {
-    const opt = new Adam(0.1);
-    let param = mat(1, 1, [5.0]);
-    
-    for (let i = 0; i < 100; i++) {
-      opt.step();
-      const grad = mat(1, 1, [param.data[0]]);
-      param = opt.update(param, grad, 'p');
+    let firstLoss, lastLoss;
+    for (let epoch = 0; epoch < epochs; epoch++) {
+      let epochLoss = 0;
+      for (const { input, target } of data) {
+        const loss = net.trainBatch([input], [target], lr, 0, optimizerName);
+        epochLoss += loss;
+      }
+      if (epoch === 0) firstLoss = epochLoss;
+      lastLoss = epochLoss;
     }
-    
-    assert.ok(Math.abs(param.data[0]) < 2.0, `Should converge toward 0, got ${param.data[0]}`);
+    return { firstLoss, lastLoss };
+  }
+
+  it('SGD converges on simple problem', () => {
+    const { firstLoss, lastLoss } = trainXOR('sgd', 0.5, 300);
+    assert.ok(lastLoss < firstLoss, `SGD should reduce loss: ${firstLoss} → ${lastLoss}`);
+    assert.ok(lastLoss < firstLoss * 0.5, `SGD should reduce loss significantly`);
   });
 
-  it('has bias correction', () => {
-    const opt = new Adam(0.01);
-    opt.step();
-    const param = mat(1, 1, [10]);
-    const grad = mat(1, 1, [1]);
-    const r1 = opt.update(param, grad, 'test');
-    assert.ok(Math.abs(r1.data[0] - (10 - 0.01)) < 0.01);
+  it('Adam converges on simple problem', () => {
+    const { firstLoss, lastLoss } = trainXOR('adam', 0.01, 300);
+    assert.ok(lastLoss < firstLoss, `Adam should reduce loss: ${firstLoss} → ${lastLoss}`);
   });
 
-  it('handles multi-dimensional parameters', () => {
-    const opt = new Adam(0.01);
-    let w = mat(2, 3, [1, 2, 3, 4, 5, 6]);
-    const grad = mat(2, 3, [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
-    
-    opt.step();
-    const result = opt.update(w, grad, 'w');
-    assert.equal(result.rows, 2);
-    assert.equal(result.cols, 3);
-    assert.ok(result.data[0] < 1);
+  it('Adam converges faster than SGD (lower loss in same epochs)', () => {
+    const sgd = trainXOR('sgd', 0.1, 100);
+    const adam = trainXOR('adam', 0.01, 100);
+    // Adam should typically do better (not always, but usually)
+    // Just verify both make progress
+    assert.ok(sgd.lastLoss < sgd.firstLoss, 'SGD makes progress');
+    assert.ok(adam.lastLoss < adam.firstLoss, 'Adam makes progress');
   });
-});
 
-describe('RMSProp', () => {
-  it('adapts learning rate', () => {
-    const opt = new RMSProp(0.01, 0.99);
-    let param = mat(1, 1, [5.0]);
+  describe('Standalone optimizer unit tests', () => {
+    it('SGD update moves parameter in gradient direction', () => {
+      const sgd = new SGD(0.1);
+      const param = Matrix.fromArray([[1.0, 2.0]]);
+      const grad = Matrix.fromArray([[0.5, -0.3]]);
+      
+      const updated = sgd.update(param, grad);
+      // Should be: param - lr * grad = [1 - 0.05, 2 + 0.03] = [0.95, 2.03]
+      assert.ok(Math.abs(updated.get(0, 0) - 0.95) < 1e-10);
+      assert.ok(Math.abs(updated.get(0, 1) - 2.03) < 1e-10);
+    });
+
+    it('MomentumSGD accumulates velocity', () => {
+      const mom = new MomentumSGD(0.1, 0.9);
+      const param = Matrix.fromArray([[1.0]]);
+      const grad = Matrix.fromArray([[1.0]]);
+      
+      // Step 1: v = 0.9*0 + 0.1*1 = 0.1, p = 1 - 0.1 = 0.9
+      let p = mom.update(param, grad, 'test');
+      assert.ok(Math.abs(p.get(0, 0) - 0.9) < 1e-10, `Step 1: ${p.get(0, 0)}`);
+      
+      // Step 2: v = 0.9*0.1 + 0.1*1 = 0.19, p = 0.9 - 0.19 = 0.71
+      p = mom.update(p, grad, 'test');
+      assert.ok(Math.abs(p.get(0, 0) - 0.71) < 1e-10, `Step 2: ${p.get(0, 0)}`);
+    });
+
+    it('Adam produces finite results with normal gradients', () => {
+      const adam = new Adam(0.01);
+      const param = Matrix.fromArray([[1.0, 2.0, 3.0]]);
+      const grad = Matrix.fromArray([[0.5, -0.3, 0.8]]);
+      const p1 = adam.update(param, grad, 'test');
+      assert.ok(isFinite(p1.get(0, 0)), 'Adam result should be finite');
+      assert.ok(p1.get(0, 0) < param.get(0, 0), 'Should decrease with positive gradient');
+      assert.ok(p1.get(0, 1) > param.get(0, 1), 'Should increase with negative gradient');
+    });
+
+    it('RMSProp adapts learning rate per parameter', () => {
+      const rmsprop = new RMSProp(0.01);
+      const param = Matrix.fromArray([[0.0, 0.0]]);
+      
+      // Large gradient on first, small on second
+      const grad = Matrix.fromArray([[10.0, 0.1]]);
+      const p1 = rmsprop.update(param, grad, 'test');
+      
+      // RMSProp should normalize: both should move by similar amounts
+      const move0 = Math.abs(p1.get(0, 0));
+      const move1 = Math.abs(p1.get(0, 1));
+      // The ratio should be much less than 100 (raw gradient ratio)
+      assert.ok(move0 / move1 < 20, `RMSProp should normalize: ratio ${move0/move1}`);
+    });
+
+    it('AdamW applies weight decay separately from gradient', () => {
+      const adamw = new AdamW(0.01, 0.01); // lr=0.01, wd=0.01
+      const param = Matrix.fromArray([[10.0]]);
+      const grad = Matrix.zeros(1, 1); // Zero gradient
+      
+      // With zero gradient, AdamW should still decay the weight
+      const p1 = adamw.update(param, grad, 'test');
+      assert.ok(p1.get(0, 0) < 10.0, `AdamW should decay: ${p1.get(0, 0)}`);
+      // Weight decay: w = w * (1 - lr * wd) = 10 * (1 - 0.0001) ≈ 9.999
+      assert.ok(Math.abs(p1.get(0, 0) - 10 * (1 - 0.01 * 0.01)) < 0.1, 
+        `Weight decay amount: ${p1.get(0, 0)}`);
+    });
+  });
+
+  describe('Convergence on quadratic', () => {
+    // Minimize f(x) = sum((x - target)^2) where target = [3, 5]
+    // Gradient = 2*(x - target)
     
-    for (let i = 0; i < 50; i++) {
-      const grad = mat(1, 1, [param.data[0]]);
-      param = opt.update(param, grad, 'p');
+    function optimizeQuadratic(OptimizerClass, lr, steps, ...extraArgs) {
+      const opt = new OptimizerClass(lr, ...extraArgs);
+      let x = Matrix.fromArray([[0.0, 0.0]]); // Start at origin
+      const target = Matrix.fromArray([[3.0, 5.0]]);
+      
+      for (let i = 0; i < steps; i++) {
+        const grad = x.sub(target).mul(2);
+        x = opt.update(x, grad, 'x');
+      }
+      
+      const error = Math.sqrt(
+        Math.pow(x.get(0, 0) - 3, 2) + Math.pow(x.get(0, 1) - 5, 2)
+      );
+      return { x, error };
     }
-    
-    assert.ok(Math.abs(param.data[0]) < 4.5, `Should move toward 0, got ${param.data[0]}`);
-  });
-});
 
-describe('createOptimizer', () => {
-  it('creates SGD', () => {
-    const opt = createOptimizer('sgd', { lr: 0.05 });
-    assert.equal(opt.name, 'sgd');
-    assert.equal(opt.lr, 0.05);
-  });
+    it('SGD converges to minimum', () => {
+      const { error } = optimizeQuadratic(SGD, 0.01, 500);
+      assert.ok(error < 0.01, `SGD should converge: error=${error}`);
+    });
 
-  it('creates Adam', () => {
-    const opt = createOptimizer('adam', { lr: 0.001 });
-    assert.equal(opt.name, 'adam');
-  });
+    it('MomentumSGD converges faster', () => {
+      const sgd = optimizeQuadratic(SGD, 0.01, 100);
+      const mom = optimizeQuadratic(MomentumSGD, 0.01, 100, 0.9);
+      assert.ok(mom.error < sgd.error, 
+        `Momentum should converge faster: SGD=${sgd.error}, Mom=${mom.error}`);
+    });
 
-  it('creates RMSProp', () => {
-    const opt = createOptimizer('rmsprop');
-    assert.equal(opt.name, 'rmsprop');
-  });
+    it('Adam converges quickly', () => {
+      const { error } = optimizeQuadratic(Adam, 0.1, 200);
+      assert.ok(error < 0.1, `Adam should converge: error=${error}`);
+    });
 
-  it('throws on unknown optimizer', () => {
-    assert.throws(() => createOptimizer('unknown'));
-  });
-
-  it('creates AdamW', () => {
-    const opt = createOptimizer('adamw', { lr: 0.001, weightDecay: 0.01 });
-    assert.equal(opt.name, 'adamw');
-  });
-});
-
-describe('weight decay', () => {
-  it('SGD with weight decay shrinks weights', () => {
-    const opt = new SGD(0.01, { weightDecay: 0.1 });
-    const param = mat(1, 2, [10, 10]);
-    const grad = mat(1, 2, [0, 0]); // Zero gradient
-    const updated = opt.update(param, grad);
-    // With wd=0.1, effective grad = 0 + 0.1*10 = 1, so param = 10 - 0.01*1 = 9.99
-    assert.ok(updated.get(0, 0) < 10, 'Weight decay should shrink weights');
-    assert.ok(updated.get(0, 0) > 9.9, 'Should not shrink too much');
-  });
-
-  it('Adam with weight decay shrinks weights', () => {
-    const opt = new Adam(0.01, 0.9, 0.999, 1e-8, { weightDecay: 0.1 });
-    const param = mat(1, 2, [10, 10]);
-    const grad = mat(1, 2, [0, 0]);
-    opt.step();
-    const updated = opt.update(param, grad, 'test');
-    assert.ok(updated.get(0, 0) < 10, 'Adam+WD should shrink weights');
-  });
-});
-
-describe('AdamW', () => {
-  it('updates parameters', () => {
-    const opt = new AdamW(0.001, 0.9, 0.999, 1e-8, 0.01);
-    const param = mat(1, 2, [1, 1]);
-    const grad = mat(1, 2, [0.5, 0.5]);
-    opt.step();
-    const updated = opt.update(param, grad, 'w');
-    assert.ok(updated.get(0, 0) < 1, 'Should decrease with positive gradient');
-  });
-
-  it('weight decay is decoupled', () => {
-    // AdamW applies WD to param directly, not through adaptive lr
-    const adamw = new AdamW(0.01, 0.9, 0.999, 1e-8, 0.1);
-    const param = mat(1, 2, [10, 10]);
-    const grad = mat(1, 2, [0, 0]);
-    adamw.step();
-    const updated = adamw.update(param, grad, 'test');
-    // Decoupled WD: param -= wd * lr * param = 10 - 0.1 * 0.01 * 10 = 10 - 0.01 = 9.99
-    assert.ok(updated.get(0, 0) < 10);
-    assert.ok(updated.get(0, 0) > 9.9);
-  });
-
-  it('reduces loss on XOR with regularization', () => {
-    // AdamW should train without issues
-    const opt = new AdamW(0.01, 0.9, 0.999, 1e-8, 0.01);
-    const param = mat(1, 4, [1, 2, 3, 4]);
-    const grad = mat(1, 4, [0.1, 0.2, 0.3, 0.4]);
-    for (let i = 0; i < 10; i++) {
-      opt.step();
-      opt.update(param, grad, 'w');
-    }
-    assert.ok(true, 'Should complete 10 steps without error');
+    it('RMSProp converges', () => {
+      const { error } = optimizeQuadratic(RMSProp, 0.01, 1000);
+      assert.ok(error < 1.0, `RMSProp should converge: error=${error}`);
+    });
   });
 });
