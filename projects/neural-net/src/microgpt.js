@@ -30,7 +30,7 @@ export class MicroGPT {
     
     this.transformerBlocks = [];
     for (let i = 0; i < numLayers; i++) {
-      this.transformerBlocks.push(new TransformerEncoderBlock(dModel, numHeads, dFF || dModel * 2));
+      this.transformerBlocks.push(new TransformerEncoderBlock(dModel, numHeads, dFF || dModel * 2, { causal: true }));
     }
     
     this.outputNorm = new LayerNorm(dModel);

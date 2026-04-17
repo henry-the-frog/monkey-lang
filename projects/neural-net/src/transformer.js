@@ -177,13 +177,13 @@ export class LayerNorm {
  * Self-attention + residual + layer norm + feedforward + residual + layer norm
  */
 export class TransformerEncoderBlock {
-  constructor(dModel, numHeads, dFF = null) {
+  constructor(dModel, numHeads, dFF = null, { causal = false } = {}) {
     this.dModel = dModel;
-    this.dFF = dFF || dModel * 4; // Standard transformer: 4x expansion
+    this.dFF = dFF || dModel * 4;
     this.outputSize = dModel;
     this.training = true;
     
-    this.attention = new MultiHeadAttention(dModel, numHeads);
+    this.attention = new MultiHeadAttention(dModel, numHeads, { causal });
     this.norm1 = new LayerNorm(dModel);
     this.norm2 = new LayerNorm(dModel);
     

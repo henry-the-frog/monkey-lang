@@ -210,11 +210,12 @@ export class SelfAttention {
  * Splits input into multiple heads, applies attention to each, concatenates
  */
 export class MultiHeadAttention {
-  constructor(dModel, numHeads, { dropout = 0 } = {}) {
+  constructor(dModel, numHeads, { dropout = 0, causal = false } = {}) {
     if (dModel % numHeads !== 0) throw new Error(`dModel (${dModel}) must be divisible by numHeads (${numHeads})`);
     this.dModel = dModel;
     this.numHeads = numHeads;
     this.headDim = dModel / numHeads;
+    this.causal = causal;
     
     // One set of weights for all heads (more efficient)
     const scale = Math.sqrt(2 / (dModel + dModel));
@@ -274,6 +275,16 @@ export class MultiHeadAttention {
         
         // Scaled dot-product attention
         const scores = Qh.dot(Kh.T()).mul(1 / Math.sqrt(this.headDim));
+        
+        // Apply causal mask if enabled
+        if (this.causal) {
+          for (let i = 0; i < seqLen; i++) {
+            for (let j = i + 1; j < seqLen; j++) {
+              scores.set(i, j, -1e9);
+            }
+          }
+        }
+        
         const attn = softmaxRows(scores);
         const context = attn.dot(Vh);
         
