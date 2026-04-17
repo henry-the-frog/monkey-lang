@@ -120,8 +120,10 @@ export class MicroGPT {
    * Train on sequence data
    * sequences: array of token ID arrays (each is a training sequence)
    */
-  train(sequences, { epochs = 10, learningRate = 0.001, verbose = false } = {}) {
+  train(sequences, { epochs = 10, learningRate = 0.001, verbose = false, warmupSteps = 0, minLR = 0 } = {}) {
     const history = [];
+    let globalStep = 0;
+    const totalSteps = epochs * sequences.length;
     
     for (const l of this.allLayers) l.training = true;
     
@@ -138,6 +140,19 @@ export class MicroGPT {
       
       for (const seq of shuffled) {
         if (seq.length < 2) continue;
+        
+        // Learning rate schedule: warmup then cosine decay
+        let lr = learningRate;
+        if (warmupSteps > 0 && globalStep < warmupSteps) {
+          // Linear warmup
+          lr = learningRate * (globalStep + 1) / warmupSteps;
+        } else if (warmupSteps > 0) {
+          // Cosine decay after warmup
+          const decaySteps = totalSteps - warmupSteps;
+          const progress = Math.min(1, (globalStep - warmupSteps) / decaySteps);
+          lr = minLR + (learningRate - minLR) * 0.5 * (1 + Math.cos(Math.PI * progress));
+        }
+        globalStep++;
         
         // Create input-target pairs: predict next token
         const seqLen = Math.min(seq.length - 1, this.maxSeqLen);
@@ -160,11 +175,11 @@ export class MicroGPT {
         
         // Update all layers
         for (const block of this.transformerBlocks) {
-          block.update(learningRate);
+          block.update(lr);
         }
-        this.outputNorm.update(learningRate);
-        this.outputProj.update(learningRate, 0, 'sgd');
-        if (this.embedding.dWeights) this.embedding.update(learningRate);
+        this.outputNorm.update(lr);
+        this.outputProj.update(lr, 0, 'sgd');
+        if (this.embedding.dWeights) this.embedding.update(lr);
         
         batches++;
       }
