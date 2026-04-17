@@ -83,7 +83,7 @@ describe('All Dunder Protocols', () => {
       ];
       let honors = filter(students, fn(s) { s.grade >= 90 });
       let names = map(honors, fn(s) { s.name });
-      let avg = reduce(map(students, fn(s) { s.grade }), fn(a, b) { a + b }, 0) / len(students);
+      let avg = reduce(map(students, fn(s) { s.grade }), fn(a, b) { a + b }, 0.0) / len(students);
       [names, avg];
     `);
     assert.deepEqual(r.elements[0].elements.map(e => e.value), ['Alice', 'Carol']);

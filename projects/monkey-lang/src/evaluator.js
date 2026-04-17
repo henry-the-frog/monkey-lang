@@ -21,6 +21,13 @@ const builtins = new Map([
     const arg = args[0];
     if (arg instanceof MonkeyString) return new MonkeyInteger(arg.value.length);
     if (arg instanceof MonkeyArray) return new MonkeyInteger(arg.elements.length);
+    // __len__ protocol for instances
+    if (arg.get && typeof arg.get === 'function') {
+      const lenFn = arg.get('__len__');
+      if (lenFn && lenFn instanceof MonkeyFunction) {
+        return callMethod(arg, lenFn, []);
+      }
+    }
     return newError(`argument to \`len\` not supported, got ${arg.type()}`);
   })],
   ['first', new MonkeyBuiltin((...args) => {
@@ -842,10 +849,15 @@ export function monkeyEval(node, env) {
     const superProxy = {
       type: () => 'SUPER_PROXY',
       inspect: () => '<super>',
-      get: (name) => {
-        let cls = klass.superClass;
+      _resolvedClass: null,
+      get: function(name) {
+        const currentClass = env.get('__currentClass__') || klass;
+        let cls = currentClass.superClass;
         while (cls) {
-          if (cls.methods.has(name)) return cls.methods.get(name);
+          if (cls.methods.has(name)) {
+            this._resolvedClass = cls;
+            return cls.methods.get(name);
+          }
           cls = cls.superClass;
         }
         return null;
@@ -1345,7 +1357,8 @@ function evalIndexExpression(left, index) {
     const method = left.get(index.value);
     if (method && method instanceof MonkeyFunction) {
       const instance = left._actualInstance;
-      return new MonkeyBuiltin((...args) => callMethod(instance, method, args));
+      const resolvedFromClass = left._resolvedClass;
+      return new MonkeyBuiltin((...args) => callMethod(instance, method, args, resolvedFromClass));
     }
     return NULL;
   }
@@ -1353,9 +1366,10 @@ function evalIndexExpression(left, index) {
   if (left instanceof MonkeyInstance && index instanceof MonkeyString) {
     const value = left.get(index.value);
     if (value instanceof MonkeyFunction) {
-      const method = value;
+      const methodInfo = left.getMethodWithClass(index.value);
+      const methodClass = methodInfo ? methodInfo.klass : null;
       const boundMethod = new MonkeyBuiltin((...args) => {
-        return callMethod(left, method, args);
+        return callMethod(left, value, args, methodClass);
       });
       return boundMethod;
     }
@@ -1452,9 +1466,10 @@ function constructInstance(klass, args) {
 }
 
 // Call a method on an instance with self binding
-function callMethod(instance, fn, args) {
+function callMethod(instance, fn, args, methodClass) {
   const extendedEnv = new Environment(fn.env);
   extendedEnv.set('self', instance);
+  if (methodClass) extendedEnv.set('__currentClass__', methodClass);
   for (let i = 0; i < fn.parameters.length; i++) {
     if (i < args.length) {
       extendedEnv.set(fn.parameters[i].value, args[i]);

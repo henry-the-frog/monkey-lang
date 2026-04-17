@@ -313,6 +313,16 @@ export class MonkeyInstance {
     }
     return null;
   }
+
+  // Get method with the class it belongs to (for super resolution)
+  getMethodWithClass(name) {
+    let klass = this.klass;
+    while (klass) {
+      if (klass.methods.has(name)) return { method: klass.methods.get(name), klass };
+      klass = klass.superClass;
+    }
+    return null;
+  }
   
   set(name, value) {
     this.fields.set(name, value);
