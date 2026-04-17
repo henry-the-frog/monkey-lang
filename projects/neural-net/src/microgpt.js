@@ -13,6 +13,14 @@ import { getLoss } from './loss.js';
  * Architecture: Embedding → PE → N × TransformerEncoder → Dense → Softmax
  */
 export class MicroGPT {
+  /**
+   * Create a MicroGPT model.
+   * 
+   * Pre-built configs available via MicroGPT.fromConfig():
+   * - 'tiny':  vocabSize=128, dModel=32, numHeads=2, numLayers=2   (for testing)
+   * - 'small': vocabSize=256, dModel=64, numHeads=4, numLayers=4   (toy tasks)
+   * - 'medium': vocabSize=512, dModel=128, numHeads=8, numLayers=6  (small-scale learning)
+   */
   constructor({
     vocabSize = 128,
     dModel = 32,
@@ -289,3 +297,17 @@ export function createSequences(text, seqLen = 16) {
   }
   return sequences;
 }
+
+/**
+ * Factory for common MicroGPT configurations
+ */
+MicroGPT.fromConfig = function(name, overrides = {}) {
+  const configs = {
+    tiny: { vocabSize: 128, dModel: 32, numHeads: 2, numLayers: 2, maxSeqLen: 32 },
+    small: { vocabSize: 256, dModel: 64, numHeads: 4, numLayers: 4, maxSeqLen: 64 },
+    medium: { vocabSize: 512, dModel: 128, numHeads: 8, numLayers: 6, maxSeqLen: 128 },
+  };
+  
+  if (!configs[name]) throw new Error(`Unknown config: ${name}. Available: ${Object.keys(configs).join(', ')}`);
+  return new MicroGPT({ ...configs[name], ...overrides });
+};
