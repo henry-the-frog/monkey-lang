@@ -47,37 +47,30 @@ describe('MicroGPT', () => {
   it('full backward pass trains all layers (not just output projection)', () => {
     const gpt = new MicroGPT({ vocabSize: 20, dModel: 8, numHeads: 2, numLayers: 1, maxSeqLen: 4 });
     
-    // Snapshot ALL initial weights (sum, not a single element)
-    const ff1Sum = () => {
+    // Snapshot ALL initial weights (L1 hash — sum of abs values, more robust than signed sum)
+    const weightHash = (layer) => {
       let s = 0;
-      for (let i = 0; i < gpt.transformerBlocks[0].ff1.weights.rows; i++)
-        for (let j = 0; j < gpt.transformerBlocks[0].ff1.weights.cols; j++)
-          s += gpt.transformerBlocks[0].ff1.weights.get(i, j);
-      return s;
-    };
-    const ff2Sum = () => {
-      let s = 0;
-      for (let i = 0; i < gpt.transformerBlocks[0].ff2.weights.rows; i++)
-        for (let j = 0; j < gpt.transformerBlocks[0].ff2.weights.cols; j++)
-          s += gpt.transformerBlocks[0].ff2.weights.get(i, j);
+      for (let i = 0; i < layer.weights.rows; i++)
+        for (let j = 0; j < layer.weights.cols; j++)
+          s += layer.weights.get(i, j) * (i * 31 + j * 7 + 1); // weighted sum breaks cancellation
       return s;
     };
     
-    const ff1Before = ff1Sum();
-    const ff2Before = ff2Sum();
+    const ff1Before = weightHash(gpt.transformerBlocks[0].ff1);
+    const ff2Before = weightHash(gpt.transformerBlocks[0].ff2);
     
     const sequences = [];
     for (let i = 0; i < 10; i++) sequences.push([1, 2, 3, 1, 2]);
     
     gpt.train(sequences, { epochs: 10, learningRate: 0.01 });
     
-    const ff1After = ff1Sum();
-    const ff2After = ff2Sum();
+    const ff1After = weightHash(gpt.transformerBlocks[0].ff1);
+    const ff2After = weightHash(gpt.transformerBlocks[0].ff2);
     
     assert.ok(Math.abs(ff1Before - ff1After) > 1e-10, 
-      `FF1 weight sum should change during training (diff=${Math.abs(ff1Before - ff1After)})`);
+      `FF1 weights should change during training (diff=${Math.abs(ff1Before - ff1After)})`);
     assert.ok(Math.abs(ff2Before - ff2After) > 1e-10, 
-      `FF2 weight sum should change during training (diff=${Math.abs(ff2Before - ff2After)})`);
+      `FF2 weights should change during training (diff=${Math.abs(ff2Before - ff2After)})`);
   });
 
   it('backward produces gradients for all components', () => {

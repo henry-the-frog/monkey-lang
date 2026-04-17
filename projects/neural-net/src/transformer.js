@@ -119,20 +119,39 @@ export class LayerNorm {
     
     let dGamma = Matrix.zeros(1, this.dModel);
     let dBeta = Matrix.zeros(1, this.dModel);
+    const N = this.dModel;
     
     for (let b = 0; b < batchSize; b++) {
       for (let t = 0; t < seqLen; t++) {
         const offset = t * this.dModel;
         const std = this._std[b * seqLen + t];
+        const invStd = 1.0 / std;
         
+        // Accumulate parameter gradients
         for (let d = 0; d < this.dModel; d++) {
           const dOut = dOutput.get(b, offset + d);
           const norm = this._normalized.get(b, offset + d);
           dGamma.set(0, d, dGamma.get(0, d) + dOut * norm);
           dBeta.set(0, d, dBeta.get(0, d) + dOut);
-          
-          // Simplified gradient (ignoring cross-terms for efficiency)
-          dInput.set(b, offset + d, dOut * this.gamma.get(0, d) / std);
+        }
+        
+        // Full input gradient (same formula as BatchNorm but per-position)
+        // dxNorm[d] = dOutput[d] * gamma[d]
+        // dInput[d] = (1/N) * invStd * (N * dxNorm[d] - sum(dxNorm) - xNorm[d] * sum(dxNorm * xNorm))
+        let sumDxNorm = 0;
+        let sumDxNormXNorm = 0;
+        for (let d = 0; d < this.dModel; d++) {
+          const dxn = dOutput.get(b, offset + d) * this.gamma.get(0, d);
+          const xn = this._normalized.get(b, offset + d);
+          sumDxNorm += dxn;
+          sumDxNormXNorm += dxn * xn;
+        }
+        
+        for (let d = 0; d < this.dModel; d++) {
+          const dxn = dOutput.get(b, offset + d) * this.gamma.get(0, d);
+          const xn = this._normalized.get(b, offset + d);
+          dInput.set(b, offset + d, 
+            invStd / N * (N * dxn - sumDxNorm - xn * sumDxNormXNorm));
         }
       }
     }
