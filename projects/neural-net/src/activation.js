@@ -78,6 +78,42 @@ export const softmax = {
 };
 
 // Linear (identity) — no activation
+/**
+ * GELU activation: x * Φ(x) where Φ is the standard normal CDF
+ * Used in BERT, GPT, and modern transformers.
+ * Approximation: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³)))
+ */
+export const gelu = {
+  forward(x) {
+    const result = new Matrix(x.rows, x.cols);
+    const c = Math.sqrt(2 / Math.PI);
+    for (let i = 0; i < x.data.length; i++) {
+      const v = x.data[i];
+      const inner = c * (v + 0.044715 * v * v * v);
+      result.data[i] = 0.5 * v * (1 + Math.tanh(inner));
+    }
+    // Cache input for backward
+    result._geluInput = x;
+    return result;
+  },
+  backward(output) {
+    // Derivative of GELU approximation
+    const x = output._geluInput || output;
+    const result = new Matrix(x.rows, x.cols);
+    const c = Math.sqrt(2 / Math.PI);
+    for (let i = 0; i < x.data.length; i++) {
+      const v = x.data[i];
+      const inner = c * (v + 0.044715 * v * v * v);
+      const tanhInner = Math.tanh(inner);
+      const sech2 = 1 - tanhInner * tanhInner;
+      const dInner = c * (1 + 3 * 0.044715 * v * v);
+      // d/dx [0.5*x*(1+tanh(inner))] = 0.5*(1+tanh(inner)) + 0.5*x*sech²(inner)*dInner
+      result.data[i] = 0.5 * (1 + tanhInner) + 0.5 * v * sech2 * dInner;
+    }
+    return result;
+  }
+};
+
 export const linear = {
   name: 'linear',
   forward(x) { return x.clone(); },
@@ -86,6 +122,6 @@ export const linear = {
 
 // Get activation by name
 export function getActivation(name) {
-  const activations = { sigmoid, relu, leaky_relu: leakyRelu, tanh, softmax, linear };
+  const activations = { sigmoid, relu, leaky_relu: leakyRelu, tanh, softmax, linear, gelu };
   return activations[name] || linear;
 }
