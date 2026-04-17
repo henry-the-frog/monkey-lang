@@ -6,7 +6,7 @@ export { Matrix } from './matrix.js';
 import { Matrix } from './matrix.js';
 
 // Activations (matrix-level forward/backward)
-export { sigmoid, relu, leakyRelu, tanh, softmax, linear, getActivation } from './activation.js';
+export { sigmoid, relu, leakyRelu, tanh, softmax, linear, gelu, swish, getActivation } from './activation.js';
 import { sigmoid, relu, leakyRelu, tanh as tanhAct, softmax, linear, getActivation } from './activation.js';
 
 // Layers
