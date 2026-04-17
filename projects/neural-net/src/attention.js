@@ -52,6 +52,12 @@ export class SelfAttention {
     
     const allQ = [], allK = [], allV = [], allAttn = [], allCtx = [];
     
+    // Save a copy of input for backward (don't store reference that could be mutated)
+    const savedInput = new Matrix(batchSize, input.cols);
+    for (let i = 0; i < batchSize; i++)
+      for (let j = 0; j < input.cols; j++)
+        savedInput.set(i, j, input.get(i, j));
+    
     for (let b = 0; b < batchSize; b++) {
       // Extract sequence for this batch item: [seqLen, dModel]
       const seq = new Matrix(seqLen, this.dModel);
@@ -75,23 +81,13 @@ export class SelfAttention {
       // Context: attn · V → [seqLen, dModel]
       const context = attnWeights.dot(V);
       
-      // Output projection
-      const output = context.dot(this.Wo).add(this.bo);
-      
       allQ.push(Q); allK.push(K); allV.push(V);
       allAttn.push(attnWeights); allCtx.push(context);
-      
-      // Write output back to flat format
-      for (let t = 0; t < seqLen; t++) {
-        for (let d = 0; d < this.dModel; d++) {
-          input.set(b, t * this.dModel + d, output.get(t, d));
-        }
-      }
     }
     
-    this._cache = { input, batchSize, seqLen, allQ, allK, allV, allAttn, allCtx };
+    this._cache = { input: savedInput, batchSize, seqLen, allQ, allK, allV, allAttn, allCtx };
     
-    // Build output matrix
+    // Build output matrix with output projection
     const result = new Matrix(batchSize, seqLen * this.dModel);
     for (let b = 0; b < batchSize; b++) {
       const ctx = allCtx[b].dot(this.Wo).add(this.bo);
