@@ -4,10 +4,10 @@ A comprehensive neural network library built entirely from scratch in JavaScript
 
 ## 📊 Status
 
-- **488 tests** (all passing)
+- **558 tests** (all passing)
 - **35 source modules**
 - **45 test files**
-- **6 bugs found and fixed** via systematic numerical gradient verification
+- **7 bugs found and fixed** via systematic numerical gradient verification
 
 ## 🧠 Core Layers
 
