@@ -4,6 +4,6 @@
   "description": "Natural deduction proof assistant for propositional and first-order logic",
   "main": "src/index.js",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   }
 }

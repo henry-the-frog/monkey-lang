@@ -165,43 +165,89 @@ export function applyPatch(text, edits) {
 // ===== 3-way merge =====
 export function merge3(base, ours, theirs) {
   const baseLines = base.split('\n');
-  const oursEdits = myersDiff(baseLines, ours.split('\n'));
-  const theirsEdits = myersDiff(baseLines, theirs.split('\n'));
+  const oursLines = ours.split('\n');
+  const theirsLines = theirs.split('\n');
+  
+  // Build line-level change maps: which base lines were modified/deleted
+  const oursChanges = new Map(); // baseIdx → replacement lines (or null for delete)
+  const theirsChanges = new Map();
+  
+  function buildChangeMap(baseArr, modifiedArr) {
+    const changes = new Map();
+    const edits = myersDiff(baseArr, modifiedArr);
+    let baseIdx = 0;
+    let i = 0;
+    while (i < edits.length) {
+      const e = edits[i];
+      if (e.type === 'equal') {
+        baseIdx++;
+        i++;
+      } else if (e.type === 'delete') {
+        // Collect inserts that follow
+        const replacements = [];
+        i++;
+        while (i < edits.length && edits[i].type === 'insert') {
+          replacements.push(edits[i].value);
+          i++;
+        }
+        changes.set(baseIdx, replacements);
+        baseIdx++;
+      } else if (e.type === 'insert') {
+        // Insert before baseIdx
+        const key = `ins_${baseIdx}`;
+        const existing = changes.get(key) || [];
+        existing.push(e.value);
+        changes.set(key, existing);
+        i++;
+      }
+    }
+    return changes;
+  }
+  
+  const oMap = buildChangeMap(baseLines, oursLines);
+  const tMap = buildChangeMap(baseLines, theirsLines);
   
   const result = [];
   let conflicts = 0;
-  let oi = 0, ti = 0;
   
-  while (oi < oursEdits.length || ti < theirsEdits.length) {
-    const oe = oursEdits[oi];
-    const te = theirsEdits[ti];
+  for (let bi = 0; bi < baseLines.length; bi++) {
+    // Check for inserts before this line
+    const oInsKey = `ins_${bi}`;
+    const tInsKey = `ins_${bi}`;
+    if (oMap.has(oInsKey)) result.push(...oMap.get(oInsKey));
+    if (tMap.has(tInsKey)) result.push(...tMap.get(tInsKey));
     
-    if (!oe && te) { if (te.type !== 'delete') result.push(te.value); ti++; continue; }
-    if (!te && oe) { if (oe.type !== 'delete') result.push(oe.value); oi++; continue; }
+    const oChanged = oMap.has(bi);
+    const tChanged = tMap.has(bi);
     
-    if (oe.type === 'equal' && te.type === 'equal') {
-      result.push(oe.value);
-      oi++; ti++;
-    } else if (oe.type !== 'equal' && te.type === 'equal') {
-      if (oe.type === 'insert') result.push(oe.value);
-      // delete: skip
-      oi++;
-      if (oe.type === 'delete') ti++; // consume the equal too
-    } else if (oe.type === 'equal' && te.type !== 'equal') {
-      if (te.type === 'insert') result.push(te.value);
-      ti++;
-      if (te.type === 'delete') oi++;
+    if (!oChanged && !tChanged) {
+      result.push(baseLines[bi]);
+    } else if (oChanged && !tChanged) {
+      result.push(...oMap.get(bi));
+    } else if (!oChanged && tChanged) {
+      result.push(...tMap.get(bi));
     } else {
-      // Both changed — conflict
-      result.push('<<<<<<< ours');
-      if (oe.type !== 'delete') result.push(oe.value);
-      result.push('=======');
-      if (te.type !== 'delete') result.push(te.value);
-      result.push('>>>>>>> theirs');
-      conflicts++;
-      oi++; ti++;
+      // Both changed same line — conflict
+      const oReplace = oMap.get(bi);
+      const tReplace = tMap.get(bi);
+      if (JSON.stringify(oReplace) === JSON.stringify(tReplace)) {
+        result.push(...oReplace); // Same change
+      } else {
+        result.push('<<<<<<< ours');
+        result.push(...oReplace);
+        result.push('=======');
+        result.push(...tReplace);
+        result.push('>>>>>>> theirs');
+        conflicts++;
+      }
     }
   }
+  
+  // Trailing inserts
+  const oTail = `ins_${baseLines.length}`;
+  const tTail = `ins_${baseLines.length}`;
+  if (oMap.has(oTail)) result.push(...oMap.get(oTail));
+  if (tMap.has(tTail)) result.push(...tMap.get(tTail));
   
   return { result: result.join('\n'), conflicts };
 }

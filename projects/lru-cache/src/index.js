@@ -11,9 +11,10 @@ class DLLNode {
 }
 
 export class LRUCache {
-  constructor(capacity) {
+  constructor(capacity, options = {}) {
     if (capacity < 1) throw new Error('Capacity must be at least 1');
     this.capacity = capacity;
+    this._onEvict = options.onEvict || null;
     this.map = new Map();
     
     // Sentinel nodes
@@ -56,6 +57,7 @@ export class LRUCache {
       const evicted = this.tail.prev;
       this._remove(evicted);
       this.map.delete(evicted.key);
+      if (this._onEvict) this._onEvict(evicted.key, evicted.value);
     }
   }
 
@@ -138,6 +140,40 @@ export class LRUCache {
         return result;
       }
     };
+  }
+
+  set(key, value) {
+    this.put(key, value);
+    return this;
+  }
+
+  values() {
+    const result = [];
+    let node = this.head.next;
+    while (node !== this.tail) {
+      result.push(node.value);
+      node = node.next;
+    }
+    return result;
+  }
+
+  forEach(fn) {
+    let node = this.head.next;
+    while (node !== this.tail) {
+      fn(node.value, node.key, this);
+      node = node.next;
+    }
+  }
+
+  resize(newCapacity) {
+    this.capacity = newCapacity;
+    while (this.map.size > this.capacity) {
+      const evicted = this.tail.prev;
+      this._remove(evicted);
+      this.map.delete(evicted.key);
+      if (this._onEvict) this._onEvict(evicted.key, evicted.value);
+    }
+    return this;
   }
 }
 

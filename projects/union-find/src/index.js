@@ -56,6 +56,7 @@ export class UnionFind {
   connected(x, y) { return this.find(x) === this.find(y); }
   componentSize(x) { return this.sizes[this.find(x)]; }
   get componentCount() { return this._componentCount; }
+  get count() { return this._componentCount; }
 
   // Get all components as arrays
   components() {

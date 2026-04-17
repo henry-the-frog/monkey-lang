@@ -29,6 +29,7 @@ export class Trie {
     if (!node.isEnd) this._size++;
     node.isEnd = true;
     node.value = value;
+    return this;
   }
 
   search(word) {
@@ -56,7 +57,10 @@ export class Trie {
   }
 
   delete(word) {
-    return this._delete(this.root, word, 0);
+    const node = this._findNode(word);
+    if (!node || !node.isEnd) return false;
+    this._deleteHelper(this.root, word, 0);
+    return true;
   }
 
   // Get all words in the trie
@@ -107,7 +111,7 @@ export class Trie {
     }
   }
 
-  _delete(node, word, depth) {
+  _deleteHelper(node, word, depth) {
     if (depth === word.length) {
       if (!node.isEnd) return false;
       node.isEnd = false;
@@ -121,7 +125,7 @@ export class Trie {
     if (!child) return false;
 
     child.count--;
-    const shouldDelete = this._delete(child, word, depth + 1);
+    const shouldDelete = this._deleteHelper(child, word, depth + 1);
 
     if (shouldDelete) {
       node.children.delete(char);
@@ -129,5 +133,10 @@ export class Trie {
     }
 
     return false;
+  }
+
+  clear() {
+    this.root = new TrieNode();
+    this._size = 0;
   }
 }

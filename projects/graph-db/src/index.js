@@ -138,6 +138,15 @@ class GraphDB {
 
   // Pattern match: (node1)-[type]->(node2)
   match(pattern) {
+    // Simple edge type match: { type: 'KNOWS' }
+    if (pattern.type && !pattern.from && !pattern.to) {
+      const results = [];
+      for (const edge of this.edges.values()) {
+        if (edge.type === pattern.type) results.push(edge);
+      }
+      return results;
+    }
+    
     const { from, edge: edgeType, to } = pattern;
     const results = [];
     
@@ -160,4 +169,5 @@ class GraphDB {
   get edgeCount() { return this.edges.size; }
 }
 
-module.exports = { GraphDB };
+module.exports = GraphDB;
+module.exports.GraphDB = GraphDB;

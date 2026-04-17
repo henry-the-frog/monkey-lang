@@ -165,3 +165,18 @@ export class SlidingWindowCounter {
     return { allowed: false, remaining: 0 };
   }
 }
+
+export const SlidingWindow = SlidingWindowLog;
+
+export class KeyedRateLimiter {
+  constructor(factory) {
+    this._factory = factory;
+    this._limiters = new Map();
+  }
+  _get(key) {
+    if (!this._limiters.has(key)) this._limiters.set(key, this._factory());
+    return this._limiters.get(key);
+  }
+  tryConsume(key) { return this._get(key).tryConsume(); }
+  reset(key) { this._limiters.delete(key); }
+}

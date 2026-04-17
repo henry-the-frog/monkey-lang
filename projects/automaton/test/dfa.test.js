@@ -16,7 +16,7 @@ describe('DFA', () => {
   }
 
   it('accepts valid input', () => { assert.equal(evenZeros().run('1001'), true); });
-  it('rejects invalid input', () => { assert.equal(evenZeros().run('100'), false); });
+  it('rejects invalid input', () => { assert.equal(evenZeros().run('0'), false); });
   it('empty string accepted (even zeros)', () => { assert.equal(evenZeros().run(''), true); });
   it('all ones accepted', () => { assert.equal(evenZeros().run('111'), true); });
   it('trace', () => {

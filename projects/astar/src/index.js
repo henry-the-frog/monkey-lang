@@ -88,12 +88,55 @@ export const heuristics = {
   zero: () => 0, // Dijkstra's (no heuristic)
 };
 
+// ===== Generic A* (graph-based) =====
+
+function astarGeneric({ start, goal, neighbors, heuristic, cost }) {
+  const goalFn = typeof goal === 'function' ? goal : n => n === goal;
+  const costFn = cost || (() => 1);
+  const hFn = heuristic || (() => 0);
+
+  const openSet = [{ node: start, f: hFn(start), g: 0 }];
+  const gScore = new Map();
+  const cameFrom = new Map();
+  gScore.set(start, 0);
+
+  while (openSet.length > 0) {
+    openSet.sort((a, b) => a.f - b.f);
+    const { node: current, g: currentG } = openSet.shift();
+
+    if (goalFn(current)) {
+      const path = [current];
+      let n = current;
+      while (cameFrom.has(n)) {
+        n = cameFrom.get(n);
+        path.unshift(n);
+      }
+      return { path, cost: currentG };
+    }
+
+    for (const neighbor of neighbors(current)) {
+      const tentG = currentG + costFn(current, neighbor);
+      if (!gScore.has(neighbor) || tentG < gScore.get(neighbor)) {
+        gScore.set(neighbor, tentG);
+        cameFrom.set(neighbor, current);
+        openSet.push({ node: neighbor, f: tentG + hFn(neighbor), g: tentG });
+      }
+    }
+  }
+
+  return { path: null, cost: Infinity };
+}
+
 // ===== A* Algorithm =====
 
-export function astar(grid, start, end, {
-  heuristic = heuristics.manhattan,
-  diagonal = false,
-} = {}) {
+export function astar(gridOrOpts, start, end, opts = {}) {
+  // Generic graph-based API: astar({ start, goal, neighbors, heuristic })
+  if (gridOrOpts && typeof gridOrOpts === 'object' && 'neighbors' in gridOrOpts && !gridOrOpts.walls) {
+    return astarGeneric(gridOrOpts);
+  }
+
+  const grid = gridOrOpts;
+  const { heuristic = heuristics.manhattan, diagonal = false } = opts;
   const key = ([x, y]) => `${x},${y}`;
   const getNeighbors = diagonal ? (x, y) => grid.neighbors8(x, y) : (x, y) => grid.neighbors4(x, y);
   
@@ -177,4 +220,19 @@ export function bfs(grid, start, end, { diagonal = false } = {}) {
   }
   
   return { path: null, cost: Infinity };
+}
+
+/**
+ * Convenience: search a raw 2D array grid (0=open, 1=wall).
+ */
+export function gridSearch(rawGrid, start, end, opts = {}) {
+  const rows = rawGrid.length;
+  const cols = rawGrid[0].length;
+  const grid = new Grid(rows, cols);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (rawGrid[r][c] === 1) grid.setWall(r, c, true);
+    }
+  }
+  return astar(grid, start, end, opts);
 }

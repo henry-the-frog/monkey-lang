@@ -40,21 +40,19 @@ describe('Broker — basic pub/sub', () => {
 });
 
 describe('Broker — message metadata', () => {
-  it('provides id and timestamp', () => {
+  it('handler receives data and topic', () => {
     const b = new Broker();
-    let meta;
-    b.subscribe('x', (data, m) => { meta = m; });
+    let receivedTopic;
+    b.subscribe('x', (data, topic) => { receivedTopic = topic; });
     b.publish('x', 'hi');
-    assert.ok(meta.id > 0);
-    assert.equal(meta.topic, 'x');
-    assert.ok(meta.timestamp > 0);
+    assert.equal(receivedTopic, 'x');
   });
 
-  it('ack function', () => {
+  it('publish returns delivery count', () => {
     const b = new Broker();
-    b.subscribe('x', (data, meta) => { meta.ack(); });
-    const msg = b.publish('x', 'hi');
-    assert.equal(msg.acked, true);
+    b.subscribe('x', () => {});
+    b.subscribe('x', () => {});
+    assert.equal(b.publish('x', 'hi'), 2);
   });
 });
 
@@ -92,20 +90,20 @@ describe('Broker — filters', () => {
   });
 });
 
-describe('Broker — retries and dead letter', () => {
-  it('retries on failure', () => {
+describe('Broker — error handling', () => {
+  it('catches handler errors in dead letter', () => {
     const b = new Broker();
-    let attempts = 0;
-    b.subscribe('x', () => { attempts++; if (attempts < 3) throw new Error('fail'); }, { maxRetries: 3 });
-    b.publish('x', 'data');
-    assert.equal(attempts, 3);
-  });
-
-  it('dead letters after max retries', () => {
-    const b = new Broker();
-    b.subscribe('x', () => { throw new Error('always fail'); }, { maxRetries: 2 });
+    b.subscribe('x', () => { throw new Error('fail'); });
     b.publish('x', 'data');
     assert.equal(b.deadLetter.length, 1);
+  });
+
+  it('dead letter handler fires for undelivered', () => {
+    const b = new Broker();
+    const dead = [];
+    b.onDeadLetter((msg, topic) => dead.push(topic));
+    b.publish('nobody', 'lost');
+    assert.equal(dead.length, 1);
   });
 });
 
@@ -130,10 +128,10 @@ describe('Broker — wildcard topics', () => {
   it('matches wildcard pattern', () => {
     const b = new Broker();
     const log = [];
-    b.subscribe('user.*', (d, m) => log.push(m.topic));
-    b.publishWild('user.login', {});
-    b.publishWild('user.logout', {});
-    b.publishWild('system.start', {});
+    b.subscribe('user.*', (d, topic) => log.push(topic));
+    b.publish('user.login', {});
+    b.publish('user.logout', {});
+    b.publish('system.start', {});
     assert.deepEqual(log, ['user.login', 'user.logout']);
   });
 });

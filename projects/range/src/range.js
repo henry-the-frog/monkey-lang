@@ -3,7 +3,7 @@
 export function range(startOrEnd, end, step) {
   let start;
   if (end === undefined) { start = 0; end = startOrEnd; step = 1; }
-  else { start = startOrEnd; step = step || (start <= end ? 1 : -1); }
+  else { start = startOrEnd; step = step !== undefined ? step : (start <= end ? 1 : -1); }
   if (step === 0) throw new Error('Step cannot be zero');
 
   return {

@@ -167,6 +167,34 @@ export class Scheduler {
   getTask(id) { return this.tasks.get(id); }
 
   get completedTasks() { return this._completed; }
+
+  get pending() { return this.pendingCount; }
+
+  async runNext() {
+    const task = this.queue.pop();
+    if (!task) return null;
+    if (task.cancelled) return this.runNext();
+    try {
+      const result = await task.fn();
+      task.runs++;
+      const entry = { id: task.id, result, status: 'completed' };
+      this._completed.push(entry);
+      return entry;
+    } catch (e) {
+      const entry = { id: task.id, error: e.message, status: 'failed' };
+      this._completed.push(entry);
+      return entry;
+    }
+  }
+
+  async run() {
+    const results = [];
+    while (this.queue.size > 0) {
+      const r = await this.runNext();
+      if (r) results.push(r);
+    }
+    return results;
+  }
 }
 
 export { MinHeap, Task };

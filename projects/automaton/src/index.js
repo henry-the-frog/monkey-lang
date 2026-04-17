@@ -95,8 +95,16 @@ export class DFA {
     this.accept = new Set();
   }
 
+  addState(name, opts = {}) {
+    this.states.add(name);
+    if (opts.start) this.start = name;
+    if (opts.accept) this.accept.add(name);
+    return this;
+  }
+
   addTransition(from, symbol, to) {
     this.transitions.set(`${from},${symbol}`, to);
+    return this;
   }
 
   getTransition(state, symbol) {
@@ -105,13 +113,92 @@ export class DFA {
 
   accepts(input) {
     let current = this.start;
-    
     for (const symbol of input) {
       current = this.getTransition(current, symbol);
       if (current === undefined) return false;
     }
-    
     return this.accept.has(current);
+  }
+
+  run(input) { return this.accepts(input); }
+
+  get stateCount() { return this.states.size; }
+
+  trace(input) {
+    const path = [this.start];
+    let current = this.start;
+    for (const symbol of input) {
+      current = this.getTransition(current, symbol);
+      if (current === undefined) { path.push(null); return { path, accepted: false }; }
+      path.push(current);
+    }
+    return { path, accepted: this.accept.has(current) };
+  }
+
+  minimize() {
+    // Hopcroft's algorithm (simplified)
+    const states = [...this.states];
+    const acceptSet = new Set([...this.accept]);
+    const nonAccept = states.filter(s => !acceptSet.has(s));
+    const alphabet = new Set();
+    for (const key of this.transitions.keys()) {
+      alphabet.add(key.split(',').slice(1).join(','));
+    }
+    
+    let partitions = [];
+    if (nonAccept.length > 0) partitions.push(new Set(nonAccept));
+    if (acceptSet.size > 0) partitions.push(new Set(acceptSet));
+    
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const newPartitions = [];
+      for (const group of partitions) {
+        for (const sym of alphabet) {
+          const map = new Map();
+          for (const state of group) {
+            const target = this.getTransition(state, sym);
+            const targetPart = partitions.findIndex(p => p.has(target));
+            const key = target === undefined ? -1 : targetPart;
+            if (!map.has(key)) map.set(key, new Set());
+            map.get(key).add(state);
+          }
+          if (map.size > 1) {
+            changed = true;
+            for (const [, subset] of map) newPartitions.push(subset);
+            break;
+          }
+        }
+        if (!changed || newPartitions.length === 0) newPartitions.push(group);
+        if (changed) {
+          // Add remaining unprocessed partitions
+          for (const p of partitions) {
+            if (!newPartitions.includes(p) && p !== group) newPartitions.push(p);
+          }
+          break;
+        }
+      }
+      if (changed) partitions = newPartitions;
+    }
+    
+    const min = new DFA();
+    const stateMap = new Map();
+    for (let i = 0; i < partitions.length; i++) {
+      const name = `s${i}`;
+      const group = partitions[i];
+      const isStart = [...group].some(s => s === this.start);
+      const isAccept = [...group].some(s => this.accept.has(s));
+      min.addState(name, { start: isStart, accept: isAccept });
+      for (const s of group) stateMap.set(s, name);
+    }
+    for (const [key, target] of this.transitions) {
+      const [from, ...symParts] = key.split(',');
+      const sym = symParts.join(',');
+      const fromMapped = stateMap.get(from);
+      const toMapped = stateMap.get(target);
+      if (fromMapped && toMapped) min.addTransition(fromMapped, sym, toMapped);
+    }
+    return min;
   }
 }
 

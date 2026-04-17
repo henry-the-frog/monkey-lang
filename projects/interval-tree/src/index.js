@@ -96,3 +96,6 @@ export class IntervalTree {
     return { lo: node.lo, hi: node.hi, data: node.data };
   }
 }
+
+IntervalTree.prototype.contains = function(point) { return this.queryPoint(point); };
+IntervalTree.prototype.toArray = function() { return this.all(); };

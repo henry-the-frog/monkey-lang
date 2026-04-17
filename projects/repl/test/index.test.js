@@ -106,7 +106,7 @@ describe('REPL — commands', () => {
 describe('REPL — tab completion', () => {
   it('completes single match', () => {
     const repl = new REPL({ completions: ['console', 'const', 'continue'] });
-    const result = repl.complete('cons');
+    const result = repl.complete('consol');
     assert.equal(result.text, 'console');
     assert.equal(result.isComplete, true);
   });

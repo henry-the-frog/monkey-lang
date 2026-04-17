@@ -29,7 +29,7 @@ describe('RegexBuilder — basic', () => {
 
 describe('RegexBuilder — quantifiers', () => {
   it('optional', () => {
-    const re = regex().literal('color').literal('u').optional().literal('r').build();
+    const re = regex().literal('colo').literal('u').optional().literal('r').build();
     assert.ok(re.test('color'));
     assert.ok(re.test('colour'));
   });

@@ -4,6 +4,6 @@
   "description": "Constraint satisfaction problem solver with arc consistency (AC-3) and backtracking search",
   "main": "src/index.js",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   }
 }

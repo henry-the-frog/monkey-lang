@@ -44,10 +44,15 @@ function parse(tokens) {
   const ast = [];
   let i = 0;
 
-  function parseBlock(endTag) {
+  function parseBlock(endTag, stopAtElse = false) {
     const body = [];
     while (i < tokens.length) {
       const tok = tokens[i];
+
+      // Stop at {{else}} without consuming it
+      if (stopAtElse && tok.type === 'expression' && tok.content === 'else') {
+        return body;
+      }
 
       if (tok.type === 'text') {
         body.push({ type: 'text', value: tok.value });
@@ -72,9 +77,9 @@ function parse(tokens) {
         if (c.startsWith('#if ')) {
           i++;
           const expr = c.slice(4).trim();
-          const consequent = parseBlock('if');
+          const consequent = parseBlock('if', true); // may stop at else
           let alternate = [];
-          // Check for {{else}}
+          // Check for {{else}} — already consumed by parseBlock returning early
           if (i < tokens.length && tokens[i]?.type === 'expression' && tokens[i].content === 'else') {
             i++;
             alternate = parseBlock('if');
@@ -177,7 +182,9 @@ function render(nodes, data, partials, helpers) {
         const val = resolve(data, node.expr);
         if (Array.isArray(val)) {
           for (let i = 0; i < val.length; i++) {
-            const ctx = { ...val[i], '@index': i, '@first': i === 0, '@last': i === val.length - 1, '.': val[i] };
+            const item = val[i];
+            const meta = { '@index': i, '@first': i === 0, '@last': i === val.length - 1, '.': item };
+            const ctx = (item && typeof item === 'object') ? { ...item, ...meta } : meta;
             output += render(node.body, ctx, partials, helpers);
           }
         } else if (val && typeof val === 'object') {
@@ -213,8 +220,7 @@ function render(nodes, data, partials, helpers) {
 
 // ===== Utilities =====
 function resolve(data, path) {
-  if (path === '.') return data;
-  if (path === 'this') return data;
+  if (path === '.' || path === 'this') return data['.'] !== undefined ? data['.'] : data;
   const parts = path.split('.');
   let current = data;
   for (const part of parts) {

@@ -191,6 +191,32 @@ export function evaluate(board) {
     if ((blackPawns & adjacentFiles) === 0n) score += 10;
   }
 
+  // Passed pawn bonus (no opposing pawns ahead on same or adjacent files)
+  for (const sq of iterBits(whitePawns)) {
+    const f = fileOf(sq);
+    const r = rankOf(sq);
+    const adjacentFiles = (f > 0 ? FILE_A << BigInt(f - 1) : 0n) | (FILE_A << BigInt(f)) | (f < 7 ? FILE_A << BigInt(f + 1) : 0n);
+    // Ranks ahead of white pawn (higher rank numbers)
+    let aheadMask = 0n;
+    for (let rank = r + 1; rank <= 7; rank++) aheadMask |= 0xFFn << BigInt(rank * 8);
+    if ((blackPawns & adjacentFiles & aheadMask) === 0n) {
+      // Bonus scales with rank advancement (rank 6 = about to promote)
+      const rankBonus = [0, 10, 15, 25, 50, 100, 200][r] || 0;
+      score += rankBonus;
+    }
+  }
+  for (const sq of iterBits(blackPawns)) {
+    const f = fileOf(sq);
+    const r = rankOf(sq);
+    const adjacentFiles = (f > 0 ? FILE_A << BigInt(f - 1) : 0n) | (FILE_A << BigInt(f)) | (f < 7 ? FILE_A << BigInt(f + 1) : 0n);
+    let aheadMask = 0n;
+    for (let rank = r - 1; rank >= 0; rank--) aheadMask |= 0xFFn << BigInt(rank * 8);
+    if ((whitePawns & adjacentFiles & aheadMask) === 0n) {
+      const rankBonus = [0, 200, 100, 50, 25, 15, 10][r] || 0;
+      score -= rankBonus;
+    }
+  }
+
   // Rook on open/semi-open file
   for (const sq of iterBits(board.pieces[WHITE][ROOK])) {
     const fileMask = FILE_A << BigInt(fileOf(sq));

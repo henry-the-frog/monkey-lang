@@ -4,66 +4,65 @@ import { TokenBucket, SlidingWindow, FixedWindow, KeyedRateLimiter } from '../sr
 
 describe('TokenBucket', () => {
   it('allows requests within capacity', () => {
-    const tb = new TokenBucket({ capacity: 5, refillRate: 1, refillInterval: 1000 });
-    for (let i = 0; i < 5; i++) assert.equal(tb.tryConsume(), true);
-    assert.equal(tb.tryConsume(), false);
+    const tb = new TokenBucket(5, 1, 1000);
+    for (let i = 0; i < 5; i++) assert.equal(tb.tryConsume().allowed, true);
+    assert.equal(tb.tryConsume().allowed, false);
   });
   it('reports available tokens', () => {
-    const tb = new TokenBucket({ capacity: 3, refillRate: 1, refillInterval: 1000 });
+    const tb = new TokenBucket(3, 1, 1000);
     assert.equal(tb.available, 3);
     tb.tryConsume();
     assert.equal(tb.available, 2);
   });
   it('consumes multiple at once', () => {
-    const tb = new TokenBucket({ capacity: 10, refillRate: 1, refillInterval: 1000 });
-    assert.equal(tb.tryConsume(5), true);
-    assert.equal(tb.tryConsume(6), false);
-    assert.equal(tb.tryConsume(5), true);
+    const tb = new TokenBucket(10, 1, 1000);
+    assert.equal(tb.tryConsume(5).allowed, true);
+    assert.equal(tb.tryConsume(6).allowed, false);
+    assert.equal(tb.tryConsume(5).allowed, true);
   });
 });
 
 describe('SlidingWindow', () => {
   it('allows requests within window', () => {
-    const sw = new SlidingWindow({ windowMs: 1000, maxRequests: 3 });
-    assert.equal(sw.tryConsume(), true);
-    assert.equal(sw.tryConsume(), true);
-    assert.equal(sw.tryConsume(), true);
-    assert.equal(sw.tryConsume(), false);
+    const sw = new SlidingWindow(3, 1000);
+    assert.equal(sw.tryConsume().allowed, true);
+    assert.equal(sw.tryConsume().allowed, true);
+    assert.equal(sw.tryConsume().allowed, true);
+    assert.equal(sw.tryConsume().allowed, false);
   });
-  it('reports available', () => {
-    const sw = new SlidingWindow({ windowMs: 1000, maxRequests: 5 });
-    assert.equal(sw.available, 5);
-    sw.tryConsume();
-    assert.equal(sw.available, 4);
+  it('reports remaining', () => {
+    const sw = new SlidingWindow(5, 1000);
+    const r1 = sw.tryConsume();
+    assert.equal(r1.remaining, 4);
   });
 });
 
 describe('FixedWindow', () => {
   it('allows requests within window', () => {
-    const fw = new FixedWindow({ windowMs: 1000, maxRequests: 2 });
-    assert.equal(fw.tryConsume(), true);
-    assert.equal(fw.tryConsume(), true);
-    assert.equal(fw.tryConsume(), false);
+    const fw = new FixedWindow(2, 1000);
+    assert.equal(fw.tryConsume().allowed, true);
+    assert.equal(fw.tryConsume().allowed, true);
+    assert.equal(fw.tryConsume().allowed, false);
   });
-  it('reports available', () => {
-    const fw = new FixedWindow({ windowMs: 1000, maxRequests: 3 });
-    assert.equal(fw.available, 3);
+  it('reports remaining', () => {
+    const fw = new FixedWindow(3, 1000);
+    assert.equal(fw.tryConsume().remaining, 2);
   });
 });
 
 describe('KeyedRateLimiter', () => {
   it('per-key limiting', () => {
-    const krl = new KeyedRateLimiter(() => new FixedWindow({ windowMs: 1000, maxRequests: 2 }));
-    assert.equal(krl.tryConsume('user1'), true);
-    assert.equal(krl.tryConsume('user1'), true);
-    assert.equal(krl.tryConsume('user1'), false);
-    assert.equal(krl.tryConsume('user2'), true); // Different key
+    const krl = new KeyedRateLimiter(() => new FixedWindow(2, 1000));
+    assert.equal(krl.tryConsume('user1').allowed, true);
+    assert.equal(krl.tryConsume('user1').allowed, true);
+    assert.equal(krl.tryConsume('user1').allowed, false);
+    assert.equal(krl.tryConsume('user2').allowed, true);
   });
   it('reset', () => {
-    const krl = new KeyedRateLimiter(() => new FixedWindow({ windowMs: 1000, maxRequests: 1 }));
+    const krl = new KeyedRateLimiter(() => new FixedWindow(1, 1000));
     krl.tryConsume('x');
-    assert.equal(krl.tryConsume('x'), false);
+    assert.equal(krl.tryConsume('x').allowed, false);
     krl.reset('x');
-    assert.equal(krl.tryConsume('x'), true);
+    assert.equal(krl.tryConsume('x').allowed, true);
   });
 });

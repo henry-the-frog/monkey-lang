@@ -10,22 +10,26 @@ export function evaluate(expr, vars = {}) {
 
   function parseAdd() {
     let left = parseMul();
+    skipWS();
     while (pos < expr.length && (expr[pos] === '+' || expr[pos] === '-')) {
       const op = expr[pos++];
       const right = parseMul();
       left = op === '+' ? left + right : left - right;
+      skipWS();
     }
     return left;
   }
 
   function parseMul() {
     let left = parsePow();
+    skipWS();
     while (pos < expr.length && (expr[pos] === '*' || expr[pos] === '/' || expr[pos] === '%')) {
       const op = expr[pos++];
       const right = parsePow();
       if (op === '*') left *= right;
       else if (op === '/') { if (right === 0) throw new Error('Division by zero'); left /= right; }
       else left %= right;
+      skipWS();
     }
     return left;
   }

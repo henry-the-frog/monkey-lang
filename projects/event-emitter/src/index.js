@@ -126,6 +126,19 @@ export class EventEmitter {
     return count;
   }
 
+  listeners(event) {
+    return (this._listeners.get(event) || []).map(l => l.fn);
+  }
+
+  prependListener(event, fn) {
+    if (!this._listeners.has(event)) this._listeners.set(event, []);
+    this._listeners.get(event).unshift({ fn, once: false });
+    return this;
+  }
+
+  get maxListeners() { return this._maxListeners; }
+  set maxListeners(n) { this._maxListeners = n; }
+
   eventNames() {
     return [...this._listeners.keys()];
   }
@@ -173,4 +186,14 @@ export class EventEmitter {
     }
     return this;
   }
+}
+
+export function mixin(obj) {
+  const ee = new EventEmitter();
+  for (const method of ['on', 'off', 'once', 'emit', 'removeAllListeners', 'listeners', 'listenerCount', 'prependListener', 'onAny']) {
+    if (typeof ee[method] === 'function') {
+      obj[method] = ee[method].bind(ee);
+    }
+  }
+  return obj;
 }

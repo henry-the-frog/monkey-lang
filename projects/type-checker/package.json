@@ -4,6 +4,6 @@
   "description": "Hindley-Milner type inference (Algorithm W) from scratch",
   "main": "src/index.js",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   }
 }

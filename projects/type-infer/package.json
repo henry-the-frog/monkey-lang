@@ -4,6 +4,6 @@
   "description": "Hindley-Milner type inference with Algorithm W, let-polymorphism, and unification",
   "main": "src/index.js",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   }
 }

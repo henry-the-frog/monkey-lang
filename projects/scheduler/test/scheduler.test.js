@@ -14,8 +14,8 @@ describe('Scheduler', () => {
 
   it('priority ordering', async () => {
     const s = new Scheduler();
-    s.schedule(() => 'low', { priority: 1 });
-    s.schedule(() => 'high', { priority: 10 });
+    s.schedule(() => 'low', { priority: 10 });
+    s.schedule(() => 'high', { priority: 1 });
     const r = await s.run();
     assert.equal(r[0].result, 'high');
   });
