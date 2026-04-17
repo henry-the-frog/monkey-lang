@@ -114,6 +114,36 @@ export const gelu = {
   }
 };
 
+/**
+ * Swish/SiLU activation: x * sigmoid(x)
+ * Used in EfficientNet, Llama, and other modern architectures.
+ * Self-gated: smooth approximation of ReLU.
+ */
+export const swish = {
+  forward(x) {
+    const result = new Matrix(x.rows, x.cols);
+    for (let i = 0; i < x.data.length; i++) {
+      const v = x.data[i];
+      const sig = 1 / (1 + Math.exp(-v));
+      result.data[i] = v * sig;
+    }
+    result._swishInput = x;
+    return result;
+  },
+  backward(output) {
+    const x = output._swishInput || output;
+    const result = new Matrix(x.rows, x.cols);
+    for (let i = 0; i < x.data.length; i++) {
+      const v = x.data[i];
+      const sig = 1 / (1 + Math.exp(-v));
+      // d/dx [x * sigmoid(x)] = sigmoid(x) + x * sigmoid(x) * (1 - sigmoid(x))
+      //                        = sigmoid(x) * (1 + x * (1 - sigmoid(x)))
+      result.data[i] = sig * (1 + v * (1 - sig));
+    }
+    return result;
+  }
+};
+
 export const linear = {
   name: 'linear',
   forward(x) { return x.clone(); },
@@ -122,6 +152,6 @@ export const linear = {
 
 // Get activation by name
 export function getActivation(name) {
-  const activations = { sigmoid, relu, leaky_relu: leakyRelu, tanh, softmax, linear, gelu };
+  const activations = { sigmoid, relu, leaky_relu: leakyRelu, tanh, softmax, linear, gelu, swish, silu: swish };
   return activations[name] || linear;
 }
