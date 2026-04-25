@@ -272,12 +272,17 @@ class SSABuilder {
 // ============================================================
 
 function toSSA(source) {
-  const lexer = new Lexer(source);
-  const parser = new Parser(lexer);
-  const program = parser.parseProgram();
-  
-  const cfgBuilder = new CFGBuilder();
-  const cfg = cfgBuilder.build(program);
+  let cfg;
+  if (typeof source === 'string') {
+    const lexer = new Lexer(source);
+    const parser = new Parser(lexer);
+    const program = parser.parseProgram();
+    const cfgBuilder = new CFGBuilder();
+    cfg = cfgBuilder.build(program);
+  } else {
+    // Assume it's already a CFG
+    cfg = source;
+  }
   
   const ssaBuilder = new SSABuilder(cfg);
   return { ssa: ssaBuilder.build(), cfg };
@@ -297,4 +302,54 @@ function formatSSA(ssaResult) {
   return lines.join('\n');
 }
 
-export { SSAAssign, SSAPhi, SSAReturn, SSAExpr, SSABuilder, toSSA, formatSSA };
+/**
+ * Per-function SSA pipeline: extract all functions from a program,
+ * build CFG for each function body, and transform to SSA.
+ * @param {string|ast.Program} source - Source code string or parsed Program
+ * @returns {Map<string, { cfg, ssa }>} Map from function name → { cfg, ssa }
+ */
+function perFunctionSSA(source) {
+  let program;
+  if (typeof source === 'string') {
+    const lexer = new Lexer(source);
+    const parser = new Parser(lexer);
+    program = parser.parseProgram();
+  } else {
+    program = source;
+  }
+  
+  const results = new Map();
+  let anonCount = 0;
+  
+  function extractFunctions(stmts, prefix = '') {
+    for (const stmt of stmts) {
+      if (stmt instanceof ast.LetStatement && stmt.value instanceof ast.FunctionLiteral) {
+        const name = prefix + stmt.name.value;
+        const fn = stmt.value;
+        const cfgBuilder = new CFGBuilder();
+        const cfg = cfgBuilder.build(fn.body);
+        const ssaBuilder = new SSABuilder(cfg);
+        results.set(name, { cfg, ssa: ssaBuilder.build() });
+        
+        // Recurse into function body for nested functions
+        extractFunctions(fn.body.statements, name + '.');
+      } else if (stmt instanceof ast.ExpressionStatement) {
+        // Check for anonymous function expressions
+        if (stmt.expression instanceof ast.FunctionLiteral) {
+          const name = prefix + `__anon_${anonCount++}`;
+          const fn = stmt.expression;
+          const cfgBuilder = new CFGBuilder();
+          const cfg = cfgBuilder.build(fn.body);
+          const ssaBuilder = new SSABuilder(cfg);
+          results.set(name, { cfg, ssa: ssaBuilder.build() });
+          extractFunctions(fn.body.statements, name + '.');
+        }
+      }
+    }
+  }
+  
+  extractFunctions(program.statements);
+  return results;
+}
+
+export { SSAAssign, SSAPhi, SSAReturn, SSAExpr, SSABuilder, toSSA, formatSSA, perFunctionSSA };
