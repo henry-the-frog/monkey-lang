@@ -171,6 +171,26 @@ let partition = fn(arr, f) {
   };
   iter(arr, [], []);
 };
+
+let group_by = fn(arr, f) {
+  reduce(arr, {}, fn(groups, item) {
+    let key = str(f(item));
+    let existing = groups[key];
+    if (type(existing) == "ARRAY") {
+      merge(groups, {key: push(existing, item)});
+    } else {
+      merge(groups, {key: [item]});
+    };
+  });
+};
+
+let each = fn(arr, f) {
+  let iter = fn(arr) {
+    if (len(arr) == 0) { null; }
+    else { f(first(arr)); iter(rest(arr)); };
+  };
+  iter(arr);
+};
 `;
 
 let _compiledPrelude = null;
@@ -207,7 +227,7 @@ export function executePrelude() {
  */
 export const PRELUDE_FUNCTIONS = [
   'map', 'filter', 'reduce', 'any', 'all', 'find', 'flat_map', 'take', 'drop',
-  'take_while', 'scan', 'chunk', 'zip_with', 'tap', 'partition'
+  'take_while', 'scan', 'chunk', 'zip_with', 'tap', 'partition', 'group_by', 'each'
 ];
 
 /**
