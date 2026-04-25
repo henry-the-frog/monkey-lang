@@ -6,6 +6,7 @@ import { optimize as optimizeBytecode } from './optimizer.js';
 import * as AST from './ast.js';
 import { constantSubstitution } from './const-subst.js';
 import { MonkeyInteger, MonkeyFloat, MonkeyString, MonkeyArray, MonkeyBoolean, TRUE, FALSE, NULL } from './object.js';
+import { EscapeAnalyzer, STACK } from './escape.js';
 
 /**
  * Bytecode: the output of the compiler.
@@ -335,6 +336,15 @@ export class Compiler {
       if (this.optimizeEnabled) constantSubstitution(node);
       // Apply constant folding optimization (literal arithmetic)
       Compiler.foldConstants(node);
+      // Run escape analysis to annotate closures
+      if (this.optimizeEnabled) {
+        try {
+          const analyzer = new EscapeAnalyzer();
+          this._escapeInfo = analyzer.analyze(node);
+        } catch (e) {
+          this._escapeInfo = null; // Graceful degradation
+        }
+      }
       for (const stmt of node.statements) {
         this.compile(stmt);
       }
@@ -1090,6 +1100,24 @@ export class Compiler {
 
       const compiledFn = new CompiledFunction(instructions, numLocals, node.parameters.length, !!node.restParam);
       
+      // Annotate with escape analysis results
+      if (this._escapeInfo) {
+        const varName = node.name;
+        if (varName && this._escapeInfo.variables.has(varName)) {
+          const info = this._escapeInfo.variables.get(varName);
+          compiledFn.escapes = info.state !== STACK;
+        } else {
+          // Anonymous closure: check if all captured variables are stack-allocatable
+          const allCapturedStack = freeSymbols.every(sym => {
+            const info = this._escapeInfo.variables.get(sym.name);
+            return info && info.state === STACK;
+          });
+          compiledFn.escapes = !allCapturedStack || freeSymbols.length === 0;
+        }
+      } else {
+        compiledFn.escapes = true; // Conservative: assume escape
+      }
+      
       // Process default parameter values
       if (node.defaults && node.defaults.some(d => d !== null)) {
         compiledFn.defaults = node.defaults.map(d => {
@@ -1501,6 +1529,7 @@ export class CompiledFunction {
     this.hasRestParam = hasRestParam;
     this.defaults = []; // Array of MonkeyObjects (null for required params)
     this.minParams = numParameters; // Minimum required parameters
+    this.escapes = true; // Default: assume closure escapes (conservative)
   }
 
   type() { return 'COMPILED_FUNCTION'; }

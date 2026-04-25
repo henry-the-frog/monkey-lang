@@ -109,7 +109,13 @@ class EscapeAnalyzer {
       
       // If this is a function, analyze its body
       if (stmt.value instanceof ast.FunctionLiteral) {
-        this._analyzeStatements(stmt.value.body?.statements || [], stmt.name.value, false);
+        const bodyStmts = stmt.value.body?.statements || [];
+        // The last expression in the body is the implicit return value (escaping position)
+        for (let i = 0; i < bodyStmts.length; i++) {
+          const isLast = i === bodyStmts.length - 1;
+          const isImplicitReturn = isLast && bodyStmts[i] instanceof ast.ExpressionStatement;
+          this._analyzeStatement(bodyStmts[i], stmt.name.value, isImplicitReturn);
+        }
         
         // Check for captured variables
         const freeVars = this._findFreeVars(stmt.value.body, 
@@ -170,6 +176,23 @@ class EscapeAnalyzer {
       }
       if (expr.alternative) {
         this._analyzeStatements(expr.alternative.statements || [], currentFunc, isEscaping);
+      }
+    } else if (expr instanceof ast.FunctionLiteral) {
+      // Anonymous function literal in expression position
+      // If it's in an escaping position (returned/passed as arg), its free vars escape
+      if (isEscaping) {
+        const params = new Set((expr.parameters || []).map(p => p.value));
+        const freeVars = this._findFreeVars(expr.body, params);
+        for (const fv of freeVars) {
+          this._markEscaped(fv, 'captured by escaping anonymous closure');
+        }
+      }
+      // Analyze the function body
+      const bodyStmts = expr.body?.statements || [];
+      for (let i = 0; i < bodyStmts.length; i++) {
+        const isLast = i === bodyStmts.length - 1;
+        const isImplicitReturn = isLast && bodyStmts[i] instanceof ast.ExpressionStatement;
+        this._analyzeStatement(bodyStmts[i], currentFunc, isImplicitReturn);
       }
     }
   }
