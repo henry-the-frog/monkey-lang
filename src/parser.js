@@ -60,6 +60,8 @@ export class Parser {
 
     // Register prefix parsers
     this.registerPrefix(TokenType.IDENT, () => this.parseIdentifier());
+    // import as both keyword (import "module") and function (import("module"))
+    this.registerPrefix(TokenType.IMPORT, () => this.parseIdentifier());
     this.registerPrefix(TokenType.INT, () => this.parseIntegerLiteral());
     this.registerPrefix(TokenType.FLOAT, () => this.parseFloatLiteral());
     this.registerPrefix(TokenType.STRING, () => this.parseStringLiteral());
@@ -175,7 +177,13 @@ export class Parser {
       case TokenType.CONST: return this.parseConstStatement();
       case TokenType.SET: return this.parseSetStatement();
       case TokenType.RETURN: return this.parseReturnStatement();
-      case TokenType.IMPORT: return this.parseImportStatement();
+      case TokenType.IMPORT: {
+        // If next token is '(', treat as function call: import("module")
+        if (this.peekTokenIs(TokenType.LPAREN)) {
+          return this.parseExpressionStatement();
+        }
+        return this.parseImportStatement();
+      }
       case TokenType.EXPORT: return this.parseExportStatement();
       case 'ENUM': return this.parseEnumStatement();
       default: return this.parseExpressionStatement();
