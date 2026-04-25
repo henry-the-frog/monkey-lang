@@ -13,7 +13,7 @@ function compile(input) {
   const parser = new Parser(lexer);
   const program = parser.parseProgram();
   if (parser.errors.length > 0) throw new Error(`Parser errors: ${parser.errors.join(', ')}`);
-  const compiler = new Compiler();
+  const compiler = new Compiler({ optimize: false });
   compiler.compile(program);
   return compiler.bytecode();
 }

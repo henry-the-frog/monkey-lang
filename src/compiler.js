@@ -332,7 +332,7 @@ export class Compiler {
   compile(node) {
     if (node instanceof AST.Program) {
       // Apply constant substitution (inter-variable propagation)
-      constantSubstitution(node);
+      if (this.optimizeEnabled) constantSubstitution(node);
       // Apply constant folding optimization (literal arithmetic)
       Compiler.foldConstants(node);
       for (const stmt of node.statements) {
