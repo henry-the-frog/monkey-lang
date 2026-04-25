@@ -1,5 +1,7 @@
 # Monkey-lang
 
+[![CI](https://github.com/henry-the-frog/monkey-lang/actions/workflows/ci.yml/badge.svg)](https://github.com/henry-the-frog/monkey-lang/actions/workflows/ci.yml)
+
 A complete programming language implementation in JavaScript, featuring a full compiler pipeline from source code to multiple backends.
 
 ## Features
@@ -11,7 +13,7 @@ A complete programming language implementation in JavaScript, featuring a full c
 - **RISC-V Backend** → Compile to RISC-V assembly (with GC!)
 - **Type System** → Hindley-Milner type inference (Algorithm W)
 - **Optimization Pipeline** → SSA, constant propagation, dead code elimination
-- **38 test files** → Comprehensive coverage
+- **38 test files, 894 tests** → Comprehensive coverage
 
 ## Compiler Pipeline
 
