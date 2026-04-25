@@ -122,3 +122,50 @@ describe('prelude: composition', () => {
     assert.strictEqual(r.value, 24); // 6+8+10
   });
 });
+
+describe('prelude: take_while', () => {
+  it('takes while predicate holds', () => {
+    const r = run('take_while([1,2,3,4,5], fn(x) { x < 4; })');
+    assert.deepStrictEqual(r.elements.map(e => e.value), [1, 2, 3]);
+  });
+  it('empty when first element fails', () => {
+    const r = run('take_while([5,1,2], fn(x) { x < 3; })');
+    assert.deepStrictEqual(r.elements, []);
+  });
+  it('all when all match', () => {
+    const r = run('take_while([1,2,3], fn(x) { x < 10; })');
+    assert.deepStrictEqual(r.elements.map(e => e.value), [1, 2, 3]);
+  });
+});
+
+describe('prelude: scan', () => {
+  it('running sum', () => {
+    const r = run('scan([1,2,3,4,5], 0, fn(acc, x) { acc + x; })');
+    assert.deepStrictEqual(r.elements.map(e => e.value), [1, 3, 6, 10, 15]);
+  });
+  it('empty array', () => {
+    const r = run('scan([], 0, fn(acc, x) { acc + x; })');
+    assert.deepStrictEqual(r.elements, []);
+  });
+  it('running product', () => {
+    const r = run('scan([1,2,3,4], 1, fn(acc, x) { acc * x; })');
+    assert.deepStrictEqual(r.elements.map(e => e.value), [1, 2, 6, 24]);
+  });
+});
+
+describe('prelude: chunk', () => {
+  it('chunks array into pieces', () => {
+    const r = run('chunk([1,2,3,4,5,6,7], 3)');
+    assert.strictEqual(r.elements.length, 3); // [1,2,3], [4,5,6], [7]
+    assert.deepStrictEqual(r.elements[0].elements.map(e => e.value), [1, 2, 3]);
+    assert.deepStrictEqual(r.elements[2].elements.map(e => e.value), [7]);
+  });
+  it('exact division', () => {
+    const r = run('chunk([1,2,3,4,5,6], 2)');
+    assert.strictEqual(r.elements.length, 3);
+  });
+  it('empty array', () => {
+    const r = run('chunk([], 3)');
+    assert.deepStrictEqual(r.elements, []);
+  });
+});
