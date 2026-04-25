@@ -7,6 +7,7 @@ import * as AST from './ast.js';
 import { constantSubstitution } from './const-subst.js';
 import { MonkeyInteger, MonkeyFloat, MonkeyString, MonkeyArray, MonkeyBoolean, TRUE, FALSE, NULL } from './object.js';
 import { EscapeAnalyzer, STACK } from './escape.js';
+import { perFunctionSSA } from './ssa.js';
 
 /**
  * Bytecode: the output of the compiler.
@@ -343,6 +344,12 @@ export class Compiler {
           this._escapeInfo = analyzer.analyze(node);
         } catch (e) {
           this._escapeInfo = null; // Graceful degradation
+        }
+        // Run per-function SSA analysis (diagnostic only, not used for optimization yet)
+        try {
+          this._ssaInfo = perFunctionSSA(node);
+        } catch (e) {
+          this._ssaInfo = null;
         }
       }
       for (const stmt of node.statements) {
@@ -1345,7 +1352,10 @@ export class Compiler {
         // Optimization failure is non-fatal — fall back to unoptimized
       }
     }
-    return new Bytecode(instructions, this.constants);
+    const bc = new Bytecode(instructions, this.constants);
+    bc.ssaInfo = this._ssaInfo || null;
+    bc.escapeInfo = this._escapeInfo || null;
+    return bc;
   }
 
   // --- Internal helpers ---
