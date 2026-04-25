@@ -39,15 +39,17 @@ A complete implementation of the Monkey programming language with a tree-walking
 - **Try/catch/throw**: Error handling
 - **Import/export**: Module system (parser + runtime)
 
-### 50+ Built-in Functions
+### 55+ Built-in Functions
 `len`, `first`, `last`, `rest`, `push`, `puts`, `print`, `type`, `str`, `int`, `bool`, `float`,
 `format`, `range`, `split`, `join`, `trim`, `upper`, `lower`, `contains`, `indexOf`, `replace`,
 `reverse`, `abs`, `min`, `max`, `startsWith`, `endsWith`, `char`, `ord`, `repeat`, `padStart`,
-`padEnd`, `floor`, `ceil`, `sqrt`, `pow`, `enumerate`, `zip`, `slice`, `sum`, `count`,
-`compact`, `unique`, `isEmpty`, `flatten`, `keys`, `values`, `sort`, `chars`,
-`map`, `filter`, `reduce`, `any`, `all`, `find`, `flat_map`, `take`, `drop`
+`padEnd`, `floor`, `ceil`, `sqrt`, `pow`, `sin`, `cos`, `enumerate`, `zip`, `slice`, `sum`,
+`count`, `compact`, `unique`, `isEmpty`, `flatten`, `keys`, `values`, `sort`, `chars`,
+`merge`, `product`, `import`
 
-### Standard Library
+### 17 Prelude HOFs (compiled monkey-lang)
+`map`, `filter`, `reduce`, `any`, `all`, `find`, `flat_map`, `take`, `drop`,
+`take_while`, `scan`, `chunk`, `zip_with`, `tap`, `partition`, `group_by`, `each`
 - **math**: `abs`, `max`, `min`, `clamp`, `pow`, `factorial`
 - **strings**: `reverse`, `repeat`, `pad_left`, `pad_right`
 - Loaded via `import("math")` or `import "math" { abs, pow }`
