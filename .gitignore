@@ -1,21 +1,5 @@
-# Secrets and credentials
-.env
-**/*.key
-**/*.pem
-**/secrets*
-**/*credentials*
-**/*password*
-**/*token*
-
-# OS files
+node_modules/
+*.db
+*.wal
 .DS_Store
-Thumbs.db
-
-# Scratch files (disposable by nature)
-# scratch/
-
-# OpenClaw internal state
-.openclaw/
-openclaw/
-dashboard/
-projects/fft/
+coverage/
