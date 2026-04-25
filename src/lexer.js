@@ -75,6 +75,9 @@ export const TokenType = {
   CATCH: 'CATCH',
   THROW: 'THROW',
   IN: 'IN',
+  IMPORT: 'IMPORT',
+  EXPORT: 'EXPORT',
+  AS: 'AS',
 
   // Special
   EOF: 'EOF',
@@ -102,6 +105,9 @@ const KEYWORDS = {
   try: TokenType.TRY,
   catch: TokenType.CATCH,
   throw: TokenType.THROW,
+  import: TokenType.IMPORT,
+  export: TokenType.EXPORT,
+  as: TokenType.AS,
   null: TokenType.NULL,
   enum: 'ENUM',
   match: 'MATCH',

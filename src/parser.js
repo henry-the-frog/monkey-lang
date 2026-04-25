@@ -175,6 +175,8 @@ export class Parser {
       case TokenType.CONST: return this.parseConstStatement();
       case TokenType.SET: return this.parseSetStatement();
       case TokenType.RETURN: return this.parseReturnStatement();
+      case TokenType.IMPORT: return this.parseImportStatement();
+      case TokenType.EXPORT: return this.parseExportStatement();
       case 'ENUM': return this.parseEnumStatement();
       default: return this.parseExpressionStatement();
     }
@@ -324,6 +326,62 @@ export class Parser {
     const returnValue = this.parseExpression(Precedence.LOWEST);
     if (this.peekTokenIs(TokenType.SEMICOLON)) this.nextToken();
     return new ast.ReturnStatement(token, returnValue);
+  }
+
+  // import "module" for func1, func2;
+  // import "module" as alias;
+  // import "module";
+  parseImportStatement() {
+    const token = this.curToken;
+    this.nextToken(); // consume 'import'
+    
+    // Module name (string literal)
+    if (this.curToken.type !== TokenType.STRING) {
+      this.errors.push(`expected module name string after import, got ${this.curToken.type}`);
+      return null;
+    }
+    const moduleName = this.curToken.literal;
+    
+    let bindings = null;
+    let alias = null;
+    
+    // Check for { selective } or 'as' (alias import)
+    this.nextToken(); // advance past module name
+    if (this.curTokenIs(TokenType.LBRACE)) {
+      // import "module" { func1, func2 };
+      this.nextToken(); // consume {
+      bindings = [];
+      bindings.push(this.curToken.literal);
+      while (this.peekTokenIs(TokenType.COMMA)) {
+        this.nextToken(); // consume comma
+        this.nextToken(); // consume binding name
+        bindings.push(this.curToken.literal);
+      }
+      if (this.peekTokenIs(TokenType.RBRACE)) this.nextToken(); // consume }
+    } else if (this.curTokenIs(TokenType.AS)) {
+      this.nextToken(); // consume 'as'
+      alias = this.curToken.literal;
+    }
+    
+    if (this.peekTokenIs(TokenType.SEMICOLON)) this.nextToken();
+    return new ast.ImportStatement(token, moduleName, bindings, alias);
+  }
+
+  // export let x = ...;
+  // export fn name(...) { ... };
+  parseExportStatement() {
+    const token = this.curToken;
+    this.nextToken(); // consume 'export'
+    
+    // Parse the inner statement (let, const, fn)
+    const innerStmt = this.parseStatement();
+    
+    // Mark it as exported
+    if (innerStmt) {
+      innerStmt._exported = true;
+    }
+    
+    return innerStmt;
   }
 
   parseExpressionStatement() {

@@ -90,7 +90,7 @@ export class ImportStatement {
   tokenLiteral() { return this.token.literal; }
   toString() {
     if (this.bindings) {
-      return `import "${this.moduleName}" for ${this.bindings.join(', ')};`;
+      return `import "${this.moduleName}" { ${this.bindings.join(', ')} };`;
     }
     if (this.alias) {
       return `import "${this.moduleName}" as ${this.alias};`;
