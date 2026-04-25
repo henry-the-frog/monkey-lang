@@ -139,8 +139,35 @@ export class Lexer {
   }
 
   skipWhitespace() {
-    while (this.ch === ' ' || this.ch === '\t' || this.ch === '\n' || this.ch === '\r') {
-      this.readChar();
+    while (true) {
+      // Skip whitespace
+      while (this.ch === ' ' || this.ch === '\t' || this.ch === '\n' || this.ch === '\r') {
+        this.readChar();
+      }
+      // Skip line comments: // ...
+      if (this.ch === '/' && this.peekChar() === '/') {
+        this.readChar(); // consume first /
+        this.readChar(); // consume second /
+        while (this.ch && this.ch !== '\n') {
+          this.readChar();
+        }
+        continue; // Check for more whitespace/comments
+      }
+      // Skip block comments: /* ... */
+      if (this.ch === '/' && this.peekChar() === '*') {
+        this.readChar(); // consume /
+        this.readChar(); // consume *
+        while (this.ch) {
+          if (this.ch === '*' && this.peekChar() === '/') {
+            this.readChar(); // consume *
+            this.readChar(); // consume /
+            break;
+          }
+          this.readChar();
+        }
+        continue; // Check for more whitespace/comments
+      }
+      break; // No more whitespace or comments
     }
   }
 
