@@ -31,10 +31,51 @@ export function constantSubstitution(program) {
   
   if (constants.size === 0) return program;
   
+  // Remove any variables that are mutated via set statements
+  removeMutated(program.statements, constants);
+  
+  if (constants.size === 0) return program;
+  
   // Second pass: substitute references
   program.statements = program.statements.map(stmt => substituteInNode(stmt, constants));
   
   return program;
+}
+
+/**
+ * Recursively scan for SetStatement nodes and remove mutated names from constants.
+ */
+function removeMutated(nodes, constants) {
+  for (const node of nodes) {
+    if (!node) continue;
+    if (node instanceof AST.SetStatement) {
+      constants.delete(node.name.value);
+    }
+    // Recurse into blocks and control flow
+    if (node instanceof AST.BlockStatement) {
+      removeMutated(node.statements, constants);
+    }
+    if (node instanceof AST.IfExpression) {
+      if (node.consequence) removeMutated(node.consequence.statements, constants);
+      if (node.alternative) removeMutated(node.alternative.statements, constants);
+    }
+    if (node instanceof AST.ExpressionStatement && node.expression) {
+      removeMutated([node.expression], constants);
+    }
+    if (node instanceof AST.ForExpression) {
+      if (node.body) removeMutated(node.body.statements, constants);
+      if (node.update) removeMutated([node.update], constants);
+    }
+    if (node instanceof AST.WhileExpression) {
+      if (node.body) removeMutated(node.body.statements, constants);
+    }
+    if (node instanceof AST.DoWhileExpression) {
+      if (node.body) removeMutated(node.body.statements, constants);
+    }
+    if (node instanceof AST.ForInExpression) {
+      if (node.body) removeMutated(node.body.statements, constants);
+    }
+  }
 }
 
 function isConstantLiteral(node) {
