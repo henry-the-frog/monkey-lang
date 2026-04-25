@@ -327,6 +327,20 @@ export class Lexer {
           return new Token(TokenType.STRING, this.readTripleQuoteString());
         }
         return new Token(TokenType.STRING, this.readString());
+      case '`': {
+        // Template literal: `text ${expr} text` — same as f"text {expr} text"
+        this.readChar(); // consume `
+        const start = this.position;
+        while (this.ch && this.ch !== '`') {
+          if (this.ch === '\\') this.readChar();
+          this.readChar();
+        }
+        let str = this.input.slice(start, this.position);
+        this.readChar(); // consume closing `
+        // Convert ${...} syntax to {...} for f-string compatibility
+        str = str.replace(/\$\{/g, '{');
+        return new Token(TokenType.FSTRING, str);
+      }
       case null:
         return new Token(TokenType.EOF, '');
       case '.':
