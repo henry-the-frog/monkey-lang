@@ -82,6 +82,18 @@ function rebuildBytecode(instrs) {
     newPos += instr.size;
   }
   
+  // Helper: find nearest mapped position at or after a given old position
+  function remapTarget(oldTarget) {
+    if (posMap.has(oldTarget)) return posMap.get(oldTarget);
+    // Target was removed — find nearest surviving instruction after it
+    const sortedPositions = [...posMap.keys()].sort((a, b) => a - b);
+    for (const pos of sortedPositions) {
+      if (pos >= oldTarget) return posMap.get(pos);
+    }
+    // Fall back to end of bytecode
+    return newPos;
+  }
+  
   // Rebuild with remapped jumps
   const result = new Uint8Array(newPos);
   let offset = 0;
@@ -92,7 +104,7 @@ function rebuildBytecode(instrs) {
     if (isJump(instr.op) && instr.operands.length > 0) {
       // Remap jump target
       const oldTarget = instr.operands[0];
-      const newTarget = posMap.get(oldTarget) ?? oldTarget;
+      const newTarget = remapTarget(oldTarget);
       const bytes = make(instr.op, newTarget);
       result.set(bytes, offset);
     } else if (def) {
