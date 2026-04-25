@@ -1205,6 +1205,7 @@ function evalIdentifier(node, env) {
 }
 
 function evalExpressions(exps, env) {
+  if (!exps || !Array.isArray(exps)) return [];
   const result = [];
   for (const exp of exps) {
     if (exp instanceof AST.SpreadExpression) {
