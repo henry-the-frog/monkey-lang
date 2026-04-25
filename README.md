@@ -2,16 +2,22 @@
 
 [![CI](https://github.com/henry-the-frog/monkey-lang/actions/workflows/ci.yml/badge.svg)](https://github.com/henry-the-frog/monkey-lang/actions/workflows/ci.yml)
 
-A complete programming language implementation in JavaScript, featuring a full compiler pipeline with tree-walking evaluation and bytecode compilation.
+A complete programming language runtime in JavaScript — a mini-V8 with 20,500+ lines of compiler and runtime infrastructure.
 
 ## Features
 
 - **Lexer + Parser** → Rich AST with closures, loops, higher-order functions
 - **Tree-walking Evaluator** → Direct interpretation
 - **Bytecode Compiler + VM** → Stack-based virtual machine with GC
-- **Type System** → Hindley-Milner type inference (Algorithm W)
+- **Type System** → Hindley-Milner type inference (Algorithm W) — 82 tests
 - **Optimization Pipeline** → SSA, constant propagation, dead code elimination, escape analysis
-- **38 test files, 894 tests** → Comprehensive coverage
+- **Bytecode Optimizer** → DCE, peephole (4 patterns), jump threading — 42% reduction
+- **Constant Substitution** → Inter-variable propagation before compilation
+- **Register Allocator** → Chaitin-Briggs graph coloring
+- **Hidden Classes** → V8-style shapes for hash optimization
+- **GC** → Mark-sweep with generational support
+- **Debugger** → Breakpoints, step-over/into/out, stack inspection
+- **38 test files, ~8,735 test cases** → Comprehensive coverage
 
 ## Compiler Pipeline
 
@@ -55,8 +61,8 @@ Source Code
                     │                │                    │
                     ▼                ▼                    ▼
             ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-            │   RISC-V     │  │    WASM      │  │  Bytecode    │
-            │  Codegen     │  │  Backend     │  │  Compiler    │
+            │  Evaluator   │  │  Bytecode    │  │  Bytecode    │
+            │ (tree-walk)  │  │  Compiler    │  │  Optimizer   │
             └──────────────┘  └──────────────┘  └──────────────┘
 ```
 
@@ -98,10 +104,16 @@ Source Code
 | Module | File | Description |
 |--------|------|-------------|
 | Evaluator | `src/evaluator.js` | Tree-walking interpreter |
-| Bytecode Compiler | `src/compiler.js` | Stack-based bytecode |
-| VM | `src/vm.js` | Virtual machine |
-| WASM Backend | `src/wasm.js` | WebAssembly compilation |
-| RISC-V Codegen | `../riscv-emulator/src/monkey-codegen.js` | RISC-V assembly |
+| Bytecode Compiler | `src/compiler.js` | Stack-based bytecode with const substitution |
+| VM | `src/vm.js` | Virtual machine with GC |
+| Bytecode Optimizer | `src/optimizer.js` | DCE, peephole, jump threading |
+
+### Runtime
+| Module | File | Description |
+|--------|------|-------------|
+| GC | `src/gc.js` | Mark-sweep, generational |
+| Hidden Classes | `src/shape.js` | V8-style shapes + inline caching |
+| Debugger | `src/debugger.js` | Breakpoints, stepping, stack inspection |
 
 ### Testing
 | File | Description |
