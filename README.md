@@ -167,3 +167,49 @@ Run: `node src/benchmark.js` | Fuzzer: `node src/opt-fuzz.js --seed=42` (100% pa
 ## License
 
 MIT
+
+## Language Features
+
+Monkey-lang supports 49 AST node types and a comprehensive set of modern language features:
+
+```
+// Enums
+enum Color { Red, Green, Blue }
+
+// Destructuring
+let [a, b, c] = [10, 20, 30];
+
+// Array comprehensions
+let squares = [x * x for x in 1..5];   // [1, 4, 9, 16, 25]
+
+// Pipe operator
+let result = 7 |> fn(x) { x * 3 };     // 21
+
+// Try/catch
+let safe = fn(x) { try { 100 / x } catch (e) { 0 } };
+
+// Closures
+let counter = fn() {
+  let n = 0;
+  {"inc": fn() { set n = n + 1; n }, "val": fn() { n }}
+};
+
+// Functional programming
+let data = map([1,2,3,4,5], fn(x) { x * x });
+let big = filter(data, fn(x) { x > 10 });
+let total = reduce(big, 0, fn(acc, x) { acc + x });  // 41
+
+// Switch/Match
+let grade = switch (true) { case score >= 90: "A" default: "F" };
+let val = match x { 1 => "one" 2 => "two" _ => "other" };
+```
+
+### Full Feature List
+- **Types**: integers, floats, strings, booleans, arrays, hashes, null
+- **Control flow**: if/else, while, for, do-while, for-in, break, continue, return
+- **Functions**: closures, recursion, variadic (...args), higher-order
+- **Operators**: arithmetic, comparison, boolean, pipe (|>), spread (...), range (..), ternary (?:)
+- **Patterns**: match, switch/case, destructuring, optional chaining (?.)
+- **Error handling**: try/catch/throw
+- **Data**: arrays (comprehensions, slicing), hashes, enums
+- **Built-ins**: 26+ functions (map, filter, reduce, sort, flatten, split, join, etc.)
