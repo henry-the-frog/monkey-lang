@@ -675,7 +675,9 @@ export class VM {
             free.push(this.stack[i]);
           }
           this.sp -= numFree;
-          this.push(this._track(new Closure(fn, free)));
+          const closure = new Closure(fn, free);
+          // Skip GC tracking for non-escaping closures (escape analysis optimization)
+          this.push(fn.escapes !== false ? this._track(closure) : closure);
           break;
         }
 
