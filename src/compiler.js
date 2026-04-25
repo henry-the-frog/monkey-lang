@@ -318,7 +318,7 @@ export class Compiler {
     this.scopeIndex = 0;
     this.inFunction = false; // Track if we're compiling inside a function body
     this.loopStack = []; // Stack of { breakJumps: [], continueTarget: number }
-    this.optimizeEnabled = options.optimize === true; // opt-in for now
+    this.optimizeEnabled = options.optimize !== false; // default: true
 
     // Register builtins
     for (let i = 0; i < builtinNames.length; i++) {
