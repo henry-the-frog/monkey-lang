@@ -400,6 +400,56 @@ export const builtins = [
     });
     return new MonkeyArray(sorted);
   }),
+  // padStart
+  new MonkeyBuiltin((...args) => {
+    if (args.length < 2 || args.length > 3) return new MonkeyError(`padStart: expected 2-3 arguments, got ${args.length}`);
+    if (!(args[0] instanceof MonkeyString)) return new MonkeyError(`padStart: first arg must be STRING`);
+    if (!(args[1] instanceof MonkeyInteger)) return new MonkeyError(`padStart: second arg must be INTEGER`);
+    const pad = args.length === 3 && args[2] instanceof MonkeyString ? args[2].value : ' ';
+    return internString(args[0].value.padStart(args[1].value, pad));
+  }),
+  // padEnd
+  new MonkeyBuiltin((...args) => {
+    if (args.length < 2 || args.length > 3) return new MonkeyError(`padEnd: expected 2-3 arguments, got ${args.length}`);
+    if (!(args[0] instanceof MonkeyString)) return new MonkeyError(`padEnd: first arg must be STRING`);
+    if (!(args[1] instanceof MonkeyInteger)) return new MonkeyError(`padEnd: second arg must be INTEGER`);
+    const pad = args.length === 3 && args[2] instanceof MonkeyString ? args[2].value : ' ';
+    return internString(args[0].value.padEnd(args[1].value, pad));
+  }),
+  // float
+  new MonkeyBuiltin((...args) => {
+    if (args.length !== 1) return new MonkeyError('float: expected 1 argument');
+    const a = args[0];
+    if (a instanceof MonkeyFloat) return a;
+    if (a instanceof MonkeyInteger) return new MonkeyFloat(a.value);
+    if (a instanceof MonkeyString) {
+      const n = parseFloat(a.value);
+      return isNaN(n) ? NULL : new MonkeyFloat(n);
+    }
+    return NULL;
+  }),
+  // floor
+  new MonkeyBuiltin((...args) => {
+    if (args.length !== 1) return new MonkeyError('floor: expected 1 argument');
+    return cachedInteger(Math.floor(args[0].value));
+  }),
+  // ceil
+  new MonkeyBuiltin((...args) => {
+    if (args.length !== 1) return new MonkeyError('ceil: expected 1 argument');
+    return cachedInteger(Math.ceil(args[0].value));
+  }),
+  // sqrt
+  new MonkeyBuiltin((...args) => {
+    if (args.length !== 1) return new MonkeyError('sqrt: expected 1 argument');
+    const v = Math.sqrt(args[0].value);
+    return Number.isInteger(v) ? cachedInteger(v) : new MonkeyFloat(v);
+  }),
+  // pow
+  new MonkeyBuiltin((...args) => {
+    if (args.length !== 2) return new MonkeyError('pow: expected 2 arguments');
+    const v = Math.pow(args[0].value, args[1].value);
+    return Number.isInteger(v) ? cachedInteger(v) : new MonkeyFloat(v);
+  }),
   // __range_inclusive: a..b → [a, a+1, ..., b] or [a, a-1, ..., b]
   new MonkeyBuiltin((...args) => {
     if (args.length !== 2) return new MonkeyError(`wrong number of arguments to __range_inclusive. got=${args.length}`);
