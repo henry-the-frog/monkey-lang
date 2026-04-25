@@ -147,3 +147,23 @@ node -e "import {CompilerPipeline} from './src/pipeline.js'; const p = new Compi
 - **Operators**: arithmetic, comparison, string concat, logical
 - **Built-ins**: puts, len, first, last, rest, push, type
 - **Advanced**: generators (yield), try/catch, spread operator, destructuring
+
+## Benchmarks: Evaluator vs VM
+
+| Benchmark | Evaluator | VM | VM Speedup |
+|-----------|-----------|-----|-----------|
+| Fibonacci(25) | 324ms | 100ms | **3.2x** |
+| Fibonacci(30) | 3346ms | 883ms | **3.8x** |
+| Array push (10K) | 133ms | 122ms | 1.1x |
+| String concat (1K) | 8ms | 5ms | **1.7x** |
+| Closures (1K) | 6ms | 12ms | 0.5x |
+
+The VM wins significantly on deep recursion (3-4x). The evaluator wins on closures (V8 optimizes closure allocation better).
+
+**Optimizer**: DCE + peephole + jump threading → 50% smaller bytecode on conditionals, ~7% runtime improvement.
+
+Run: `node src/benchmark.js` | Fuzzer: `node src/opt-fuzz.js --seed=42` (100% pass rate)
+
+## License
+
+MIT
