@@ -456,6 +456,34 @@ export const builtins = [
     const s = args[0] instanceof MonkeyString ? args[0].value : String(args[0].value ?? '');
     return new MonkeyArray(s.split('').map(c => internString(c)));
   }),
+  // sin
+  new MonkeyBuiltin((...args) => {
+    if (args.length !== 1) return new MonkeyError('sin: expected 1 argument');
+    return new MonkeyFloat(Math.sin(args[0].value));
+  }),
+  // cos
+  new MonkeyBuiltin((...args) => {
+    if (args.length !== 1) return new MonkeyError('cos: expected 1 argument');
+    return new MonkeyFloat(Math.cos(args[0].value));
+  }),
+  // merge: merge two hashes
+  new MonkeyBuiltin((...args) => {
+    if (args.length < 2) return new MonkeyError('merge: expected at least 2 arguments');
+    const result = new Map();
+    for (const arg of args) {
+      if (arg.pairs) {
+        for (const [k, v] of arg.pairs) result.set(k, v);
+      }
+    }
+    return new MonkeyHash(result);
+  }),
+  // product: multiply all numbers in array
+  new MonkeyBuiltin((...args) => {
+    if (args.length !== 1 || !(args[0] instanceof MonkeyArray)) return new MonkeyError('product: expected 1 array argument');
+    let p = 1;
+    for (const el of args[0].elements) p *= el.value;
+    return Number.isInteger(p) ? cachedInteger(p) : new MonkeyFloat(p);
+  }),
   // __range_inclusive: a..b → [a, a+1, ..., b] or [a, a-1, ..., b]
   new MonkeyBuiltin((...args) => {
     if (args.length !== 2) return new MonkeyError(`wrong number of arguments to __range_inclusive. got=${args.length}`);
