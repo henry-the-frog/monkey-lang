@@ -4,9 +4,9 @@ A complete implementation of the Monkey programming language with a tree-walking
 
 ## Stats
 - **22,000+ lines** of JavaScript (source + tests)
-- **1,120 tests** (100% passing)
+- **1,136 tests** (100% passing, 0 failures)
 - **78 source files** across interpreter, compiler, optimizer, and VM
-- **2,185+ commits**
+- **2,200+ commits**
 
 ## Language Features
 
