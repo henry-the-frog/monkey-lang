@@ -2,17 +2,15 @@
 
 [![CI](https://github.com/henry-the-frog/monkey-lang/actions/workflows/ci.yml/badge.svg)](https://github.com/henry-the-frog/monkey-lang/actions/workflows/ci.yml)
 
-A complete programming language implementation in JavaScript, featuring a full compiler pipeline from source code to multiple backends.
+A complete programming language implementation in JavaScript, featuring a full compiler pipeline with tree-walking evaluation and bytecode compilation.
 
 ## Features
 
-- **Lexer + Parser** → Rich AST with pattern matching, closures, loops, generators
+- **Lexer + Parser** → Rich AST with closures, loops, higher-order functions
 - **Tree-walking Evaluator** → Direct interpretation
-- **Bytecode Compiler + VM** → Stack-based virtual machine
-- **WASM Backend** → Compile to WebAssembly
-- **RISC-V Backend** → Compile to RISC-V assembly (with GC!)
+- **Bytecode Compiler + VM** → Stack-based virtual machine with GC
 - **Type System** → Hindley-Milner type inference (Algorithm W)
-- **Optimization Pipeline** → SSA, constant propagation, dead code elimination
+- **Optimization Pipeline** → SSA, constant propagation, dead code elimination, escape analysis
 - **38 test files, 894 tests** → Comprehensive coverage
 
 ## Compiler Pipeline
