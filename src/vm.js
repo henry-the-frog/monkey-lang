@@ -450,6 +450,12 @@ export const builtins = [
     const v = Math.pow(args[0].value, args[1].value);
     return Number.isInteger(v) ? cachedInteger(v) : new MonkeyFloat(v);
   }),
+  // chars: split string into array of characters
+  new MonkeyBuiltin((...args) => {
+    if (args.length !== 1) return new MonkeyError('chars: expected 1 argument');
+    const s = args[0] instanceof MonkeyString ? args[0].value : String(args[0].value ?? '');
+    return new MonkeyArray(s.split('').map(c => internString(c)));
+  }),
   // __range_inclusive: a..b → [a, a+1, ..., b] or [a, a-1, ..., b]
   new MonkeyBuiltin((...args) => {
     if (args.length !== 2) return new MonkeyError(`wrong number of arguments to __range_inclusive. got=${args.length}`);
