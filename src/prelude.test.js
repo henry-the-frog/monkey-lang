@@ -169,3 +169,28 @@ describe('prelude: chunk', () => {
     assert.deepStrictEqual(r.elements, []);
   });
 });
+
+describe('prelude: zip_with', () => {
+  it('adds corresponding elements', () => {
+    const r = run('zip_with([1,2,3], [4,5,6], fn(a,b) { a + b; })');
+    assert.deepStrictEqual(r.elements.map(e => e.value), [5, 7, 9]);
+  });
+  it('stops at shorter array', () => {
+    const r = run('zip_with([1,2], [4,5,6], fn(a,b) { a * b; })');
+    assert.deepStrictEqual(r.elements.map(e => e.value), [4, 10]);
+  });
+});
+
+describe('prelude: partition', () => {
+  it('splits by predicate', () => {
+    const r = run('partition([1,2,3,4,5,6], fn(x) { x % 2 == 0; })');
+    assert.strictEqual(r.elements.length, 2);
+    assert.deepStrictEqual(r.elements[0].elements.map(e => e.value), [2, 4, 6]);
+    assert.deepStrictEqual(r.elements[1].elements.map(e => e.value), [1, 3, 5]);
+  });
+  it('all match', () => {
+    const r = run('partition([2,4,6], fn(x) { x % 2 == 0; })');
+    assert.deepStrictEqual(r.elements[0].elements.map(e => e.value), [2, 4, 6]);
+    assert.deepStrictEqual(r.elements[1].elements, []);
+  });
+});

@@ -136,6 +136,41 @@ let chunk = fn(arr, size) {
   };
   iter(arr, []);
 };
+
+let zip_with = fn(a, b, f) {
+  let iter = fn(a, b, acc) {
+    if (len(a) == 0) { acc; }
+    else {
+      if (len(b) == 0) { acc; }
+      else { iter(rest(a), rest(b), push(acc, f(first(a), first(b)))); };
+    };
+  };
+  iter(a, b, []);
+};
+
+let tap = fn(arr, f) {
+  let iter = fn(arr, acc) {
+    if (len(arr) == 0) { acc; }
+    else {
+      let item = first(arr);
+      f(item);
+      iter(rest(arr), push(acc, item));
+    };
+  };
+  iter(arr, []);
+};
+
+let partition = fn(arr, f) {
+  let iter = fn(arr, yes, no) {
+    if (len(arr) == 0) { [yes, no]; }
+    else {
+      let item = first(arr);
+      if (f(item)) { iter(rest(arr), push(yes, item), no); }
+      else { iter(rest(arr), yes, push(no, item)); };
+    };
+  };
+  iter(arr, [], []);
+};
 `;
 
 let _compiledPrelude = null;
@@ -172,7 +207,7 @@ export function executePrelude() {
  */
 export const PRELUDE_FUNCTIONS = [
   'map', 'filter', 'reduce', 'any', 'all', 'find', 'flat_map', 'take', 'drop',
-  'take_while', 'scan', 'chunk'
+  'take_while', 'scan', 'chunk', 'zip_with', 'tap', 'partition'
 ];
 
 /**
