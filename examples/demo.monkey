@@ -80,8 +80,7 @@ puts(`char(65) = ${char(65)}, ord("A") = ${ord("A")}`);
 // let sum = reduce([1,2,3,4,5], 0, fn(a, b) { a + b; });
 
 // == Modules ==
-// import("math") works in the evaluator (use --engine=interpreter)
-// let math = import("math");
-// puts(`abs(-42) via module: ${math["abs"](-42)}`);
+let math = import("math");
+puts(`abs(-42) via module: ${math["abs"](-42)}`);
 
 puts("Demo complete!");

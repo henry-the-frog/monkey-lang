@@ -2,7 +2,10 @@
 // Executes bytecode produced by the compiler.
 
 import { Opcodes, lookup, readOperands } from './code.js';
-import { CompiledFunction, Closure, Cell } from './compiler.js';
+import { CompiledFunction, Compiler, Closure, Cell } from './compiler.js';
+import { Lexer } from './lexer.js';
+import { Parser } from './parser.js';
+import { STDLIB } from './stdlib.js';
 import {
     MonkeyInteger, MonkeyFloat, MonkeyString, MonkeyBoolean, MonkeyArray, MonkeyHash,
   MonkeyNull, MonkeyError, MonkeyBuiltin, ShapedHash, objectKeyString, internString,
@@ -483,6 +486,27 @@ export const builtins = [
     let p = 1;
     for (const el of args[0].elements) p *= el.value;
     return Number.isInteger(p) ? cachedInteger(p) : new MonkeyFloat(p);
+  }),
+  // import: load a module by name from STDLIB
+  new MonkeyBuiltin((...args) => {
+    if (args.length !== 1 || !(args[0] instanceof MonkeyString)) {
+      return new MonkeyError('import: expected 1 string argument (module name)');
+    }
+    const name = args[0].value;
+    const source = STDLIB[name];
+    if (!source) return new MonkeyError(`import: module "${name}" not found`);
+    try {
+      const lexer = new Lexer(source);
+      const parser = new Parser(lexer);
+      const program = parser.parseProgram();
+      const compiler = new Compiler();
+      compiler.compile(program);
+      const vm = new VM(compiler.bytecode());
+      vm.run();
+      return vm.lastPoppedStackElem();
+    } catch (e) {
+      return new MonkeyError(`import: error loading "${name}": ${e.message}`);
+    }
   }),
   // __range_inclusive: a..b → [a, a+1, ..., b] or [a, a-1, ..., b]
   new MonkeyBuiltin((...args) => {
