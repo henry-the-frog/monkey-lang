@@ -1,4 +1,6 @@
-// benchmark.js — Compare tree-walker vs compiler+VM performance
+// benchmark.js — Compare evaluator vs VM performance
+// Usage: node src/benchmark.js
+
 import { Lexer } from './lexer.js';
 import { Parser } from './parser.js';
 import { monkeyEval } from './evaluator.js';
@@ -6,144 +8,129 @@ import { Environment } from './object.js';
 import { Compiler } from './compiler.js';
 import { VM } from './vm.js';
 
-function parse(input) {
-  const l = new Lexer(input);
+function runEval(code) {
+  const l = new Lexer(code);
   const p = new Parser(l);
-  return p.parseProgram();
+  const program = p.parseProgram();
+  const env = new Environment();
+  return monkeyEval(program, env);
 }
 
-function benchInterpreter(input, warmup = 1) {
-  const program = parse(input);
-  // Warmup
-  for (let i = 0; i < warmup; i++) monkeyEval(program, new Environment());
-  const start = performance.now();
-  const result = monkeyEval(program, new Environment());
-  return { time: performance.now() - start, result: result?.inspect?.() || 'null' };
+function runVM(code) {
+  const l = new Lexer(code);
+  const p = new Parser(l);
+  const program = p.parseProgram();
+  const c = new Compiler();
+  c.compile(program);
+  const vm = new VM(c.bytecode());
+  vm.run();
+  return vm.lastPoppedStackElem();
 }
 
-function benchVM(input, warmup = 1) {
+function bench(name, code, iterations = 100) {
+  // Pre-parse and pre-compile
+  const l = new Lexer(code);
+  const p = new Parser(l);
+  const program = p.parseProgram();
+  const c = new Compiler();
+  c.compile(program);
+  const bc = c.bytecode();
+  
   // Warmup
-  for (let i = 0; i < warmup; i++) {
-    const compiler = new Compiler();
-    compiler.compile(parse(input));
-    const vm = new VM(compiler.bytecode());
+  for (let i = 0; i < 3; i++) {
+    monkeyEval(program, new Environment());
+    const vm = new VM(bc); vm.run();
+  }
+  
+  // Evaluator (parse + eval)
+  const evalStart = performance.now();
+  for (let i = 0; i < iterations; i++) {
+    monkeyEval(program, new Environment());
+  }
+  const evalTime = performance.now() - evalStart;
+  
+  // VM (compile + execute)
+  const vmStart = performance.now();
+  for (let i = 0; i < iterations; i++) {
+    const vm = new VM(bc);
     vm.run();
   }
-  // Compile
-  const compileStart = performance.now();
-  const compiler = new Compiler();
-  compiler.compile(parse(input));
-  const bc = compiler.bytecode();
-  const compileTime = performance.now() - compileStart;
-  // Execute
-  const execStart = performance.now();
-  const vm = new VM(bc);
-  vm.run();
-  const execTime = performance.now() - execStart;
-  return {
-    compileTime,
-    execTime,
-    totalTime: compileTime + execTime,
-    result: vm.lastPoppedStackElem()?.inspect?.() || 'null',
-  };
+  const vmTime = performance.now() - vmStart;
+  
+  const speedup = (evalTime / vmTime).toFixed(2);
+  console.log(`${name.padEnd(30)} | Eval: ${evalTime.toFixed(1).padStart(8)}ms | VM: ${vmTime.toFixed(1).padStart(8)}ms | Speedup: ${speedup}x`);
 }
 
-function runBenchmark(name, input) {
-  console.log(`\n--- ${name} ---`);
-  const interp = benchInterpreter(input);
-  const vm = benchVM(input);
-  console.log(`  Tree-walker: ${interp.time.toFixed(1)}ms (result: ${interp.result})`);
-  console.log(`  Compiler:    ${vm.compileTime.toFixed(1)}ms`);
-  console.log(`  VM Execute:  ${vm.execTime.toFixed(1)}ms`);
-  console.log(`  VM Total:    ${vm.totalTime.toFixed(1)}ms (result: ${vm.result})`);
-  console.log(`  Speedup:     ${(interp.time / vm.totalTime).toFixed(2)}x`);
-  if (interp.result !== vm.result) {
-    console.log(`  ⚠️  RESULT MISMATCH: interp=${interp.result} vm=${vm.result}`);
-  }
-}
+console.log('Monkey Language: Evaluator vs VM Benchmark');
+console.log('='.repeat(80));
+console.log(`${'Benchmark'.padEnd(30)} | ${'Evaluator'.padStart(14)} | ${'VM'.padStart(12)} | ${'Speedup'.padStart(10)}`);
+console.log('-'.repeat(80));
 
-console.log('=== Monkey Language Benchmark: Tree-Walker vs Compiler+VM ===');
+// Fibonacci (recursive)
+bench('Fibonacci(15)', `
+let fib = fn(n) { if (n < 2) { n } else { fib(n-1) + fib(n-2) } };
+fib(15)
+`, 50);
 
-// 1. Fibonacci — recursive function call overhead
-runBenchmark('Fibonacci(25)', `
-let fibonacci = fn(x) {
-  if (x == 0) { return 0; }
-  if (x == 1) { return 1; }
-  fibonacci(x - 1) + fibonacci(x - 2);
-};
-fibonacci(25);
-`);
-
-// 2. Loop-style sum — iteration via recursion (limited depth to avoid JS stack overflow)
-runBenchmark('Sum 1..100 (recursive)', `
-let sum = fn(n) {
-  if (n == 0) { return 0; }
-  n + sum(n - 1);
-};
-sum(100);
-`);
-
-// 3. Array processing — builtin + array creation
-runBenchmark('Array reduce', `
-let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-let reduce = fn(a, init, f) {
-  if (len(a) == 0) { return init; }
-  reduce(rest(a), f(init, first(a)), f);
-};
-reduce(arr, 0, fn(acc, x) { acc + x });
-`);
-
-// 4. Nested closures — closure creation and access
-runBenchmark('Nested closures', `
-let make = fn(x) {
-  fn(y) {
-    fn(z) { x + y + z }
-  }
-};
-let a = make(1);
-let b = a(2);
-let c = b(3);
-c;
-`);
-
-// 5. String concatenation
-runBenchmark('String concatenation (5x)', `
-let a = "hello";
-let b = a + " " + "world" + "!" + " " + "monkey";
-b;
-`);
-
-// 6. Hash creation and access
-runBenchmark('Hash operations', `
-let h = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5};
-h["a"] + h["b"] + h["c"] + h["d"] + h["e"];
-`);
-
-// 7. Higher-order functions
-runBenchmark('Map function', `
+// Array operations
+bench('Array map/filter', `
 let map = fn(arr, f) {
-  if (len(arr) == 0) { return []; }
-  let head = f(first(arr));
-  let tail = map(rest(arr), f);
-  push([head], first(tail));
+  let iter = fn(arr, acc) {
+    if (len(arr) == 0) { acc }
+    else { iter(rest(arr), push(acc, f(first(arr)))) }
+  };
+  iter(arr, [])
 };
-map([1, 2, 3, 4, 5], fn(x) { x * 2 });
-`);
+let arr = [1,2,3,4,5,6,7,8,9,10];
+map(arr, fn(x) { x * 2 })
+`, 100);
 
-// 8. Complex: counter pattern
-runBenchmark('Counter (closure mutation)', `
-let newCounter = fn() {
-  let count = 0;
-  fn() {
-    let count = count + 1;
-    count
-  }
+// String operations
+bench('String concatenation', `
+let build = fn(n) {
+  if (n == 0) { "" }
+  else { "hello" + build(n - 1) }
 };
-let c = newCounter();
-let a = c();
-let b = c();
-let d = c();
-d;
-`);
+build(20)
+`, 100);
 
-console.log('\n=== Done ===');
+// Closure creation
+bench('Closure creation', `
+let make = fn(x) { fn(y) { x + y } };
+let f1 = make(1);
+let f2 = make(2);
+let f3 = make(3);
+f1(10) + f2(20) + f3(30)
+`, 200);
+
+// Hash operations
+bench('Hash literal', `
+let h = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5};
+h["a"] + h["b"] + h["c"] + h["d"] + h["e"]
+`, 200);
+
+// Arithmetic
+bench('Arithmetic (100 ops)', `
+let x = 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10;
+let y = x * 2 + x * 3 + x * 4;
+let z = y - x + y - x;
+z
+`, 500);
+
+// Recursive sum
+bench('Recursive sum(100)', `
+let sum = fn(n) { if (n == 0) { 0 } else { n + sum(n-1) } };
+sum(100)
+`, 100);
+
+// Nested function calls
+bench('Nested calls', `
+let a = fn(x) { x + 1 };
+let b = fn(x) { a(x) + 1 };
+let c = fn(x) { b(x) + 1 };
+let d = fn(x) { c(x) + 1 };
+d(10)
+`, 500);
+
+console.log('='.repeat(80));
+console.log('Speedup > 1.0 means VM is faster than Evaluator');
