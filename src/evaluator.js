@@ -202,6 +202,42 @@ const builtins = new Map([
     if (args.length !== 1) return newError('wrong number of arguments');
     return new MonkeyArray(String(args[0].value).split('').map(c => new MonkeyString(c)));
   })],
+  ['bool', new MonkeyBuiltin((...args) => {
+    if (args.length !== 1) return newError('bool: expected 1 argument');
+    const a = args[0];
+    if (a === NULL || a === FALSE) return FALSE;
+    if (a === TRUE) return TRUE;
+    if (a instanceof MonkeyInteger) return a.value !== 0 ? TRUE : FALSE;
+    if (a instanceof MonkeyFloat) return a.value !== 0 ? TRUE : FALSE;
+    if (a instanceof MonkeyString) return a.value.length > 0 ? TRUE : FALSE;
+    if (a instanceof MonkeyArray) return a.elements.length > 0 ? TRUE : FALSE;
+    return TRUE;
+  })],
+  ['char', new MonkeyBuiltin((...args) => {
+    if (args.length !== 1) return newError('char: expected 1 argument (integer codepoint)');
+    if (!(args[0] instanceof MonkeyInteger)) return newError(`char: expected INTEGER, got ${args[0].type()}`);
+    return new MonkeyString(String.fromCodePoint(args[0].value));
+  })],
+  ['ord', new MonkeyBuiltin((...args) => {
+    if (args.length !== 1) return newError('ord: expected 1 argument (single char string)');
+    if (!(args[0] instanceof MonkeyString)) return newError(`ord: expected STRING, got ${args[0].type()}`);
+    if (args[0].value.length === 0) return NULL;
+    return new MonkeyInteger(args[0].value.codePointAt(0));
+  })],
+  ['padStart', new MonkeyBuiltin((...args) => {
+    if (args.length < 2 || args.length > 3) return newError(`padStart: expected 2-3 arguments, got ${args.length}`);
+    if (!(args[0] instanceof MonkeyString)) return newError(`padStart: first arg must be STRING`);
+    if (!(args[1] instanceof MonkeyInteger)) return newError(`padStart: second arg must be INTEGER`);
+    const pad = args.length === 3 && args[2] instanceof MonkeyString ? args[2].value : ' ';
+    return new MonkeyString(args[0].value.padStart(args[1].value, pad));
+  })],
+  ['padEnd', new MonkeyBuiltin((...args) => {
+    if (args.length < 2 || args.length > 3) return newError(`padEnd: expected 2-3 arguments, got ${args.length}`);
+    if (!(args[0] instanceof MonkeyString)) return newError(`padEnd: first arg must be STRING`);
+    if (!(args[1] instanceof MonkeyInteger)) return newError(`padEnd: second arg must be INTEGER`);
+    const pad = args.length === 3 && args[2] instanceof MonkeyString ? args[2].value : ' ';
+    return new MonkeyString(args[0].value.padEnd(args[1].value, pad));
+  })],
   ['reverse', new MonkeyBuiltin((...args) => {
     if (args.length !== 1) return newError(`wrong number of arguments to reverse. got=${args.length}, want=1`);
     if (args[0] instanceof MonkeyArray) return new MonkeyArray([...args[0].elements].reverse());
