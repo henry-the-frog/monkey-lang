@@ -102,6 +102,40 @@ let drop = fn(arr, n) {
     else { drop(rest(arr), n - 1); };
   };
 };
+
+let take_while = fn(arr, f) {
+  let iter = fn(arr, acc) {
+    if (len(arr) == 0) { acc; }
+    else {
+      let item = first(arr);
+      if (f(item)) { iter(rest(arr), push(acc, item)); }
+      else { acc; };
+    };
+  };
+  iter(arr, []);
+};
+
+let scan = fn(arr, init, f) {
+  let iter = fn(arr, acc, results) {
+    if (len(arr) == 0) { results; }
+    else {
+      let newAcc = f(acc, first(arr));
+      iter(rest(arr), newAcc, push(results, newAcc));
+    };
+  };
+  iter(arr, init, []);
+};
+
+let chunk = fn(arr, size) {
+  let iter = fn(arr, acc) {
+    if (len(arr) == 0) { acc; }
+    else {
+      let piece = take(arr, size);
+      iter(drop(arr, size), push(acc, piece));
+    };
+  };
+  iter(arr, []);
+};
 `;
 
 let _compiledPrelude = null;
@@ -137,7 +171,8 @@ export function executePrelude() {
  * Get the prelude function names.
  */
 export const PRELUDE_FUNCTIONS = [
-  'map', 'filter', 'reduce', 'any', 'all', 'find', 'flat_map', 'take', 'drop'
+  'map', 'filter', 'reduce', 'any', 'all', 'find', 'flat_map', 'take', 'drop',
+  'take_while', 'scan', 'chunk'
 ];
 
 /**
