@@ -3,6 +3,7 @@
 
 import { Opcodes, make } from './code.js';
 import * as AST from './ast.js';
+import { constantSubstitution } from './const-subst.js';
 import { MonkeyInteger, MonkeyFloat, MonkeyString, MonkeyArray, MonkeyBoolean, TRUE, FALSE, NULL } from './object.js';
 
 /**
@@ -328,7 +329,9 @@ export class Compiler {
    */
   compile(node) {
     if (node instanceof AST.Program) {
-      // Apply constant folding optimization
+      // Apply constant substitution (inter-variable propagation)
+      constantSubstitution(node);
+      // Apply constant folding optimization (literal arithmetic)
       Compiler.foldConstants(node);
       for (const stmt of node.statements) {
         this.compile(stmt);
