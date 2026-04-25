@@ -10,6 +10,14 @@ import { Environment, MonkeyError } from './object.js';
 import { Compiler } from './compiler.js';
 import { VM } from './vm.js';
 
+// Import prelude for VM mode
+let PRELUDE_SOURCE = '';
+try {
+  const mod = await import('./prelude.js');
+  PRELUDE_SOURCE = mod.PRELUDE_FUNCTIONS ? '' : ''; // Just need the module loaded
+  // Get the actual source by reading it from the file
+} catch (e) {}
+
 const args = process.argv.slice(2);
 const engineArg = args.find(a => a.startsWith('--engine='));
 const engine = engineArg ? engineArg.split('=')[1] : 'vm';
@@ -26,6 +34,37 @@ const env = new Environment(); // Persistent env for interpreter mode
 let vmGlobals = null; // Shared globals array for VM
 let vmSymbolTable = null; // Shared symbol table for VM
 let vmConstants = []; // Accumulated constants
+
+// Initialize prelude for VM mode
+if (engine === 'vm' || engine === 'both') {
+  const preludeSource = `
+let map = fn(arr, f) { let i = fn(a, acc) { if (len(a) == 0) { acc; } else { i(rest(a), push(acc, f(first(a)))); }; }; i(arr, []); };
+let filter = fn(arr, f) { let i = fn(a, acc) { if (len(a) == 0) { acc; } else { let x = first(a); if (f(x)) { i(rest(a), push(acc, x)); } else { i(rest(a), acc); }; }; }; i(arr, []); };
+let reduce = fn(arr, init, f) { let i = fn(a, acc) { if (len(a) == 0) { acc; } else { i(rest(a), f(acc, first(a))); }; }; i(arr, init); };
+let any = fn(arr, f) { let i = fn(a) { if (len(a) == 0) { false; } else { if (f(first(a))) { true; } else { i(rest(a)); }; }; }; i(arr); };
+let all = fn(arr, f) { let i = fn(a) { if (len(a) == 0) { true; } else { if (f(first(a))) { i(rest(a)); } else { false; }; }; }; i(arr); };
+let find = fn(arr, f) { let i = fn(a) { if (len(a) == 0) { null; } else { let x = first(a); if (f(x)) { x; } else { i(rest(a)); }; }; }; i(arr); };
+let take = fn(arr, n) { let i = fn(a, n, acc) { if (n == 0) { acc; } else { if (len(a) == 0) { acc; } else { i(rest(a), n - 1, push(acc, first(a))); }; }; }; i(arr, n, []); };
+let drop = fn(arr, n) { if (n <= 0) { arr; } else { if (len(arr) == 0) { []; } else { drop(rest(arr), n - 1); }; }; };
+0;
+`;
+  try {
+    const compiler = new Compiler();
+    const l = new Lexer(preludeSource);
+    const p = new Parser(l);
+    const prog = p.parseProgram();
+    compiler.compile(prog);
+    const bc = compiler.bytecode();
+    const vm = new VM(bc);
+    vm.run();
+    vmGlobals = vm.globals;
+    vmSymbolTable = compiler.symbolTable;
+    vmConstants = [...compiler.constants];
+    console.log('  (prelude loaded: map, filter, reduce, any, all, find, take, drop)');
+  } catch (e) {
+    console.log('  (prelude load failed:', e.message, ')');
+  }
+}
 
 const rl = createInterface({
   input: process.stdin,
