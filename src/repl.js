@@ -21,10 +21,34 @@ try {
 const args = process.argv.slice(2);
 const engineArg = args.find(a => a.startsWith('--engine='));
 const engine = engineArg ? engineArg.split('=')[1] : 'vm';
+const fileArg = args.find(a => !a.startsWith('--'));
 
 if (!['vm', 'interpreter', 'both'].includes(engine)) {
   console.error(`Unknown engine: ${engine}. Use --engine=vm|interpreter|both`);
   process.exit(1);
+}
+
+// File execution mode
+if (fileArg) {
+  const fs = await import('fs');
+  const source = fs.readFileSync(fileArg, 'utf-8');
+  const l = new Lexer(source);
+  const p = new Parser(l);
+  const program = p.parseProgram();
+  if (p.errors.length > 0) {
+    console.error('Parse errors:', p.errors.join('\n'));
+    process.exit(1);
+  }
+  if (engine === 'interpreter') {
+    const result = monkeyEval(program, new Environment());
+  } else {
+    // Compile with prelude
+    const { compileWithPrelude } = await import('./prelude.js');
+    const bc = compileWithPrelude(source);
+    const vm = new VM(bc);
+    vm.run();
+  }
+  process.exit(0);
 }
 
 console.log(`🐵 Monkey Language REPL (engine: ${engine})`);
