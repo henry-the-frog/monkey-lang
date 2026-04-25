@@ -2,6 +2,7 @@
 // Walks the AST and emits bytecode instructions.
 
 import { Opcodes, make } from './code.js';
+import { optimize as optimizeBytecode } from './optimizer.js';
 import * as AST from './ast.js';
 import { constantSubstitution } from './const-subst.js';
 import { MonkeyInteger, MonkeyFloat, MonkeyString, MonkeyArray, MonkeyBoolean, TRUE, FALSE, NULL } from './object.js';
@@ -310,13 +311,14 @@ export class Compiler {
     return node;
   }
 
-  constructor() {
+  constructor(options = {}) {
     this.constants = [];
     this.symbolTable = new SymbolTable();
     this.scopes = [new CompilationScope()];
     this.scopeIndex = 0;
     this.inFunction = false; // Track if we're compiling inside a function body
     this.loopStack = []; // Stack of { breakJumps: [], continueTarget: number }
+    this.optimizeEnabled = options.optimize === true; // opt-in for now
 
     // Register builtins
     for (let i = 0; i < builtinNames.length; i++) {
@@ -1307,7 +1309,15 @@ export class Compiler {
    * Get the compiled bytecode.
    */
   bytecode() {
-    return new Bytecode(this.currentInstructions(), this.constants);
+    let instructions = this.currentInstructions();
+    if (this.optimizeEnabled) {
+      try {
+        instructions = optimizeBytecode(instructions);
+      } catch (e) {
+        // Optimization failure is non-fatal — fall back to unoptimized
+      }
+    }
+    return new Bytecode(instructions, this.constants);
   }
 
   // --- Internal helpers ---

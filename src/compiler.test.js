@@ -13,9 +13,9 @@ function parse(input) {
   return p.parseProgram();
 }
 
-function testCompile(input) {
+function testCompile(input, options = {}) {
   const program = parse(input);
-  const compiler = new Compiler();
+  const compiler = new Compiler({ optimize: false, ...options });
   compiler.compile(program);
   return compiler.bytecode();
 }
