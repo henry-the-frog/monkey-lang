@@ -225,4 +225,16 @@ function findDeadVariables(program) {
   return dead;
 }
 
-export { DeadCodeEliminator, findDeadVariables };
+/**
+ * Convenience function: run DCE on a Program AST in place.
+ * Used by the compiler pipeline.
+ */
+function eliminateDeadCode(program) {
+  const dce = new DeadCodeEliminator();
+  const optimized = dce.eliminate(program);
+  // Copy optimized statements back to original program (in-place mutation)
+  program.statements = optimized.statements;
+  return program;
+}
+
+export { DeadCodeEliminator, findDeadVariables, eliminateDeadCode };
