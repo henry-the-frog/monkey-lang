@@ -3,9 +3,9 @@
 A complete implementation of the Monkey programming language with a tree-walking evaluator, bytecode compiler, and virtual machine. Extended far beyond the original specification with modern language features.
 
 ## Stats
-- **22,000+ lines** of JavaScript (source + tests)
+- **24,800+ lines** of JavaScript (source + tests)
 - **1,250 tests** (100% passing, 0 failures)
-- **78 source files** across interpreter, compiler, optimizer, and VM
+- **91 source files** across interpreter, compiler, optimizer, VM, and WASM
 - **2,200+ commits**
 
 ## Language Features
