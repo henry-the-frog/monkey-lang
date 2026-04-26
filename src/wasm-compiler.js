@@ -171,6 +171,28 @@ class WasmCompiler {
     }
   }
   
+  _compileWhile(condition, loopBody, body) {
+    body.push(WasmOp.block, 0x40);    // block with void type
+    body.push(WasmOp.loop, 0x40);     // loop with void type
+    
+    // Condition
+    this._compileExpr(condition, body);
+    body.push(WasmOp.i32_eqz);       // invert: break if condition is false
+    body.push(WasmOp.br_if, 1);       // br_if to outer block (break)
+    
+    // Body
+    if (loopBody) {
+      const stmts = loopBody.statements;
+      for (let i = 0; i < stmts.length; i++) {
+        this._compileStatement(stmts[i], body, false);
+      }
+    }
+    
+    body.push(WasmOp.br, 0);          // br to loop start (continue)
+    body.push(WasmOp.end);            // end loop
+    body.push(WasmOp.end);            // end block
+  }
+
   _compileExpr(expr, body) {
     if (!expr) {
       body.push(WasmOp.i32_const, 0);
@@ -288,30 +310,33 @@ class WasmCompiler {
     
     // While expression
     if (expr instanceof ast.WhileExpression) {
-      // WASM pattern: block $break (loop $continue (condition) i32.eqz br_if $break (body) br $continue end) end
-      // The while loop produces an i32 result (0/null) since monkey-lang while returns null
-      body.push(WasmOp.block, 0x40);    // block with void type
-      body.push(WasmOp.loop, 0x40);     // loop with void type
-      
-      // Condition
-      this._compileExpr(expr.condition, body);
-      body.push(WasmOp.i32_eqz);       // invert: break if condition is false
-      body.push(WasmOp.br_if, 1);       // br_if to outer block (break)
-      
-      // Body
-      if (expr.body) {
-        const stmts = expr.body.statements;
-        for (let i = 0; i < stmts.length; i++) {
-          this._compileStatement(stmts[i], body, false); // never last (loop continues)
+      this._compileWhile(expr.condition, expr.body, body);
+      body.push(WasmOp.i32_const, 0); // while returns 0 (null)
+      return;
+    }
+
+    // For expression (C-style: for (init; condition; update) { body })
+    if (expr instanceof ast.ForExpression) {
+      // Compile init statement (usually let i = 0)
+      if (expr.init) {
+        this._compileStatement(expr.init, body, false);
+      }
+      // Compile as while loop: while (condition) { body; update; }
+      const augmentedStmts = expr.body ? [...expr.body.statements] : [];
+      if (expr.update) {
+        // Add update as the last statement of the loop body
+        // update can be a SetStatement or an ExpressionStatement
+        if (expr.update instanceof ast.SetStatement) {
+          augmentedStmts.push(expr.update);
+        } else {
+          augmentedStmts.push(new ast.ExpressionStatement(
+            { type: 'IDENT', literal: '' },
+            expr.update
+          ));
         }
       }
-      
-      body.push(WasmOp.br, 0);          // br to loop start (continue)
-      body.push(WasmOp.end);            // end loop
-      body.push(WasmOp.end);            // end block
-      
-      // While returns 0 (null equivalent in i32)
-      body.push(WasmOp.i32_const, 0);
+      this._compileWhile(expr.condition, { statements: augmentedStmts }, body);
+      body.push(WasmOp.i32_const, 0); // for returns 0
       return;
     }
     

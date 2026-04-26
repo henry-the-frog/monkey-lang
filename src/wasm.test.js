@@ -238,3 +238,29 @@ describe('WASM: set statement', () => {
     assert.strictEqual(wasmRun(src, 'f', 5), 11); // (5 * 2) + 1
   });
 });
+
+describe('WASM: for loop', () => {
+  it('C-style for loop', () => {
+    const src = `let sum_range = fn(start, end) {
+      let total = 0;
+      for (let i = start; i < end; set i = i + 1) {
+        set total = total + i;
+      };
+      total;
+    };`;
+    assert.strictEqual(wasmRun(src, 'sum_range', 1, 11), 55);
+    assert.strictEqual(wasmRun(src, 'sum_range', 0, 100), 4950);
+  });
+
+  it('for loop with multiplication', () => {
+    const src = `let power = fn(base, exp) {
+      let result = 1;
+      for (let i = 0; i < exp; set i = i + 1) {
+        set result = result * base;
+      };
+      result;
+    };`;
+    assert.strictEqual(wasmRun(src, 'power', 2, 10), 1024);
+    assert.strictEqual(wasmRun(src, 'power', 3, 5), 243);
+  });
+});
