@@ -755,6 +755,44 @@ export class VM {
           break;
         }
 
+        case Opcodes.OpSetIndex: {
+          // Stack: [obj, key, value] → set obj[key] = value, push obj
+          const value = this.pop();
+          const key = this.pop();
+          const obj = this.pop();
+          if (obj instanceof MonkeyHash) {
+            const hashKey = key.hashKey ? key.hashKey() : String(key.value);
+            obj.pairs.set(hashKey, { key, value });
+            this.push(obj);
+          } else if (obj instanceof ShapedHash) {
+            const keyStr = objectKeyString(key);
+            const slot = obj.shape.getSlot(keyStr);
+            if (slot >= 0) {
+              obj.slots[slot] = value;
+            } else {
+              // New property: transition to new shape
+              const newShape = obj.shape.transition(keyStr);
+              const newSlot = newShape.getSlot(keyStr);
+              // Expand slots array
+              while (obj.slots.length <= newSlot) obj.slots.push(null);
+              while (obj.keys.length <= newSlot) obj.keys.push(null);
+              obj.shape = newShape;
+              obj.slots[newSlot] = value;
+              obj.keys[newSlot] = key;
+            }
+            this.push(obj);
+          } else if (obj instanceof MonkeyArray) {
+            const idx = key.value;
+            if (typeof idx === 'number' && idx >= 0 && idx < obj.elements.length) {
+              obj.elements[idx] = value;
+            }
+            this.push(obj);
+          } else {
+            this.push(new MonkeyError(`OpSetIndex: unsupported type ${obj?.constructor?.name}`));
+          }
+          break;
+        }
+
         case Opcodes.OpCall: {
           const numArgs = instructions[ip + 1];
           this.currentFrame().ip += 1;

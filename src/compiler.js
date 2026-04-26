@@ -992,19 +992,29 @@ export class Compiler {
         }
       }
     } else if (node instanceof AST.SetStatement) {
-      // Set mutates an existing variable
-      const sym = this.symbolTable.resolve(node.name.value);
-      if (!sym) throw new Error(`undefined variable: ${node.name.value}`);
-      if (sym.isConst) throw new Error(`Cannot reassign const binding '${node.name.value}'`);
-      this.compile(node.value);
-      if (sym.scope === SymbolScopes.GLOBAL) {
-        this.emit(Opcodes.OpSetGlobal, sym.index);
-      } else if (sym.scope === SymbolScopes.LOCAL) {
-        this.emit(Opcodes.OpSetLocal, sym.index);
-      } else if (sym.scope === SymbolScopes.FREE) {
-        this.emit(Opcodes.OpSetFree, sym.index);
+      // Set mutates an existing variable or property
+      if (node.name instanceof AST.IndexExpression) {
+        // set obj.prop = value  OR  set obj[idx] = value
+        // Compile as: OpSetIndex(obj, key, value)
+        this.compile(node.name.left);  // the object
+        this.compile(node.name.index); // the key/index
+        this.compile(node.value);      // the new value
+        this.emit(Opcodes.OpSetIndex);
       } else {
-        throw new Error(`cannot set ${sym.scope} variable: ${node.name.value}`);
+        // Simple variable reassignment: set x = value
+        const sym = this.symbolTable.resolve(node.name.value);
+        if (!sym) throw new Error(`undefined variable: ${node.name.value}`);
+        if (sym.isConst) throw new Error(`Cannot reassign const binding '${node.name.value}'`);
+        this.compile(node.value);
+        if (sym.scope === SymbolScopes.GLOBAL) {
+          this.emit(Opcodes.OpSetGlobal, sym.index);
+        } else if (sym.scope === SymbolScopes.LOCAL) {
+          this.emit(Opcodes.OpSetLocal, sym.index);
+        } else if (sym.scope === SymbolScopes.FREE) {
+          this.emit(Opcodes.OpSetFree, sym.index);
+        } else {
+          throw new Error(`cannot set ${sym.scope} variable: ${node.name.value}`);
+        }
       }
     } else if (node instanceof AST.Identifier) {
       const sym = this.symbolTable.resolve(node.value);
@@ -1191,6 +1201,18 @@ export class Compiler {
       this.compile(node.index);
       this.emit(Opcodes.OpIndex);
       this.changeOperand(jumpEndPos, this.currentInstructions().length);
+    } else if (node instanceof AST.ClassStatement) {
+      // Compile class: desugar to method let-bindings + constructor factory function
+      this._compileClass(node);
+    } else if (node instanceof AST.SuperExpression) {
+      // super.method → look up __super__["method"]
+      // Emit: load __super__ variable, index with method name
+      const superSymbol = this.symbolTable.resolve('__super__');
+      if (superSymbol) {
+        this.loadSymbol(superSymbol);
+      } else {
+        this.emit(Opcodes.OpConstant, this.addConstant(new MonkeyString('__super__')));
+      }
     } else if (node instanceof AST.EnumStatement) {
       // Create enum as a hash: { "Red": Enum(Color, Red, 0), "Green": Enum(Color, Green, 1), ... }
       // For the VM, we represent each variant as a string "EnumName.VariantName"
@@ -1337,6 +1359,104 @@ export class Compiler {
     } else {
       // Raw expression — always leaves a value on the stack
       this.compile(body);
+    }
+  }
+
+  /**
+   * Compile a class statement by desugaring to let-bindings + factory function.
+   *
+   * class Animal {
+   *   init(self, name) { set self.name = name; }
+   *   speak(self) { self.name + " speaks"; }
+   * }
+   *
+   * becomes:
+   *   let speak = fn(self) { self["name"] + " speaks"; };
+   *   let Animal = fn(name) {
+   *     let self = {};
+   *     init(self, name);  // call init
+   *     self
+   *   };
+   */
+  _compileClass(node) {
+    const className = node.name.value;
+    const initMethod = node.methods.find(m => m.name.value === 'init');
+    const otherMethods = node.methods.filter(m => m.name.value !== 'init');
+    
+    // Step 1: Emit non-init methods as let-bindings
+    for (const method of otherMethods) {
+      // Build a FunctionLiteral AST node for the method
+      const fnLit = new AST.FunctionLiteral(
+        { type: 'FUNCTION', literal: 'fn' },
+        method.params,
+        method.body
+      );
+      
+      // Compile: let methodName = fn(self, ...) { ... };
+      this.compile(fnLit);
+      const symbol = this.symbolTable.define(method.name.value);
+      if (symbol.scope === SymbolScopes.GLOBAL) {
+        this.emit(Opcodes.OpSetGlobal, symbol.index);
+      } else {
+        this.emit(Opcodes.OpSetLocal, symbol.index);
+      }
+    }
+    
+    // Step 2: Build the constructor factory function
+    // Constructor params = init params minus 'self'
+    const ctorParams = initMethod
+      ? initMethod.params.filter(p => p.value !== 'self')
+      : [];
+    
+    // Build constructor body as AST nodes:
+    // let self = {};
+    // <init body statements (with self in scope)>
+    // self  (return the instance)
+    const bodyStatements = [];
+    
+    // let self = {};
+    const selfIdent = new AST.Identifier({ type: 'IDENT', literal: 'self' }, 'self');
+    const emptyHash = new AST.HashLiteral(
+      { type: '{', literal: '{' },
+      new Map()
+    );
+    bodyStatements.push(new AST.LetStatement(
+      { type: 'LET', literal: 'let' },
+      selfIdent,
+      emptyHash
+    ));
+    
+    // Copy init body statements (excluding implicit return of self)
+    if (initMethod) {
+      for (const stmt of initMethod.body.statements) {
+        bodyStatements.push(stmt);
+      }
+    }
+    
+    // Return self
+    bodyStatements.push(new AST.ExpressionStatement(
+      { type: 'IDENT', literal: 'self' },
+      selfIdent
+    ));
+    
+    const ctorBody = new AST.BlockStatement(
+      { type: '{', literal: '{' },
+      bodyStatements
+    );
+    
+    const ctorFn = new AST.FunctionLiteral(
+      { type: 'FUNCTION', literal: 'fn' },
+      ctorParams,
+      ctorBody
+    );
+    
+    // Compile: let ClassName = fn(...) { ... };
+    this.compile(ctorFn);
+    const classSymbol = this.symbolTable.define(className);
+    if (classSymbol.scope === SymbolScopes.GLOBAL) {
+      this.emit(Opcodes.OpSetGlobal, classSymbol.index);
+    } else {
+      this.emit(Opcodes.OpSetLocal, classSymbol.index);
     }
   }
 

@@ -41,6 +41,7 @@ export const Opcodes = {
   OpCurrentClosure:  0x1D, // Push current closure (for recursion)
   OpDeepEqual:       0x24, // Pop two, push deep structural equality result
   OpTailCall:        0x1E, // Tail call: OpTailCall <uint8> (num args) — reuses frame
+  OpSetIndex:        0x26, // Set index: pop value, pop key, pop obj, set obj[key]=value, push obj
 };
 
 // Instruction definitions: opcode → { name, operandWidths }
@@ -84,6 +85,7 @@ const definitions = new Map([
   [Opcodes.OpDeepEqual,      { name: 'OpDeepEqual',      operandWidths: [] }],
   [Opcodes.OpPower,          { name: 'OpPower',          operandWidths: [] }],
   [Opcodes.OpTailCall,       { name: 'OpTailCall',       operandWidths: [1] }],
+  [Opcodes.OpSetIndex,       { name: 'OpSetIndex',       operandWidths: [] }],
 ]);
 
 /**
