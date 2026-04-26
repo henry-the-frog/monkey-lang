@@ -325,3 +325,44 @@ describe('Class: inheritance', () => {
     assert.strictEqual(r.value, 'Moving at 60 with 4 doors');
   });
 });
+
+describe('Class: method dispatch', () => {
+  it('dot syntax dispatches to class method', () => {
+    const r = run(`
+      class Dog {
+        init(self, name) { set self.name = name; }
+        speak(self) { self.name + " barks" }
+      }
+      let d = Dog("Rex");
+      d.speak();
+    `);
+    assert.strictEqual(r.value, 'Rex barks');
+  });
+
+  it('dot syntax works for builtins on arrays', () => {
+    const r = run('[1, 2, 3].len()');
+    assert.strictEqual(r.value, 3);
+  });
+
+  it('dot syntax works for builtin string methods', () => {
+    const r = run('"hello".upper()');
+    assert.strictEqual(r.value, 'HELLO');
+  });
+
+  it('explicit mangled name avoids collision', () => {
+    const r = run(`
+      class Cat {
+        init(self, name) { set self.name = name; }
+        speak(self) { self.name + " meows" }
+      }
+      class Dog {
+        init(self, name) { set self.name = name; }
+        speak(self) { self.name + " barks" }
+      }
+      let c = Cat("Whiskers");
+      let d = Dog("Rex");
+      Cat__speak(c) + " and " + Dog__speak(d);
+    `);
+    assert.strictEqual(r.value, 'Whiskers meows and Rex barks');
+  });
+});
