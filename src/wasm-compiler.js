@@ -411,6 +411,31 @@ class WasmCompiler {
     
     // Infix expression (binary operations)
     if (expr instanceof ast.InfixExpression) {
+      // Constant folding: if both operands are integer literals, compute at compile time
+      if (expr.left instanceof ast.IntegerLiteral && expr.right instanceof ast.IntegerLiteral && !this.useF64) {
+        const l = expr.left.value;
+        const r = expr.right.value;
+        let result;
+        switch (expr.operator) {
+          case '+': result = l + r; break;
+          case '-': result = l - r; break;
+          case '*': result = l * r; break;
+          case '/': result = r !== 0 ? Math.trunc(l / r) : 0; break;
+          case '%': result = r !== 0 ? l % r : 0; break;
+          case '<': result = l < r ? 1 : 0; break;
+          case '>': result = l > r ? 1 : 0; break;
+          case '<=': result = l <= r ? 1 : 0; break;
+          case '>=': result = l >= r ? 1 : 0; break;
+          case '==': result = l === r ? 1 : 0; break;
+          case '!=': result = l !== r ? 1 : 0; break;
+          default: result = undefined;
+        }
+        if (result !== undefined) {
+          this._emitConst(body, result);
+          return;
+        }
+      }
+
       this._compileExpr(expr.left, body);
       this._compileExpr(expr.right, body);
       
@@ -433,6 +458,17 @@ class WasmCompiler {
     
     // Prefix expression
     if (expr instanceof ast.PrefixExpression) {
+      // Constant folding for prefix expressions
+      if (expr.right instanceof ast.IntegerLiteral && !this.useF64) {
+        if (expr.operator === '-') {
+          this._emitConst(body, -expr.right.value);
+          return;
+        }
+        if (expr.operator === '!') {
+          this._emitConst(body, expr.right.value === 0 ? 1 : 0);
+          return;
+        }
+      }
       if (expr.operator === '-') {
         if (this.useF64) {
           this._compileExpr(expr.right, body);
