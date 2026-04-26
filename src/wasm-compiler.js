@@ -152,6 +152,16 @@ class WasmCompiler {
       if (isLast) {
         body.push(WasmOp.local_get, ...encodeULEB128(localIdx));
       }
+    } else if (stmt instanceof ast.SetStatement) {
+      // Variable reassignment: set x = value
+      const localIdx = this.currentLocals?.get(stmt.name.value);
+      if (localIdx === undefined) throw new Error(`Undefined variable in WASM set: ${stmt.name.value}`);
+      this._compileExpr(stmt.value, body);
+      body.push(WasmOp.local_set, ...encodeULEB128(localIdx));
+      
+      if (isLast) {
+        body.push(WasmOp.local_get, ...encodeULEB128(localIdx));
+      }
     } else if (stmt instanceof ast.ExpressionStatement) {
       this._compileExpr(stmt.expression, body);
       // If not the last statement, drop the value
@@ -273,6 +283,35 @@ class WasmCompiler {
       }
       
       body.push(WasmOp.end);
+      return;
+    }
+    
+    // While expression
+    if (expr instanceof ast.WhileExpression) {
+      // WASM pattern: block $break (loop $continue (condition) i32.eqz br_if $break (body) br $continue end) end
+      // The while loop produces an i32 result (0/null) since monkey-lang while returns null
+      body.push(WasmOp.block, 0x40);    // block with void type
+      body.push(WasmOp.loop, 0x40);     // loop with void type
+      
+      // Condition
+      this._compileExpr(expr.condition, body);
+      body.push(WasmOp.i32_eqz);       // invert: break if condition is false
+      body.push(WasmOp.br_if, 1);       // br_if to outer block (break)
+      
+      // Body
+      if (expr.body) {
+        const stmts = expr.body.statements;
+        for (let i = 0; i < stmts.length; i++) {
+          this._compileStatement(stmts[i], body, false); // never last (loop continues)
+        }
+      }
+      
+      body.push(WasmOp.br, 0);          // br to loop start (continue)
+      body.push(WasmOp.end);            // end loop
+      body.push(WasmOp.end);            // end block
+      
+      // While returns 0 (null equivalent in i32)
+      body.push(WasmOp.i32_const, 0);
       return;
     }
     

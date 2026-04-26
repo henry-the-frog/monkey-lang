@@ -164,3 +164,77 @@ describe('WASM: main expression', () => {
     assert.strictEqual(wasmRun(src, 'main'), 42);
   });
 });
+
+describe('WASM: while loops', () => {
+  it('basic while loop', () => {
+    const src = `let sum_to = fn(n) {
+      let total = 0;
+      let i = 1;
+      while (i <= n) {
+        set total = total + i;
+        set i = i + 1;
+      };
+      total;
+    };`;
+    assert.strictEqual(wasmRun(src, 'sum_to', 10), 55);
+    assert.strictEqual(wasmRun(src, 'sum_to', 100), 5050);
+  });
+
+  it('iterative factorial', () => {
+    const src = `let fact = fn(n) {
+      let result = 1;
+      let i = 1;
+      while (i <= n) {
+        set result = result * i;
+        set i = i + 1;
+      };
+      result;
+    };`;
+    assert.strictEqual(wasmRun(src, 'fact', 5), 120);
+    assert.strictEqual(wasmRun(src, 'fact', 10), 3628800);
+  });
+
+  it('iterative fibonacci', () => {
+    const src = `let fib = fn(n) {
+      let a = 0;
+      let b = 1;
+      let i = 0;
+      while (i < n) {
+        let temp = b;
+        set b = a + b;
+        set a = temp;
+        set i = i + 1;
+      };
+      a;
+    };`;
+    assert.strictEqual(wasmRun(src, 'fib', 0), 0);
+    assert.strictEqual(wasmRun(src, 'fib', 1), 1);
+    assert.strictEqual(wasmRun(src, 'fib', 10), 55);
+    assert.strictEqual(wasmRun(src, 'fib', 20), 6765);
+  });
+
+  it('while with zero iterations', () => {
+    const src = `let f = fn(n) {
+      let x = 42;
+      while (n > 0) {
+        set x = 0;
+        set n = n - 1;
+      };
+      x;
+    };`;
+    assert.strictEqual(wasmRun(src, 'f', 0), 42); // no iterations
+    assert.strictEqual(wasmRun(src, 'f', 1), 0);  // one iteration
+  });
+});
+
+describe('WASM: set statement', () => {
+  it('reassign local', () => {
+    const src = `let f = fn(x) {
+      let y = x;
+      set y = y * 2;
+      set y = y + 1;
+      y;
+    };`;
+    assert.strictEqual(wasmRun(src, 'f', 5), 11); // (5 * 2) + 1
+  });
+});
