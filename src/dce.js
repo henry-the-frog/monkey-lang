@@ -160,6 +160,93 @@ class DeadCodeEliminator {
 }
 
 /**
+ * Check if an expression is side-effect-free (safe to eliminate)
+ */
+function isSideEffectFree(expr) {
+  if (!expr) return true;
+  if (expr instanceof ast.IntegerLiteral) return true;
+  if (expr instanceof ast.FloatLiteral) return true;
+  if (expr instanceof ast.StringLiteral) return true;
+  if (expr instanceof ast.BooleanLiteral) return true;
+  if (expr instanceof ast.NullLiteral) return true;
+  if (expr instanceof ast.Identifier) return true;
+  if (expr instanceof ast.FunctionLiteral) return true; // fn() { ... } is a value, no side effects
+  if (expr instanceof ast.ArrayLiteral) {
+    return (expr.elements || []).every(isSideEffectFree);
+  }
+  if (expr instanceof ast.HashLiteral) {
+    for (const [k, v] of (expr.pairs || [])) {
+      if (!isSideEffectFree(k) || !isSideEffectFree(v)) return false;
+    }
+    return true;
+  }
+  if (expr instanceof ast.PrefixExpression) return isSideEffectFree(expr.right);
+  if (expr instanceof ast.InfixExpression) {
+    return isSideEffectFree(expr.left) && isSideEffectFree(expr.right);
+  }
+  if (expr instanceof ast.IfExpression) return false; // May have side effects in branches
+  if (expr instanceof ast.CallExpression) return false; // Function calls always potentially side-effecting
+  if (expr instanceof ast.IndexExpression) return true; // a[0] is a read
+  return false; // Unknown node type — assume side effects
+}
+
+/**
+ * Remove dead let statements from a program AST.
+ * 
+ * @param {object} program - The AST program node
+ * @param {Array<{name: string, stmt: object}>} deadVars - Dead variables from findDeadVariables()
+ * @returns {{program: object, removed: number, converted: number}} - Modified program + stats
+ */
+function removeDeadLets(program, deadVars) {
+  if (!deadVars || deadVars.length === 0) {
+    return { program, removed: 0, converted: 0 };
+  }
+
+  const deadNames = new Set(deadVars.map(d => d.name));
+  let removed = 0;
+  let converted = 0;
+
+  function filterStatements(stmts) {
+    const result = [];
+    for (const stmt of stmts) {
+      if (stmt instanceof ast.LetStatement && deadNames.has(stmt.name.value)) {
+        if (isSideEffectFree(stmt.value)) {
+          // Safe to remove entirely
+          removed++;
+          continue;
+        } else {
+          // Keep the expression (it has side effects) but drop the binding
+          const exprStmt = new ast.ExpressionStatement(stmt.token, stmt.value);
+          converted++;
+          result.push(exprStmt);
+          continue;
+        }
+      }
+
+      // Recurse into blocks, if expressions, etc.
+      if (stmt instanceof ast.ExpressionStatement && stmt.expression instanceof ast.IfExpression) {
+        const ifExpr = stmt.expression;
+        if (ifExpr.consequence) {
+          ifExpr.consequence.statements = filterStatements(ifExpr.consequence.statements || []);
+        }
+        if (ifExpr.alternative) {
+          ifExpr.alternative.statements = filterStatements(ifExpr.alternative.statements || []);
+        }
+      }
+      if (stmt instanceof ast.BlockStatement) {
+        stmt.statements = filterStatements(stmt.statements || []);
+      }
+
+      result.push(stmt);
+    }
+    return result;
+  }
+
+  program.statements = filterStatements(program.statements);
+  return { program, removed, converted };
+}
+
+/**
  * Find dead variables: assigned but never read
  */
 function findDeadVariables(program) {
@@ -237,4 +324,4 @@ function eliminateDeadCode(program) {
   return program;
 }
 
-export { DeadCodeEliminator, findDeadVariables, eliminateDeadCode };
+export { DeadCodeEliminator, findDeadVariables, eliminateDeadCode, removeDeadLets, isSideEffectFree };
