@@ -132,6 +132,22 @@ const WasmOp = {
   // Conversion
   i64_extend_i32_s: 0xAC, // sign-extend i32 to i64
   i32_wrap_i64: 0xA7,     // truncate i64 to i32
+  f64_convert_i32_s: 0xB7, // convert signed i32 to f64
+  f64_convert_i64_s: 0xB9, // convert signed i64 to f64
+  
+  // f64 operations
+  f64_const: 0x44,
+  f64_eq: 0x61,
+  f64_ne: 0x62,
+  f64_lt: 0x63,
+  f64_gt: 0x64,
+  f64_le: 0x65,
+  f64_ge: 0x66,
+  f64_add: 0xA0,
+  f64_sub: 0xA1,
+  f64_mul: 0xA2,
+  f64_div: 0xA3,
+  f64_neg: 0x9A,
   
   // Drop
   drop: 0x1A,

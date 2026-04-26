@@ -43,15 +43,32 @@ class WasmCompiler {
     this.currentLocalCount = 0;
     this.currentExtraLocals = 0;
     this.useI64 = options.useI64 || false;
+    this.useF64 = options.useF64 || false;
   }
   
   // Get the appropriate numeric type
-  get numType() { return this.useI64 ? WASM_TYPE.I64 : WASM_TYPE.I32; }
+  get numType() { return this.useF64 ? WASM_TYPE.F64 : this.useI64 ? WASM_TYPE.I64 : WASM_TYPE.I32; }
   
   // Get i32/i64 opcode by name
   iop(name) {
-    const prefix = this.useI64 ? 'i64_' : 'i32_';
+    const prefix = this.useF64 ? 'f64_' : this.useI64 ? 'i64_' : 'i32_';
     return WasmOp[prefix + name];
+  }
+  
+  // Comparison op: f64 uses unsuffixed names (lt, gt), integers use _s suffix
+  cop(name) {
+    if (this.useF64) return WasmOp['f64_' + name];
+    const prefix = this.useI64 ? 'i64_' : 'i32_';
+    return WasmOp[prefix + name + '_s'];
+  }
+  
+  // Emit a numeric constant (handles f64's 8-byte encoding and i64 BigInt)
+  _emitConst(body, value) {
+    if (this.useF64) {
+      this._emitF64Const(body, value);
+    } else {
+      body.push(this.iop("const"), ...encodeSLEB128(value));
+    }
   }
   
   compile(program) {
@@ -111,7 +128,7 @@ class WasmCompiler {
     
     if (stmts.length === 0) {
       // Empty body: return 0 (null equivalent)
-      body.push(this.iop("const"), 0);
+      this._emitConst(body, 0);
     } else {
       for (let i = 0; i < stmts.length; i++) {
         const isLast = i === stmts.length - 1;
@@ -191,7 +208,7 @@ class WasmCompiler {
     if (this.useF64) {
       this._emitF64Const(body, 0.0);
     } else {
-      body.push(this.iop("const"), 0);
+      this._emitConst(body, 0);
     }
   }
 
@@ -233,7 +250,7 @@ class WasmCompiler {
 
   _compileExpr(expr, body) {
     if (!expr) {
-      body.push(this.iop("const"), 0);
+      this._emitConst(body, 0);
       return;
     }
     
@@ -288,14 +305,14 @@ class WasmCompiler {
         case '+': body.push(this.iop("add")); break;
         case '-': body.push(this.iop("sub")); break;
         case '*': body.push(this.iop("mul")); break;
-        case '/': body.push(this.iop("div_s")); break;
-        case '%': body.push(this.iop("rem_s")); break;
-        case '<': body.push(this.iop("lt_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
-        case '>': body.push(this.iop("gt_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
+        case '/': body.push(this.useF64 ? WasmOp.f64_div : this.iop("div_s")); break;
+        case '%': if (this.useF64) throw new Error('WASM f64 does not support %'); body.push(this.iop("rem_s")); break;
+        case '<': body.push(this.cop("lt")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
+        case '>': body.push(this.cop("gt")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
         case '==': body.push(this.iop("eq")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
         case '!=': body.push(this.iop("ne")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
-        case '<=': body.push(this.iop("le_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
-        case '>=': body.push(this.iop("ge_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
+        case '<=': body.push(this.cop("le")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
+        case '>=': body.push(this.cop("ge")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
         default: throw new Error(`Unsupported operator in WASM: ${expr.operator}`);
       }
       return;
@@ -308,14 +325,20 @@ class WasmCompiler {
           this._compileExpr(expr.right, body);
           body.push(WasmOp.f64_neg);
         } else {
-          body.push(this.iop("const"), 0); // push 0
+          this._emitConst(body, 0); // push 0
           this._compileExpr(expr.right, body);
           body.push(this.iop("sub")); // 0 - x = -x
         }
       } else if (expr.operator === '!') {
         this._compileExpr(expr.right, body);
-        body.push(this.iop("eqz"));
-        if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s);
+        if (this.useF64) {
+          this._emitF64Const(body, 0.0);
+          body.push(WasmOp.f64_eq); // 1 if value==0 (i32 result)
+          body.push(WasmOp.f64_convert_i32_s); // convert back to f64
+        } else {
+          body.push(this.iop("eqz"));
+          if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+        }
       } else {
         throw new Error(`Unsupported prefix operator in WASM: ${expr.operator}`);
       }
@@ -350,7 +373,7 @@ class WasmCompiler {
           this._compileStatement(stmts[i], body, i === stmts.length - 1);
         }
       } else {
-        body.push(this.iop("const"), 0);
+        this._emitConst(body, 0);
       }
       
       body.push(WasmOp.else_);
@@ -367,7 +390,7 @@ class WasmCompiler {
           this._compileExpr(expr.alternative, body);
         }
       } else {
-        body.push(this.iop("const"), 0);
+        this._emitConst(body, 0);
       }
       
       body.push(WasmOp.end);
@@ -377,7 +400,7 @@ class WasmCompiler {
     // While expression
     if (expr instanceof ast.WhileExpression) {
       this._compileWhile(expr.condition, expr.body, body);
-      body.push(this.iop("const"), 0); // while returns 0 (null)
+      this._emitConst(body, 0); // while returns 0 (null)
       return;
     }
 
@@ -402,7 +425,7 @@ class WasmCompiler {
         }
       }
       this._compileWhile(expr.condition, { statements: augmentedStmts }, body);
-      body.push(this.iop("const"), 0); // for returns 0
+      this._emitConst(body, 0); // for returns 0
       return;
     }
     
