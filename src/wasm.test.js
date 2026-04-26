@@ -312,3 +312,61 @@ describe('WASM i64: while loop', () => {
     assert.strictEqual(wasmRun64(src, 'sum', 1000000), 500000500000n);
   });
 });
+
+// --- f64 Tests ---
+
+function wasmRunF64(source, funcName, ...args) {
+  const binary = compileToWasm(source, { useF64: true });
+  const mod = new WebAssembly.Module(binary);
+  const instance = new WebAssembly.Instance(mod);
+  return instance.exports[funcName](...args);
+}
+
+describe('WASM f64: arithmetic', () => {
+  it('float addition', () => {
+    assert.strictEqual(wasmRunF64('let add = fn(a, b) { a + b; };', 'add', 1.5, 2.5), 4);
+  });
+
+  it('circle area (pi * r^2)', () => {
+    const area = wasmRunF64('let area = fn(r) { 3.14159 * r * r; };', 'area', 5.0);
+    assert.ok(Math.abs(area - 78.53975) < 0.001, `expected ~78.54, got ${area}`);
+  });
+
+  it('division (real division)', () => {
+    assert.strictEqual(wasmRunF64('let div = fn(a, b) { a / b; };', 'div', 7.0, 2.0), 3.5);
+  });
+});
+
+describe('WASM f64: Mandelbrot', () => {
+  it('origin stays bounded', () => {
+    const src = `let iter = fn(cx, cy, max) {
+      let zx = 0.0; let zy = 0.0; let i = 0.0;
+      while (i < max) {
+        if (zx * zx + zy * zy > 4.0) { return i; };
+        let t = zx * zx - zy * zy + cx;
+        set zy = 2.0 * zx * zy + cy;
+        set zx = t;
+        set i = i + 1.0;
+      };
+      max;
+    };`;
+    assert.strictEqual(wasmRunF64(src, 'iter', 0, 0, 100), 100);
+  });
+
+  it('escaping point', () => {
+    const src = `let iter = fn(cx, cy, max) {
+      let zx = 0.0; let zy = 0.0; let i = 0.0;
+      while (i < max) {
+        if (zx * zx + zy * zy > 4.0) { return i; };
+        let t = zx * zx - zy * zy + cx;
+        set zy = 2.0 * zx * zy + cy;
+        set zx = t;
+        set i = i + 1.0;
+      };
+      max;
+    };`;
+    const r = wasmRunF64(src, 'iter', 1, 1, 100);
+    assert.ok(r < 100, `expected escape, got ${r}`);
+    assert.ok(r > 0, 'should iterate at least once');
+  });
+});

@@ -187,13 +187,35 @@ class WasmCompiler {
     }
   }
   
+  _emitZero(body) {
+    if (this.useF64) {
+      this._emitF64Const(body, 0.0);
+    } else {
+      body.push(this.iop("const"), 0);
+    }
+  }
+
+  _emitF64Const(body, value) {
+    body.push(WasmOp.f64_const);
+    const buf = new ArrayBuffer(8);
+    new DataView(buf).setFloat64(0, value, true); // little-endian
+    const bytes = new Uint8Array(buf);
+    for (const b of bytes) body.push(b);
+  }
+
   _compileWhile(condition, loopBody, body) {
     body.push(WasmOp.block, 0x40);    // block with void type
     body.push(WasmOp.loop, 0x40);     // loop with void type
     
-    // Condition
+    // Condition — convert to i32 for br_if
     this._compileExpr(condition, body);
-    body.push(this.iop("eqz"));       // invert: break if condition is false
+    if (this.useF64) {
+      // f64: compare with 0.0, then invert
+      this._emitF64Const(body, 0.0);
+      body.push(WasmOp.f64_eq);  // produces i32: 1 if condition==0 (false), 0 if non-zero (true)
+    } else {
+      body.push(this.iop("eqz")); // invert: 1 if condition is 0/false
+    }
     body.push(WasmOp.br_if, 1);       // br_if to outer block (break)
     
     // Body
@@ -217,13 +239,32 @@ class WasmCompiler {
     
     // Integer literal
     if (expr instanceof ast.IntegerLiteral) {
-      body.push(this.iop("const"), ...encodeSLEB128(expr.value));
+      if (this.useF64) {
+        this._emitF64Const(body, expr.value);
+      } else {
+        body.push(this.iop("const"), ...encodeSLEB128(expr.value));
+      }
+      return;
+    }
+    
+    // Float literal
+    if (expr instanceof ast.FloatLiteral) {
+      if (this.useF64) {
+        this._emitF64Const(body, expr.value);
+      } else {
+        // Convert float to int (truncate) for i32/i64 mode
+        body.push(this.iop("const"), ...encodeSLEB128(Math.trunc(expr.value)));
+      }
       return;
     }
     
     // Boolean literal
     if (expr instanceof ast.BooleanLiteral) {
-      body.push(this.iop("const"), ...encodeSLEB128(expr.value ? 1 : 0));
+      if (this.useF64) {
+        this._emitF64Const(body, expr.value ? 1.0 : 0.0);
+      } else {
+        body.push(this.iop("const"), ...encodeSLEB128(expr.value ? 1 : 0));
+      }
       return;
     }
     
@@ -249,12 +290,12 @@ class WasmCompiler {
         case '*': body.push(this.iop("mul")); break;
         case '/': body.push(this.iop("div_s")); break;
         case '%': body.push(this.iop("rem_s")); break;
-        case '<': body.push(this.iop("lt_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); break;
-        case '>': body.push(this.iop("gt_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); break;
-        case '==': body.push(this.iop("eq")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); break;
-        case '!=': body.push(this.iop("ne")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); break;
-        case '<=': body.push(this.iop("le_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); break;
-        case '>=': body.push(this.iop("ge_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); break;
+        case '<': body.push(this.iop("lt_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
+        case '>': body.push(this.iop("gt_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
+        case '==': body.push(this.iop("eq")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
+        case '!=': body.push(this.iop("ne")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
+        case '<=': body.push(this.iop("le_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
+        case '>=': body.push(this.iop("ge_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
         default: throw new Error(`Unsupported operator in WASM: ${expr.operator}`);
       }
       return;
@@ -263,13 +304,18 @@ class WasmCompiler {
     // Prefix expression
     if (expr instanceof ast.PrefixExpression) {
       if (expr.operator === '-') {
-        body.push(this.iop("const"), 0); // push 0
-        this._compileExpr(expr.right, body);
-        body.push(this.iop("sub")); // 0 - x = -x
+        if (this.useF64) {
+          this._compileExpr(expr.right, body);
+          body.push(WasmOp.f64_neg);
+        } else {
+          body.push(this.iop("const"), 0); // push 0
+          this._compileExpr(expr.right, body);
+          body.push(this.iop("sub")); // 0 - x = -x
+        }
       } else if (expr.operator === '!') {
         this._compileExpr(expr.right, body);
         body.push(this.iop("eqz"));
-        if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+        if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s);
       } else {
         throw new Error(`Unsupported prefix operator in WASM: ${expr.operator}`);
       }
@@ -292,8 +338,9 @@ class WasmCompiler {
     // If expression
     if (expr instanceof ast.IfExpression) {
       this._compileExpr(expr.condition, body);
-      // if_ expects i32 on stack; in i64 mode, wrap the condition
+      // if_ expects i32 on stack; in i64/f64 mode, convert condition to i32
       if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+      if (this.useF64) { this._emitF64Const(body, 0.0); body.push(WasmOp.f64_ne); }
       body.push(WasmOp.if_, this.numType); // if with numType result
       
       // Consequence
