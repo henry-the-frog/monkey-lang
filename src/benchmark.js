@@ -1,136 +1,97 @@
-// benchmark.js — Compare evaluator vs VM performance
-// Usage: node src/benchmark.js
-
-import { Lexer } from './lexer.js';
-import { Parser } from './parser.js';
-import { monkeyEval } from './evaluator.js';
-import { Environment } from './object.js';
-import { Compiler } from './compiler.js';
+// benchmark.js — Mandelbrot set computation benchmark
+// Compares: WASM compilation vs bytecode VM for the same monkey-lang code
+import { compileToWasm } from './wasm-compiler.js';
+import { compileWithPrelude } from './prelude.js';
 import { VM } from './vm.js';
 
-function runEval(code) {
-  const l = new Lexer(code);
-  const p = new Parser(l);
-  const program = p.parseProgram();
-  const env = new Environment();
-  return monkeyEval(program, env);
-}
-
-function runVM(code) {
-  const l = new Lexer(code);
-  const p = new Parser(l);
-  const program = p.parseProgram();
-  const c = new Compiler();
-  c.compile(program);
-  const vm = new VM(c.bytecode());
-  vm.run();
-  return vm.lastPoppedStackElem();
-}
-
-function bench(name, code, iterations = 100) {
-  // Pre-parse and pre-compile
-  const l = new Lexer(code);
-  const p = new Parser(l);
-  const program = p.parseProgram();
-  const c = new Compiler();
-  c.compile(program);
-  const bc = c.bytecode();
-  
-  // Warmup
-  for (let i = 0; i < 3; i++) {
-    monkeyEval(program, new Environment());
-    const vm = new VM(bc); vm.run();
-  }
-  
-  // Evaluator (parse + eval)
-  const evalStart = performance.now();
-  for (let i = 0; i < iterations; i++) {
-    monkeyEval(program, new Environment());
-  }
-  const evalTime = performance.now() - evalStart;
-  
-  // VM (compile + execute)
-  const vmStart = performance.now();
-  for (let i = 0; i < iterations; i++) {
-    const vm = new VM(bc);
-    vm.run();
-  }
-  const vmTime = performance.now() - vmStart;
-  
-  const speedup = (evalTime / vmTime).toFixed(2);
-  console.log(`${name.padEnd(30)} | Eval: ${evalTime.toFixed(1).padStart(8)}ms | VM: ${vmTime.toFixed(1).padStart(8)}ms | Speedup: ${speedup}x`);
-}
-
-console.log('Monkey Language: Evaluator vs VM Benchmark');
-console.log('='.repeat(80));
-console.log(`${'Benchmark'.padEnd(30)} | ${'Evaluator'.padStart(14)} | ${'VM'.padStart(12)} | ${'Speedup'.padStart(10)}`);
-console.log('-'.repeat(80));
-
-// Fibonacci (recursive)
-bench('Fibonacci(15)', `
-let fib = fn(n) { if (n < 2) { n } else { fib(n-1) + fib(n-2) } };
-fib(15)
-`, 50);
-
-// Array operations
-bench('Array map/filter', `
-let map = fn(arr, f) {
-  let iter = fn(arr, acc) {
-    if (len(arr) == 0) { acc }
-    else { iter(rest(arr), push(acc, f(first(arr)))) }
+// Mandelbrot iteration count at a point (WASM-compatible subset)
+// Using x100 fixed-point to avoid i32 overflow
+const mandelbrotSrc = `
+let mandelbrot_iter = fn(cx, cy, max_iter) {
+  let zx = 0;
+  let zy = 0;
+  let i = 0;
+  while (i < max_iter) {
+    let zx2 = (zx * zx) / 100;
+    let zy2 = (zy * zy) / 100;
+    if (zx2 + zy2 > 400) { return i; };
+    let new_zx = zx2 - zy2 + cx;
+    set zy = 2 * (zx * zy) / 100 + cy;
+    set zx = new_zx;
+    set i = i + 1;
   };
-  iter(arr, [])
+  max_iter;
 };
-let arr = [1,2,3,4,5,6,7,8,9,10];
-map(arr, fn(x) { x * 2 })
-`, 100);
 
-// String operations
-bench('String concatenation', `
-let build = fn(n) {
-  if (n == 0) { "" }
-  else { "hello" + build(n - 1) }
+let mandelbrot_grid = fn(width, height, max_iter) {
+  let total = 0;
+  for (let y = 0; y < height; set y = y + 1) {
+    for (let x = 0; x < width; set x = x + 1) {
+      let cx = (x * 300 / width) - 200;
+      let cy = (y * 200 / height) - 100;
+      let iter = mandelbrot_iter(cx, cy, max_iter);
+      set total = total + iter;
+    };
+  };
+  total;
 };
-build(20)
-`, 100);
+`;
 
-// Closure creation
-bench('Closure creation', `
-let make = fn(x) { fn(y) { x + y } };
-let f1 = make(1);
-let f2 = make(2);
-let f3 = make(3);
-f1(10) + f2(20) + f3(30)
-`, 200);
+console.log('=== Mandelbrot Benchmark ===\n');
+console.log('Computing Mandelbrot set iterations over a grid.');
+console.log('Using fixed-point arithmetic (x1000 scale).\n');
 
-// Hash operations
-bench('Hash literal', `
-let h = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5};
-h["a"] + h["b"] + h["c"] + h["d"] + h["e"]
-`, 200);
+// WASM compilation
+console.log('Compiling to WASM...');
+const wasmBinary = compileToWasm(mandelbrotSrc);
+console.log(`WASM binary: ${wasmBinary.length} bytes`);
+const wasmMod = new WebAssembly.Module(wasmBinary);
+const wasmInstance = new WebAssembly.Instance(wasmMod);
 
-// Arithmetic
-bench('Arithmetic (100 ops)', `
-let x = 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10;
-let y = x * 2 + x * 3 + x * 4;
-let z = y - x + y - x;
-z
-`, 500);
+// Bytecode compilation
+console.log('Compiling to bytecode...\n');
+const vmBytecode = compileWithPrelude(mandelbrotSrc + 'mandelbrot_grid(80, 60, 100);');
 
-// Recursive sum
-bench('Recursive sum(100)', `
-let sum = fn(n) { if (n == 0) { 0 } else { n + sum(n-1) } };
-sum(100)
-`, 100);
+// Verify correctness
+const wasmResult = wasmInstance.exports.mandelbrot_grid(80, 60, 100);
+const vmObj = new VM(vmBytecode);
+vmObj.run();
+const vmResult = vmObj.lastPoppedStackElem()?.value;
+console.log(`WASM result: ${wasmResult}`);
+console.log(`VM result:   ${vmResult}`);
+console.log(`Match: ${wasmResult === vmResult ? '✅' : '❌'}\n`);
 
-// Nested function calls
-bench('Nested calls', `
-let a = fn(x) { x + 1 };
-let b = fn(x) { a(x) + 1 };
-let c = fn(x) { b(x) + 1 };
-let d = fn(x) { c(x) + 1 };
-d(10)
-`, 500);
+// Benchmark configurations
+const configs = [
+  { name: '20x15 grid, 50 iter', w: 20, h: 15, maxIter: 50 },
+  { name: '40x30 grid, 100 iter', w: 40, h: 30, maxIter: 100 },
+  { name: '80x60 grid, 100 iter', w: 80, h: 60, maxIter: 100 },
+];
 
-console.log('='.repeat(80));
-console.log('Speedup > 1.0 means VM is faster than Evaluator');
+for (const cfg of configs) {
+  console.log(`--- ${cfg.name} ---`);
+  
+  // WASM benchmark
+  const wasmTimes = [];
+  for (let i = 0; i < 5; i++) {
+    const start = performance.now();
+    wasmInstance.exports.mandelbrot_grid(cfg.w, cfg.h, cfg.maxIter);
+    wasmTimes.push(performance.now() - start);
+  }
+  const wasmAvg = wasmTimes.reduce((a, b) => a + b) / 5;
+  
+  // VM benchmark
+  const vmTimes = [];
+  const vmBc = compileWithPrelude(mandelbrotSrc + `mandelbrot_grid(${cfg.w}, ${cfg.h}, ${cfg.maxIter});`);
+  for (let i = 0; i < 3; i++) {
+    const vm = new VM(vmBc);
+    const start = performance.now();
+    vm.run();
+    vmTimes.push(performance.now() - start);
+  }
+  const vmAvg = vmTimes.reduce((a, b) => a + b) / 3;
+  
+  console.log(`  WASM: ${wasmAvg.toFixed(2)}ms`);
+  console.log(`  VM:   ${vmAvg.toFixed(2)}ms`);
+  console.log(`  Speedup: ${(vmAvg / wasmAvg).toFixed(1)}x\n`);
+}
