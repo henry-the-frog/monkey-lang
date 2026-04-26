@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // repl.js — Monkey Language REPL
-// Usage: node src/repl.js [--engine=vm|interpreter]
+// Usage: node src/repl.js [--engine=vm|interpreter|wasm]
 
 import { createInterface } from 'readline';
 import { Lexer } from './lexer.js';
@@ -9,6 +9,7 @@ import { monkeyEval } from './evaluator.js';
 import { Environment, MonkeyError } from './object.js';
 import { Compiler } from './compiler.js';
 import { VM } from './vm.js';
+import { compileToWasm } from './wasm-compiler.js';
 
 // Import prelude for VM mode
 let PRELUDE_SOURCE = '';
@@ -20,18 +21,46 @@ try {
 
 const args = process.argv.slice(2);
 const engineArg = args.find(a => a.startsWith('--engine='));
+const wasmTypeArg = args.find(a => a.startsWith('--wasm-type='));
 const engine = engineArg ? engineArg.split('=')[1] : 'vm';
+const wasmType = wasmTypeArg ? wasmTypeArg.split('=')[1] : 'i32'; // i32, i64, f64
 const fileArg = args.find(a => !a.startsWith('--'));
 
-if (!['vm', 'interpreter', 'both'].includes(engine)) {
-  console.error(`Unknown engine: ${engine}. Use --engine=vm|interpreter|both`);
+if (!['vm', 'interpreter', 'both', 'wasm'].includes(engine)) {
+  console.error(`Unknown engine: ${engine}. Use --engine=vm|interpreter|both|wasm`);
   process.exit(1);
+}
+
+// Helper: compile and run WASM from source
+async function runWasm(source) {
+  const wasmOptions = {
+    useI64: wasmType === 'i64',
+    useF64: wasmType === 'f64',
+  };
+  const binary = compileToWasm(source, wasmOptions);
+  const module = await WebAssembly.compile(binary);
+  const instance = await WebAssembly.instantiate(module, {});
+  return instance.exports.main();
 }
 
 // File execution mode
 if (fileArg) {
   const fs = await import('fs');
   const source = fs.readFileSync(fileArg, 'utf-8');
+
+  if (engine === 'wasm') {
+    try {
+      const start = performance.now();
+      const result = await runWasm(source);
+      const elapsed = performance.now() - start;
+      console.log(`Result: ${result} (${elapsed.toFixed(1)}ms, WASM ${wasmType})`);
+    } catch (e) {
+      console.error(`WASM error: ${e.message}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
   const l = new Lexer(source);
   const p = new Parser(l);
   const program = p.parseProgram();
@@ -51,7 +80,7 @@ if (fileArg) {
   process.exit(0);
 }
 
-console.log(`🐵 Monkey Language REPL (engine: ${engine})`);
+console.log(`🐵 Monkey Language REPL (engine: ${engine}${engine === 'wasm' ? ` [${wasmType}]` : ''})`);
 console.log('Type "exit" or Ctrl+D to quit.\n');
 
 const env = new Environment(); // Persistent env for interpreter mode
@@ -98,6 +127,8 @@ const rl = createInterface({
 
 rl.prompt();
 
+let wasmPending = null; // Track pending WASM execution
+
 rl.on('line', (line) => {
   const input = line.trim();
   if (input === 'exit' || input === 'quit') {
@@ -111,6 +142,24 @@ rl.on('line', (line) => {
   }
 
   try {
+    if (engine === 'wasm') {
+      // Pause readline to prevent close during async work
+      const start = performance.now();
+      wasmPending = runWasm(input).then(result => {
+        const elapsed = performance.now() - start;
+        if (result !== null && result !== undefined) {
+          console.log(`${result}`);
+        }
+        wasmPending = null;
+        rl.prompt();
+      }).catch(e => {
+        console.error(`WASM error: ${e.message}`);
+        wasmPending = null;
+        rl.prompt();
+      });
+      return;
+    }
+
     const l = new Lexer(input);
     const p = new Parser(l);
     const program = p.parseProgram();
@@ -176,7 +225,8 @@ rl.on('line', (line) => {
   rl.prompt();
 });
 
-rl.on('close', () => {
+rl.on('close', async () => {
+  if (wasmPending) await wasmPending;
   console.log('\nBye! 🐵');
   process.exit(0);
 });
