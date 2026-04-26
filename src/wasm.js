@@ -1,4 +1,4 @@
-// wasm.js — WebAssembly Binary Encoder for Monkey-Lang
+// wasm.js - WebAssembly Binary Encoder for Monkey-Lang
 //
 // Phase 1: Integer arithmetic + function compilation
 // Produces valid WASM binary modules from monkey-lang AST.
@@ -107,14 +107,15 @@ const WasmOp = {
   br_if: 0x0D,
   return_: 0x0F,
   call: 0x10,
-  
+  call_indirect: 0x11,
+
   // Variables
   local_get: 0x20,
   local_set: 0x21,
   local_tee: 0x22,
   global_get: 0x23,
   global_set: 0x24,
-  
+
   // i32 operations
   i32_const: 0x41,
   i32_eqz: 0x45,
@@ -131,7 +132,7 @@ const WasmOp = {
   i32_mul: 0x6C,
   i32_div_s: 0x6D,
   i32_rem_s: 0x6F,
-  
+
   // i64 operations
   i64_const: 0x42,
   i64_eqz: 0x50,
@@ -146,13 +147,13 @@ const WasmOp = {
   i64_mul: 0x7E,
   i64_div_s: 0x7F,
   i64_rem_s: 0x81,
-  
+
   // Conversion
   i64_extend_i32_s: 0xAC, // sign-extend i32 to i64
   i32_wrap_i64: 0xA7,     // truncate i64 to i32
   f64_convert_i32_s: 0xB7, // convert signed i32 to f64
   f64_convert_i64_s: 0xB9, // convert signed i64 to f64
-  
+
   // f64 operations
   f64_const: 0x44,
   f64_eq: 0x61,
@@ -166,7 +167,7 @@ const WasmOp = {
   f64_mul: 0xA2,
   f64_div: 0xA3,
   f64_neg: 0x9A,
-  
+
   // Drop
   drop: 0x1A,
 };
@@ -176,16 +177,18 @@ const WasmOp = {
 class WasmModule {
   constructor() {
     this.types = [];      // Function signatures: [{params: [type], results: [type]}]
-    this.imports = [];    // [{module, name, typeIndex}] — function imports
+    this.imports = [];    // [{module, name, typeIndex}] - function imports
     this.functions = [];  // Function type indices (local functions)
     this.exports = [];    // {name, kind, index}
     this.codes = [];      // Function bodies: [{locals: [{count, type}], body: [byte]}]
-    this.memory = null;   // {min: pages, max?: pages} — null means no memory
-    this.dataSegments = []; // [{offset: number, data: Uint8Array}] — data segments
-    this.globals = [];    // [{type, mutable, initExpr: [byte]}] — global variables
+    this.memory = null;   // {min: pages, max?: pages} - null means no memory
+    this.dataSegments = []; // [{offset: number, data: Uint8Array}] - data segments
+    this.globals = [];    // [{type, mutable, initExpr: [byte]}] - global variables
+    this.table = null;    // {min, max?, elemType} - indirect call table
+    this.elements = [];   // Function indices to populate the table
     this._nextDataOffset = 0; // Next available byte offset in linear memory
   }
-  
+
   /**
    * Add a function type (signature). Returns the type index.
    * Deduplicates: if same signature exists, returns existing index.
@@ -209,7 +212,7 @@ class WasmModule {
     this.imports.push({ module: moduleName, name, typeIndex });
     return funcIndex;
   }
-  
+
   /**
    * Add a local function. Returns the function index (imports.length + local index).
    */
@@ -259,7 +262,7 @@ class WasmModule {
     }
     const encoded = new TextEncoder().encode(str);
     const offset = this._nextDataOffset;
-    
+
     // Build: [length as 4 LE bytes][string bytes]
     const totalLen = 4 + encoded.length;
     const buf = new Uint8Array(totalLen);
@@ -269,7 +272,7 @@ class WasmModule {
     buf[2] = (encoded.length >> 16) & 0xFF;
     buf[3] = (encoded.length >> 24) & 0xFF;
     buf.set(encoded, 4);
-    
+
     this.dataSegments.push({ offset, data: buf });
     this._nextDataOffset += totalLen;
     // Align to 4 bytes
@@ -321,7 +324,42 @@ class WasmModule {
   exportGlobal(name, globalIndex) {
     this.exports.push({ name, kind: WASM_EXPORT_KIND.GLOBAL, index: globalIndex });
   }
-  
+
+  /**
+   * Add a function reference table for indirect calls.
+   * @param {number} minSize - Minimum table size
+   * @param {number} [maxSize] - Maximum table size
+   */
+  addTable(minSize, maxSize) {
+    this.table = { min: minSize, max: maxSize };
+  }
+
+  /**
+   * Add a function to the table (element section).
+   * Returns the table index for the function.
+   * @param {number} funcIndex - Function index to add to table
+   * @returns {number} Table index
+   */
+  addTableElement(funcIndex) {
+    if (!this.table) {
+      this.addTable(0); // Will be sized based on elements
+    }
+    const idx = this.elements.length;
+    this.elements.push(funcIndex);
+    // Auto-grow table min to fit elements
+    if (this.table.min < this.elements.length) {
+      this.table.min = this.elements.length;
+    }
+    return idx;
+  }
+
+  /**
+   * Export the function table.
+   */
+  exportTable(name = 'table') {
+    this.exports.push({ name, kind: WASM_EXPORT_KIND.TABLE, index: 0 });
+  }
+
   /**
    * Export a function by name.
    */
@@ -335,13 +373,13 @@ class WasmModule {
   exportMemory(name = 'memory') {
     this.exports.push({ name, kind: WASM_EXPORT_KIND.MEMORY, index: 0 });
   }
-  
+
   /**
    * Encode the module to a Uint8Array (valid .wasm binary).
    */
   encode() {
     const sections = [];
-    
+
     // Type section
     if (this.types.length > 0) {
       const content = [];
@@ -355,7 +393,7 @@ class WasmModule {
       }
       sections.push(this._encodeSection(WASM_SECTION.TYPE, content));
     }
-    
+
     // Import section (must come after type, before function)
     if (this.imports.length > 0) {
       const content = [];
@@ -385,7 +423,23 @@ class WasmModule {
       }
       sections.push(this._encodeSection(WASM_SECTION.FUNCTION, content));
     }
-    
+
+    // Table section (between function and memory)
+    if (this.table) {
+      const content = [];
+      content.push(...encodeULEB128(1)); // 1 table
+      content.push(0x70); // funcref element type
+      if (this.table.max !== undefined) {
+        content.push(0x01); // has max
+        content.push(...encodeULEB128(this.table.min));
+        content.push(...encodeULEB128(this.table.max));
+      } else {
+        content.push(0x00); // no max
+        content.push(...encodeULEB128(this.table.min));
+      }
+      sections.push(this._encodeSection(WASM_SECTION.TABLE, content));
+    }
+
     // Memory section (between function and export)
     if (this.memory) {
       const content = [];
@@ -426,7 +480,22 @@ class WasmModule {
       }
       sections.push(this._encodeSection(WASM_SECTION.EXPORT, content));
     }
-    
+
+    // Element section (populates table with function references)
+    if (this.elements.length > 0) {
+      const content = [];
+      content.push(...encodeULEB128(1)); // 1 element segment
+      content.push(0x00); // table index 0
+      // offset expression: i32.const 0 end
+      content.push(WasmOp.i32_const, ...encodeSLEB128(0), WasmOp.end);
+      // function indices
+      content.push(...encodeULEB128(this.elements.length));
+      for (const funcIdx of this.elements) {
+        content.push(...encodeULEB128(funcIdx));
+      }
+      sections.push(this._encodeSection(WASM_SECTION.ELEMENT, content));
+    }
+
     // Code section
     if (this.codes.length > 0) {
       const content = [];
@@ -442,7 +511,7 @@ class WasmModule {
         // Body instructions
         funcBody.push(...code.body);
         funcBody.push(WasmOp.end); // function end
-        
+
         // Encode function body with size prefix
         content.push(...encodeULEB128(funcBody.length));
         content.push(...funcBody);
@@ -466,25 +535,25 @@ class WasmModule {
       }
       sections.push(this._encodeSection(WASM_SECTION.DATA, content));
     }
-    
+
     // Assemble final binary
     const header = [
       0x00, 0x61, 0x73, 0x6D, // magic: \0asm
       0x01, 0x00, 0x00, 0x00, // version: 1
     ];
-    
+
     const totalSize = header.length + sections.reduce((sum, s) => sum + s.length, 0);
     const result = new Uint8Array(totalSize);
     let offset = 0;
-    
+
     for (const byte of header) result[offset++] = byte;
     for (const section of sections) {
       for (const byte of section) result[offset++] = byte;
     }
-    
+
     return result;
   }
-  
+
   _encodeSection(id, content) {
     return [id, ...encodeULEB128(content.length), ...content];
   }
