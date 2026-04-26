@@ -44,6 +44,16 @@ class WasmCompiler {
     this.currentExtraLocals = 0;
     this.useI64 = options.useI64 || false;
     this.useF64 = options.useF64 || false;
+    this.importSignatures = options.importSignatures || null;
+  }
+
+  // Count local (non-imported) functions in the map
+  _localFunctionCount() {
+    let count = 0;
+    for (const [, info] of this.functions) {
+      if (!info.imported) count++;
+    }
+    return count;
   }
   
   // Get the appropriate numeric type
@@ -73,6 +83,9 @@ class WasmCompiler {
   
   compile(program) {
     // Two passes:
+    // Pass 0: Process import statements (creates WASM imports)
+    this._processImports(program.statements);
+
     // Pass 1: Collect all function definitions and their signatures
     this._collectFunctions(program.statements);
     
@@ -92,6 +105,30 @@ class WasmCompiler {
     return this.module.encode();
   }
   
+  _processImports(statements) {
+    for (const stmt of statements) {
+      if (stmt instanceof ast.ImportStatement) {
+        const moduleName = stmt.moduleName;
+        if (stmt.bindings) {
+          // import "math" for add, multiply;
+          // Each binding becomes a WASM import: (import "math" "add" (func ...))
+          // We assume each imported function takes numType params and returns numType
+          // The caller can override via import metadata later
+          for (const binding of stmt.bindings) {
+            // Default: assume single-param, single-result (overridable via importSignatures)
+            const sig = (this.importSignatures && this.importSignatures[`${moduleName}.${binding}`]) ||
+                        { params: [this.numType], results: [this.numType] };
+            const funcIdx = this.module.addImport(moduleName, binding, sig.params, sig.results);
+            this.functions.set(binding, { index: funcIdx, params: sig.params.length, imported: true });
+          }
+        } else if (stmt.alias) {
+          // import "math" as math; — namespace import (store module name for qualified calls)
+          // Not directly supported in WASM linking, skip for now
+        }
+      }
+    }
+  }
+
   _collectFunctions(statements) {
     for (const stmt of statements) {
       if (stmt instanceof ast.LetStatement && stmt.value instanceof ast.FunctionLiteral) {
@@ -103,7 +140,8 @@ class WasmCompiler {
           [this.numType]
         );
         // Reserve function index (body filled in pass 2)
-        const funcIdx = this.functions.size;
+        // addFunction accounts for imports in the index space
+        const funcIdx = this.module.imports.length + this._localFunctionCount();
         this.functions.set(name, { index: funcIdx, params: paramCount, typeIdx });
       }
     }
@@ -163,7 +201,7 @@ class WasmCompiler {
       ? [{ count: this.currentExtraLocals, type: this.numType }]
       : [];
     
-    const funcIdx = this.functions.size;
+    const funcIdx = this.module.imports.length + this._localFunctionCount();
     this.module.addFunction(typeIdx, locals, body);
     this.module.exportFunction('main', funcIdx);
   }

@@ -158,7 +158,8 @@ const WasmOp = {
 class WasmModule {
   constructor() {
     this.types = [];      // Function signatures: [{params: [type], results: [type]}]
-    this.functions = [];  // Function type indices
+    this.imports = [];    // [{module, name, typeIndex}] — function imports
+    this.functions = [];  // Function type indices (local functions)
     this.exports = [];    // {name, kind, index}
     this.codes = [];      // Function bodies: [{locals: [{count, type}], body: [byte]}]
   }
@@ -175,12 +176,23 @@ class WasmModule {
     this.types.push({ params, results });
     return this.types.length - 1;
   }
+
+  /**
+   * Add a function import. Returns the function index.
+   * Imports occupy indices 0..N-1, local functions start at N.
+   */
+  addImport(moduleName, name, params, results) {
+    const typeIndex = this.addType(params, results);
+    const funcIndex = this.imports.length; // imports come first
+    this.imports.push({ module: moduleName, name, typeIndex });
+    return funcIndex;
+  }
   
   /**
-   * Add a function. Returns the function index.
+   * Add a local function. Returns the function index (imports.length + local index).
    */
   addFunction(typeIndex, locals, body) {
-    const funcIndex = this.functions.length;
+    const funcIndex = this.imports.length + this.functions.length;
     this.functions.push(typeIndex);
     this.codes.push({ locals, body });
     return funcIndex;
@@ -213,6 +225,26 @@ class WasmModule {
       sections.push(this._encodeSection(WASM_SECTION.TYPE, content));
     }
     
+    // Import section (must come after type, before function)
+    if (this.imports.length > 0) {
+      const content = [];
+      content.push(...encodeULEB128(this.imports.length));
+      for (const imp of this.imports) {
+        // module name
+        const modBytes = new TextEncoder().encode(imp.module);
+        content.push(...encodeULEB128(modBytes.length));
+        content.push(...modBytes);
+        // field name
+        const nameBytes = new TextEncoder().encode(imp.name);
+        content.push(...encodeULEB128(nameBytes.length));
+        content.push(...nameBytes);
+        // import kind: 0x00 = function
+        content.push(0x00);
+        content.push(...encodeULEB128(imp.typeIndex));
+      }
+      sections.push(this._encodeSection(WASM_SECTION.IMPORT, content));
+    }
+
     // Function section
     if (this.functions.length > 0) {
       const content = [];
