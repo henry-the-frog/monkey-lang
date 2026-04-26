@@ -87,7 +87,8 @@ export const TokenType = {
   ILLEGAL: 'ILLEGAL',
 };
 
-const KEYWORDS = {
+const KEYWORDS = Object.create(null);
+Object.assign(KEYWORDS, {
   fn: TokenType.FUNCTION,
   let: TokenType.LET,
   const: TokenType.CONST,
@@ -118,7 +119,7 @@ const KEYWORDS = {
   class: TokenType.CLASS,
   extends: TokenType.EXTENDS,
   super: TokenType.SUPER,
-};
+});
 
 export class Token {
   constructor(type, literal) {
