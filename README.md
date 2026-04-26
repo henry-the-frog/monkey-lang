@@ -4,7 +4,7 @@ A complete implementation of the Monkey programming language with a tree-walking
 
 ## Stats
 - **22,000+ lines** of JavaScript (source + tests)
-- **1,149 tests** (100% passing, 0 failures)
+- **1,250 tests** (100% passing, 0 failures)
 - **78 source files** across interpreter, compiler, optimizer, and VM
 - **2,200+ commits**
 
@@ -166,18 +166,26 @@ Source → Lexer → Parser → AST
 
 ## WebAssembly Compilation
 
-Monkey-lang can compile a subset of programs directly to WebAssembly binary for 100-300x speedup.
+Monkey-lang can compile a subset of programs directly to WebAssembly binary for **14-800x speedup** over the bytecode VM.
 
 ### Supported Features
 - Integer arithmetic (i32), 64-bit integers (i64), floating-point (f64)
 - Functions, recursion, if/else, while loops, for loops
 - Local variables, comparison operators
+- Module imports (`import "math" { add }` → WASM import section)
 - 73-302 byte .wasm binaries
 
 ### Usage
 
 ```bash
-# Run with WASM compilation
+# REPL with WASM engine
+node src/repl.js --engine=wasm
+node src/repl.js --engine=wasm --wasm-type=f64
+
+# Run a file with WASM
+node src/repl.js --engine=wasm program.monkey
+
+# Run with WASM compilation (stdin)
 echo 'let fib = fn(n) { if (n < 2) { n; } else { fib(n-1) + fib(n-2); }; }; fib(30);' | node src/main.js --wasm
 
 # Emit .wasm binary file
@@ -192,11 +200,16 @@ echo 'let area = fn(r) { 3.14159 * r * r; }; area(5.0);' | node src/main.js --wa
 
 ### Benchmark Results
 
-| Algorithm | WASM i32 | Bytecode VM | Speedup |
-|-----------|----------|-------------|---------|
-| Fibonacci (fib(30)) | 6.8ms | 886ms | **130x** |
-| Sum 1M iterations | 0.61ms | 97ms | **159x** |
-| Mandelbrot 80×60 | 0.67ms | 171ms | **256x** |
+| Algorithm | VM (ms) | WASM i32 | WASM i64 | WASM f64 | Best Speedup |
+|-----------|---------|----------|----------|----------|-------------|
+| Fibonacci(30) | 922 | 7.7ms | 7.0ms | 9.9ms | **131x** |
+| Factorial(20) | 5.0 | 0.17ms | 0.18ms | 0.17ms | **30x** |
+| Sum 100K iterations | 48 | 0.28ms | 0.24ms | 0.37ms | **201x** |
+| Nested loops 1M | 456 | 0.57ms | 0.66ms | 1.8ms | **798x** |
+| Mandelbrot (1pt) | 5.8 | 0.41ms | 0.26ms | 0.30ms | **23x** |
+| Ackermann(3,7) | 287 | 2.1ms | 2.0ms | 2.6ms | **147x** |
+
+Run `node src/benchmark-wasm.js` to reproduce.
 
 ## Class Syntax
 
