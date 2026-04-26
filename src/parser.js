@@ -74,6 +74,7 @@ export class Parser {
     this.registerPrefix(TokenType.BANG, () => this.parsePrefixExpression());
     this.registerPrefix(TokenType.MINUS, () => this.parsePrefixExpression());
     this.registerPrefix(TokenType.SPREAD, () => this.parseSpreadExpression());
+    this.registerPrefix(TokenType.SUPER, () => this.parseSuperExpression());
     this.registerPrefix(TokenType.LPAREN, () => this.parseGroupedExpression());
     this.registerPrefix(TokenType.IF, () => this.parseIfExpression());
     this.registerPrefix(TokenType.WHILE, () => this.parseWhileExpression());
@@ -186,6 +187,7 @@ export class Parser {
       }
       case TokenType.EXPORT: return this.parseExportStatement();
       case 'ENUM': return this.parseEnumStatement();
+      case TokenType.CLASS: return this.parseClassStatement();
       default: return this.parseExpressionStatement();
     }
   }
@@ -302,7 +304,24 @@ export class Parser {
   parseSetStatement() {
     const token = this.curToken;
     if (!this.expectPeek(TokenType.IDENT)) return null;
-    const name = new ast.Identifier(this.curToken, this.curToken.literal);
+    let name = new ast.Identifier(this.curToken, this.curToken.literal);
+    
+    // Handle dotted assignment: set x.y = value → set IndexExpression(x, "y") = value
+    while (this.peekTokenIs(TokenType.DOT)) {
+      this.nextToken(); // consume .
+      this.nextToken(); // property name
+      const key = new ast.StringLiteral(this.curToken, this.curToken.literal);
+      name = new ast.IndexExpression(this.curToken, name, key);
+    }
+    
+    // Handle indexed assignment: set x[0] = value → set IndexExpression(x, 0) = value
+    while (this.peekTokenIs(TokenType.LBRACKET)) {
+      this.nextToken(); // consume [
+      this.nextToken(); // index expression
+      const index = this.parseExpression(0); // LOWEST precedence
+      if (!this.expectPeek(TokenType.RBRACKET)) return null;
+      name = new ast.IndexExpression(this.curToken, name, index);
+    }
     
     // Handle compound assignment: +=, -=, *=, /=
     let op = null;
@@ -755,6 +774,67 @@ export class Parser {
     if (!this.expectPeek(TokenType.RBRACE)) return null;
     if (this.peekTokenIs(TokenType.SEMICOLON)) this.nextToken();
     return new ast.EnumStatement(token, name, variants);
+  }
+
+  parseClassStatement() {
+    const token = this.curToken; // 'class'
+    this.nextToken(); // expect class name
+    if (this.curToken.type !== TokenType.IDENT) {
+      this.errors.push(`expected class name, got ${this.curToken.type}`);
+      return null;
+    }
+    const name = new ast.Identifier(this.curToken, this.curToken.literal);
+    
+    // Optional: extends SuperClass
+    let superClass = null;
+    if (this.peekTokenIs(TokenType.EXTENDS)) {
+      this.nextToken(); // consume 'extends'
+      this.nextToken(); // expect super class name
+      if (this.curToken.type !== TokenType.IDENT) {
+        this.errors.push(`expected super class name, got ${this.curToken.type}`);
+        return null;
+      }
+      superClass = new ast.Identifier(this.curToken, this.curToken.literal);
+    }
+    
+    if (!this.expectPeek(TokenType.LBRACE)) return null;
+    
+    // Parse methods
+    const methods = [];
+    while (!this.peekTokenIs(TokenType.RBRACE) && !this.peekTokenIs(TokenType.EOF)) {
+      this.nextToken();
+      if (this.curToken.type !== TokenType.IDENT) {
+        this.errors.push(`expected method name in class ${name.value}, got ${this.curToken.type}`);
+        return null;
+      }
+      const methodName = new ast.Identifier(this.curToken, this.curToken.literal);
+      
+      // Parse parameters
+      if (!this.expectPeek(TokenType.LPAREN)) return null;
+      const { params } = this.parseFunctionParameters();
+      
+      // Parse body
+      if (!this.expectPeek(TokenType.LBRACE)) return null;
+      const body = this.parseBlockStatement();
+      
+      methods.push({ name: methodName, params, body });
+    }
+    
+    if (!this.expectPeek(TokenType.RBRACE)) return null;
+    if (this.peekTokenIs(TokenType.SEMICOLON)) this.nextToken();
+    
+    return new ast.ClassStatement(token, name, superClass, methods);
+  }
+
+  parseSuperExpression() {
+    const token = this.curToken; // 'super'
+    if (!this.expectPeek(TokenType.DOT)) return null;
+    this.nextToken(); // method name
+    if (this.curToken.type !== TokenType.IDENT) {
+      this.errors.push(`expected method name after super., got ${this.curToken.type}`);
+      return null;
+    }
+    return new ast.SuperExpression(token, new ast.Identifier(this.curToken, this.curToken.literal));
   }
 
   parseSwitchExpression() {

@@ -78,6 +78,9 @@ export const TokenType = {
   IMPORT: 'IMPORT',
   EXPORT: 'EXPORT',
   AS: 'AS',
+  CLASS: 'CLASS',
+  EXTENDS: 'EXTENDS',
+  SUPER: 'SUPER',
 
   // Special
   EOF: 'EOF',
@@ -112,6 +115,9 @@ const KEYWORDS = {
   enum: 'ENUM',
   match: 'MATCH',
   in: TokenType.IN,
+  class: TokenType.CLASS,
+  extends: TokenType.EXTENDS,
+  super: TokenType.SUPER,
 };
 
 export class Token {

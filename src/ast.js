@@ -628,3 +628,29 @@ export class SpreadExpression {
   tokenLiteral() { return '...'; }
   toString() { return `...${this.value.toString()}`; }
 }
+
+export class ClassStatement {
+  constructor(token, name, superClass, methods) {
+    this.token = token;          // CLASS token
+    this.name = name;            // Identifier (class name)
+    this.superClass = superClass; // Identifier or null
+    this.methods = methods;       // Array of { name: Identifier, params: [Identifier], body: BlockStatement }
+  }
+  tokenLiteral() { return this.token.literal; }
+  toString() {
+    const ext = this.superClass ? ` extends ${this.superClass.value}` : '';
+    const meths = this.methods.map(m =>
+      `  ${m.name.value}(${m.params.map(p => p.value).join(', ')}) ${m.body.toString()}`
+    ).join('\n');
+    return `class ${this.name.value}${ext} {\n${meths}\n}`;
+  }
+}
+
+export class SuperExpression {
+  constructor(token, method) {
+    this.token = token;    // SUPER token
+    this.method = method;  // Identifier (method name)
+  }
+  tokenLiteral() { return this.token.literal; }
+  toString() { return `super.${this.method.value}`; }
+}
