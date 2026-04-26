@@ -162,6 +162,9 @@ class WasmModule {
     this.functions = [];  // Function type indices (local functions)
     this.exports = [];    // {name, kind, index}
     this.codes = [];      // Function bodies: [{locals: [{count, type}], body: [byte]}]
+    this.memory = null;   // {min: pages, max?: pages} — null means no memory
+    this.dataSegments = []; // [{offset: number, data: Uint8Array}] — data segments
+    this._nextDataOffset = 0; // Next available byte offset in linear memory
   }
   
   /**
@@ -197,12 +200,83 @@ class WasmModule {
     this.codes.push({ locals, body });
     return funcIndex;
   }
+
+  /**
+   * Declare linear memory. Must be called before addDataSegment.
+   * @param {number} minPages - Minimum pages (64KB each)
+   * @param {number} [maxPages] - Maximum pages (optional)
+   */
+  addMemory(minPages, maxPages) {
+    this.memory = { min: minPages, max: maxPages };
+  }
+
+  /**
+   * Add a data segment to linear memory. Returns the byte offset.
+   * Automatically ensures memory is declared.
+   * @param {Uint8Array|string} data - Raw bytes or UTF-8 string
+   * @returns {{offset: number, length: number}} - Position in memory
+   */
+  addDataSegment(data) {
+    if (!this.memory) {
+      this.addMemory(1); // Default: 1 page (64KB)
+    }
+    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+    const offset = this._nextDataOffset;
+    this.dataSegments.push({ offset, data: bytes });
+    this._nextDataOffset += bytes.length;
+    // Align to 4-byte boundary for performance
+    this._nextDataOffset = (this._nextDataOffset + 3) & ~3;
+    return { offset, length: bytes.length };
+  }
+
+  /**
+   * Add a string constant to the data segment.
+   * Stores as: [i32 length][utf8 bytes]
+   * Returns the offset of the length prefix.
+   */
+  addStringConstant(str) {
+    if (!this.memory) {
+      this.addMemory(1);
+    }
+    const encoded = new TextEncoder().encode(str);
+    const offset = this._nextDataOffset;
+    
+    // Build: [length as 4 LE bytes][string bytes]
+    const totalLen = 4 + encoded.length;
+    const buf = new Uint8Array(totalLen);
+    // Store length as little-endian i32
+    buf[0] = encoded.length & 0xFF;
+    buf[1] = (encoded.length >> 8) & 0xFF;
+    buf[2] = (encoded.length >> 16) & 0xFF;
+    buf[3] = (encoded.length >> 24) & 0xFF;
+    buf.set(encoded, 4);
+    
+    this.dataSegments.push({ offset, data: buf });
+    this._nextDataOffset += totalLen;
+    // Align to 4 bytes
+    this._nextDataOffset = (this._nextDataOffset + 3) & ~3;
+    return { offset, length: encoded.length };
+  }
+
+  /**
+   * Get the current data offset (for runtime heap allocation start).
+   */
+  getDataEnd() {
+    return this._nextDataOffset;
+  }
   
   /**
    * Export a function by name.
    */
   exportFunction(name, funcIndex) {
     this.exports.push({ name, kind: WASM_EXPORT_KIND.FUNCTION, index: funcIndex });
+  }
+
+  /**
+   * Export linear memory so the host can read/write it.
+   */
+  exportMemory(name = 'memory') {
+    this.exports.push({ name, kind: WASM_EXPORT_KIND.MEMORY, index: 0 });
   }
   
   /**
@@ -255,6 +329,21 @@ class WasmModule {
       sections.push(this._encodeSection(WASM_SECTION.FUNCTION, content));
     }
     
+    // Memory section (between function and export)
+    if (this.memory) {
+      const content = [];
+      content.push(...encodeULEB128(1)); // 1 memory
+      if (this.memory.max !== undefined) {
+        content.push(0x01); // has max
+        content.push(...encodeULEB128(this.memory.min));
+        content.push(...encodeULEB128(this.memory.max));
+      } else {
+        content.push(0x00); // no max
+        content.push(...encodeULEB128(this.memory.min));
+      }
+      sections.push(this._encodeSection(WASM_SECTION.MEMORY, content));
+    }
+
     // Export section
     if (this.exports.length > 0) {
       const content = [];
@@ -290,6 +379,23 @@ class WasmModule {
         content.push(...funcBody);
       }
       sections.push(this._encodeSection(WASM_SECTION.CODE, content));
+    }
+
+    // Data section
+    if (this.dataSegments.length > 0) {
+      const content = [];
+      content.push(...encodeULEB128(this.dataSegments.length));
+      for (const seg of this.dataSegments) {
+        content.push(0x00); // active segment, memory 0
+        // offset expression: i32.const <offset> end
+        content.push(WasmOp.i32_const);
+        content.push(...encodeSLEB128(seg.offset));
+        content.push(WasmOp.end);
+        // data bytes
+        content.push(...encodeULEB128(seg.data.length));
+        content.push(...seg.data);
+      }
+      sections.push(this._encodeSection(WASM_SECTION.DATA, content));
     }
     
     // Assemble final binary
