@@ -98,9 +98,14 @@ class WasmCompiler {
     const body = [];
     const stmts = fnLit.body.statements;
     
-    for (let i = 0; i < stmts.length; i++) {
-      const isLast = i === stmts.length - 1;
-      this._compileStatement(stmts[i], body, isLast);
+    if (stmts.length === 0) {
+      // Empty body: return 0 (null equivalent)
+      body.push(WasmOp.i32_const, 0);
+    } else {
+      for (let i = 0; i < stmts.length; i++) {
+        const isLast = i === stmts.length - 1;
+        this._compileStatement(stmts[i], body, isLast);
+      }
     }
     
     // Build locals declaration
