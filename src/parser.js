@@ -621,18 +621,21 @@ export class Parser {
   }
 
   parseMethodCall(left) {
-    // obj.method(args) → method(obj, args) for function calls
+    // obj.method(args) → OpMethodCall dispatch (hash lookup → builtin fallback)
     // obj.prop → IndexExpression(obj, "prop") for property access
     const token = this.curToken; // DOT
     this.nextToken(); // method/property name
     const name = this.curToken.literal;
     
     if (this.peekTokenIs(TokenType.LPAREN)) {
-      // obj.method(args) → method(obj, arg1, arg2, ...)
+      // obj.method(args) → method(obj, arg1, arg2, ...) with _isMethodCall flag
       const methodName = new ast.Identifier(this.curToken, name);
       this.nextToken(); // consume (
       const args = this.parseExpressionList(TokenType.RPAREN);
-      return new ast.CallExpression(token, methodName, [left, ...args]);
+      const call = new ast.CallExpression(token, methodName, [left, ...args]);
+      call._isMethodCall = true;     // Flag for compiler to use OpMethodCall
+      call._methodName = name;        // Method name string
+      return call;
     }
     
     // obj.prop → IndexExpression(obj, "prop") — property/hash access

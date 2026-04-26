@@ -42,6 +42,7 @@ export const Opcodes = {
   OpDeepEqual:       0x24, // Pop two, push deep structural equality result
   OpTailCall:        0x1E, // Tail call: OpTailCall <uint8> (num args) — reuses frame
   OpSetIndex:        0x26, // Set index: pop value, pop key, pop obj, set obj[key]=value, push obj
+  OpMethodCall:      0x27, // Method call: OpMethodCall <uint16 name constant> <uint8 numArgs> — dispatch obj.method(args)
 };
 
 // Instruction definitions: opcode → { name, operandWidths }
@@ -86,6 +87,7 @@ const definitions = new Map([
   [Opcodes.OpPower,          { name: 'OpPower',          operandWidths: [] }],
   [Opcodes.OpTailCall,       { name: 'OpTailCall',       operandWidths: [1] }],
   [Opcodes.OpSetIndex,       { name: 'OpSetIndex',       operandWidths: [] }],
+  [Opcodes.OpMethodCall,     { name: 'OpMethodCall',     operandWidths: [2, 1] }],
 ]);
 
 /**

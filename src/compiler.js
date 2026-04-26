@@ -1160,13 +1160,40 @@ export class Compiler {
           resolvedName
         );
         this.compile(resolvedIdent);
+        for (const arg of node.arguments) {
+          this.compile(arg);
+        }
+        this.emit(Opcodes.OpCall, node.arguments.length);
+      } else if (node._isMethodCall) {
+        // Method call: obj.method(args)
+        // Resolve the method at compile time:
+        // 1. If method name is in symbol table → use it (class method or user function)
+        // 2. If method name is a builtin → use it
+        // This gives us correct class method dispatch
+        const methodName = node._methodName;
+        const sym = this.symbolTable.resolve(methodName);
+        if (sym) {
+          this.loadSymbol(sym);
+        } else {
+          const builtinIdx = builtinNames.indexOf(methodName);
+          if (builtinIdx >= 0) {
+            this.emit(Opcodes.OpGetBuiltin, builtinIdx);
+          } else {
+            // Unknown method — compile normally (will fail at runtime)
+            this.compile(node.function);
+          }
+        }
+        for (const arg of node.arguments) {
+          this.compile(arg);
+        }
+        this.emit(Opcodes.OpCall, node.arguments.length);
       } else {
         this.compile(node.function);
+        for (const arg of node.arguments) {
+          this.compile(arg);
+        }
+        this.emit(Opcodes.OpCall, node.arguments.length);
       }
-      for (const arg of node.arguments) {
-        this.compile(arg);
-      }
-      this.emit(Opcodes.OpCall, node.arguments.length);
     } else if (node instanceof AST.MatchExpression) {
       // match subject { pattern => body, ... }
       // Uses deep equality comparison for structural matching

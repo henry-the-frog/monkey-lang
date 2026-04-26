@@ -564,6 +564,11 @@ export const builtins = [
   }), { needsVM: true }),
 ];
 
+// Builtin name → index map for OpMethodCall fallback
+const builtinNameMap = new Map();
+const _builtinNames = ['len', 'first', 'last', 'rest', 'push', 'puts', 'print', 'type', 'str', 'int', 'bool', 'format', 'range', 'split', 'join', 'trim', 'upper', 'lower', 'contains', 'indexOf', 'replace', 'reverse', 'abs', 'min', 'max', 'startsWith', 'endsWith', 'char', 'ord', 'repeat', 'enumerate', 'zip', 'slice', 'sum', 'count', 'compact', 'unique', 'isEmpty', 'flatten', 'keys', 'values', 'sort', 'padStart', 'padEnd', 'float', 'floor', 'ceil', 'sqrt', 'pow', 'chars', 'sin', 'cos', 'merge', 'product', 'import', '__range_inclusive', '__nativeMap', '__nativeFilter', '__nativeReduce', '__nativeForEach'];
+for (let i = 0; i < _builtinNames.length; i++) builtinNameMap.set(_builtinNames[i], i);
+
 /**
  * VM: the Monkey stack virtual machine.
  */
@@ -791,6 +796,80 @@ export class VM {
             this.push(new MonkeyError(`OpSetIndex: unsupported type ${obj?.constructor?.name}`));
           }
           break;
+        }
+
+        case Opcodes.OpMethodCall: {
+          // Stack: [obj, arg1, arg2, ...] → call obj.method(obj, arg1, arg2, ...)
+          // Operands: method name constant index (uint16), numArgs (uint8)
+          const nameIdx = (instructions[ip + 1] << 8) | instructions[ip + 2];
+          const numArgs = instructions[ip + 3];
+          this.currentFrame().ip += 3;
+          
+          const methodName = this.constants[nameIdx]; // MonkeyString
+          const methodStr = methodName.value;
+          
+          // obj is at sp - numArgs - 1 (first arg is obj itself)
+          // Stack layout: [obj, obj, arg1, arg2, ...] if obj is passed as first arg
+          // Actually: the caller pushed obj then args, so obj = stack[sp - numArgs]
+          // But parseMethodCall puts obj as first arg, so:
+          // stack = [..., fn_slot, obj, arg1, arg2, ...]
+          // We need the obj to look up the method
+          
+          // The object is the first argument (index 0)
+          const obj = this.stack[this.sp - numArgs];
+          
+          // Try 1: Look up method on the object (hash/shaped hash)
+          let method = null;
+          if (obj instanceof ShapedHash) {
+            const slot = obj.shape.getSlot(methodStr);
+            if (slot >= 0) method = obj.slots[slot];
+          } else if (obj instanceof MonkeyHash) {
+            const pair = obj.pairs.get(methodStr);
+            if (pair) method = pair.value;
+          }
+          
+          if (method instanceof Closure) {
+            // Hash-based dispatch: call the closure with (obj, args)
+            // Replace the "function slot" with the closure
+            this.stack[this.sp - numArgs - 1] = method;
+            this.callClosure(method, numArgs);
+            break;
+          }
+          
+          // Try 2: Builtin fallback — look up methodStr in builtins
+          const builtinIdx = builtinNameMap.get(methodStr);
+          if (builtinIdx !== undefined) {
+            const builtin = builtins[builtinIdx];
+            this.stack[this.sp - numArgs - 1] = builtin;
+            this.callBuiltin(builtin, numArgs);
+            break;
+          }
+          
+          // Try 3: Look up in globals (user-defined functions)
+          // Look for both unmangled and class-prefixed names
+          for (let gi = 0; gi < this.globals.length; gi++) {
+            if (this.globals[gi] instanceof Closure) {
+              // Check if this global's name matches (we need a reverse lookup)
+              // For now, just try the symbol table
+            }
+          }
+          
+          // Try to resolve from the current scope
+          // The method was emitted as both 'speak' and 'ClassName__speak'
+          // 'speak' should be resolvable as a global
+          const globalFunc = this._resolveGlobal?.(methodStr);
+          if (globalFunc instanceof Closure) {
+            this.stack[this.sp - numArgs - 1] = globalFunc;
+            this.callClosure(globalFunc, numArgs);
+            break;
+          }
+          if (globalFunc instanceof MonkeyBuiltin) {
+            this.stack[this.sp - numArgs - 1] = globalFunc;
+            this.callBuiltin(globalFunc, numArgs);
+            break;
+          }
+          
+          throw new Error(`undefined method: ${methodStr} on ${obj?.type?.() || typeof obj}`);
         }
 
         case Opcodes.OpCall: {
