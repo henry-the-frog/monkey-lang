@@ -321,6 +321,7 @@ export class Compiler {
     this.inFunction = false; // Track if we're compiling inside a function body
     this.loopStack = []; // Stack of { breakJumps: [], continueTarget: number }
     this.optimizeEnabled = options.optimize !== false; // default: true
+    this._classMethodRegistry = new Map(); // className → Set of method names
 
     // Register builtins
     for (let i = 0; i < builtinNames.length; i++) {
@@ -1165,28 +1166,36 @@ export class Compiler {
         }
         this.emit(Opcodes.OpCall, node.arguments.length);
       } else if (node._isMethodCall) {
-        // Method call: obj.method(args)
-        // Resolve the method at compile time:
-        // 1. If method name is in symbol table → use it (class method or user function)
-        // 2. If method name is a builtin → use it
-        // This gives us correct class method dispatch
+        // Method call: obj.method(args) → desugared to method(obj, ...args)
+        // Strategy: use hash-based dispatch for class methods, scope/builtin for builtins
+        
         const methodName = node._methodName;
-        const sym = this.symbolTable.resolve(methodName);
-        if (sym) {
-          this.loadSymbol(sym);
-        } else {
-          const builtinIdx = builtinNames.indexOf(methodName);
-          if (builtinIdx >= 0) {
-            this.emit(Opcodes.OpGetBuiltin, builtinIdx);
-          } else {
-            // Unknown method — compile normally (will fail at runtime)
-            this.compile(node.function);
+        const obj = node.arguments[0]; // The object expression
+        const builtinIdx = builtinNames.indexOf(methodName);
+        
+        if (builtinIdx >= 0) {
+          // Builtin method (len, push, etc.) — use builtin dispatch
+          this.emit(Opcodes.OpGetBuiltin, builtinIdx);
+          for (const arg of node.arguments) {
+            this.compile(arg);
           }
+          this.emit(Opcodes.OpCall, node.arguments.length);
+        } else {
+          // Class method — load from instance hash: obj["method"]
+          this.compile(obj);
+          const methodStr = new AST.StringLiteral(
+            { type: 'STRING', literal: methodName },
+            methodName
+          );
+          this.compile(methodStr);
+          this.emit(Opcodes.OpIndex);
+          
+          // Emit all arguments (including obj as first arg for self)
+          for (const arg of node.arguments) {
+            this.compile(arg);
+          }
+          this.emit(Opcodes.OpCall, node.arguments.length);
         }
-        for (const arg of node.arguments) {
-          this.compile(arg);
-        }
-        this.emit(Opcodes.OpCall, node.arguments.length);
       } else {
         this.compile(node.function);
         for (const arg of node.arguments) {
@@ -1495,9 +1504,65 @@ export class Compiler {
       }
     }
     
-    // For inherited methods (from parent class), copy them too
-    // This is done by checking if the parent has methods stored that we haven't overridden
-    // (For now, inherited methods are accessible through the parent's scope-level definition)
+    // Store method references on the instance hash for correct dispatch
+    // This ensures obj.method() resolves to the correct class's method
+    
+    // First: store inherited methods from parent class (if not overridden)
+    const ownMethodNames = new Set(otherMethods.map(m => m.name.value));
+    if (node.superClass) {
+      const parentMethods = this._classMethodRegistry.get(node.superClass.value);
+      if (parentMethods) {
+        for (const [methodName, definingClass] of parentMethods) {
+          if (!ownMethodNames.has(methodName)) {
+            // Inherit parent method using the original defining class's mangled name
+            const parentMangled = `${definingClass}__${methodName}`;
+            const parentIdent = new AST.Identifier({ type: 'IDENT', literal: parentMangled }, parentMangled);
+            const methodKey = new AST.StringLiteral({ type: 'STRING', literal: methodName }, methodName);
+            const selfRef = new AST.Identifier({ type: 'IDENT', literal: 'self' }, 'self');
+            const indexExpr = new AST.IndexExpression({ type: '[', literal: '[' }, selfRef, methodKey);
+            bodyStatements.push(new AST.SetStatement({ type: 'SET', literal: 'set' }, indexExpr, parentIdent));
+          }
+        }
+      }
+    }
+    
+    // Then: store own methods
+    for (const method of otherMethods) {
+      const mangledName = `${className}__${method.name.value}`;
+      const mangledIdent = new AST.Identifier({ type: 'IDENT', literal: mangledName }, mangledName);
+      const methodKey = new AST.StringLiteral({ type: 'STRING', literal: method.name.value }, method.name.value);
+      
+      // set self["speak"] = Dog__speak
+      const selfRef = new AST.Identifier({ type: 'IDENT', literal: 'self' }, 'self');
+      const indexExpr = new AST.IndexExpression(
+        { type: '[', literal: '[' },
+        selfRef,
+        methodKey
+      );
+      bodyStatements.push(new AST.SetStatement(
+        { type: 'SET', literal: 'set' },
+        indexExpr,
+        mangledIdent
+      ));
+    }
+    
+    // Register this class's methods for inheritance lookup
+    // Map: methodName → definingClassName (for correct mangled name resolution)
+    const allMethods = new Map();
+    // Include inherited methods first (parent's defining class)
+    if (node.superClass) {
+      const parentMethods = this._classMethodRegistry.get(node.superClass.value);
+      if (parentMethods) {
+        for (const [name, defClass] of parentMethods) {
+          allMethods.set(name, defClass);
+        }
+      }
+    }
+    // Own methods override with this class as defining class
+    for (const m of otherMethods) {
+      allMethods.set(m.name.value, className);
+    }
+    this._classMethodRegistry.set(className, allMethods);
     
     // Return self
     bodyStatements.push(new AST.ExpressionStatement(
