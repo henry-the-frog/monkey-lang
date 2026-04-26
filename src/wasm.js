@@ -44,6 +44,24 @@ function encodeSLEB128(value) {
   return bytes;
 }
 
+/**
+ * Encode a 64-bit float as 8 little-endian bytes.
+ */
+function encodeF64(value) {
+  const buf = new ArrayBuffer(8);
+  new Float64Array(buf)[0] = value;
+  return Array.from(new Uint8Array(buf));
+}
+
+/**
+ * Encode a 32-bit float as 4 little-endian bytes.
+ */
+function encodeF32(value) {
+  const buf = new ArrayBuffer(4);
+  new Float32Array(buf)[0] = value;
+  return Array.from(new Uint8Array(buf));
+}
+
 // --- WASM Type Constants ---
 const WASM_TYPE = {
   I32: 0x7F,
@@ -164,6 +182,7 @@ class WasmModule {
     this.codes = [];      // Function bodies: [{locals: [{count, type}], body: [byte]}]
     this.memory = null;   // {min: pages, max?: pages} — null means no memory
     this.dataSegments = []; // [{offset: number, data: Uint8Array}] — data segments
+    this.globals = [];    // [{type, mutable, initExpr: [byte]}] — global variables
     this._nextDataOffset = 0; // Next available byte offset in linear memory
   }
   
@@ -264,6 +283,44 @@ class WasmModule {
   getDataEnd() {
     return this._nextDataOffset;
   }
+
+  /**
+   * Add a global variable. Returns the global index.
+   * @param {number} type - WASM_TYPE (I32, I64, F32, F64)
+   * @param {boolean} mutable - Whether the global can be set
+   * @param {number} initValue - Initial value (compiled as const expr)
+   * @returns {number} Global index
+   */
+  addGlobal(type, mutable, initValue = 0) {
+    const idx = this.globals.length;
+    // Build init expression: type.const value end
+    let initExpr;
+    switch (type) {
+      case WASM_TYPE.I32:
+        initExpr = [WasmOp.i32_const, ...encodeSLEB128(initValue), WasmOp.end];
+        break;
+      case WASM_TYPE.I64:
+        initExpr = [WasmOp.i64_const, ...encodeSLEB128(initValue), WasmOp.end];
+        break;
+      case WASM_TYPE.F64:
+        initExpr = [WasmOp.f64_const, ...encodeF64(initValue), WasmOp.end];
+        break;
+      case WASM_TYPE.F32:
+        initExpr = [WasmOp.f32_const, ...encodeF32(initValue), WasmOp.end];
+        break;
+      default:
+        initExpr = [WasmOp.i32_const, ...encodeSLEB128(initValue), WasmOp.end];
+    }
+    this.globals.push({ type, mutable, initExpr });
+    return idx;
+  }
+
+  /**
+   * Export a global variable.
+   */
+  exportGlobal(name, globalIndex) {
+    this.exports.push({ name, kind: WASM_EXPORT_KIND.GLOBAL, index: globalIndex });
+  }
   
   /**
    * Export a function by name.
@@ -344,6 +401,18 @@ class WasmModule {
       sections.push(this._encodeSection(WASM_SECTION.MEMORY, content));
     }
 
+    // Global section
+    if (this.globals.length > 0) {
+      const content = [];
+      content.push(...encodeULEB128(this.globals.length));
+      for (const g of this.globals) {
+        content.push(g.type);        // value type
+        content.push(g.mutable ? 0x01 : 0x00); // mutability
+        content.push(...g.initExpr); // init expression
+      }
+      sections.push(this._encodeSection(WASM_SECTION.GLOBAL, content));
+    }
+
     // Export section
     if (this.exports.length > 0) {
       const content = [];
@@ -421,4 +490,4 @@ class WasmModule {
   }
 }
 
-export { WasmModule, WasmOp, WASM_TYPE, encodeULEB128, encodeSLEB128 };
+export { WasmModule, WasmOp, WASM_TYPE, encodeULEB128, encodeSLEB128, encodeF64, encodeF32 };
