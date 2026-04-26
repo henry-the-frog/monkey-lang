@@ -15,7 +15,7 @@ import { CFGBuilder } from './cfg.js';
 import { SSABuilder, formatSSA } from './ssa.js';
 import { ConstantPropagation } from './const-prop.js';
 import { LivenessAnalysis } from './liveness.js';
-import { DeadCodeEliminator, findDeadVariables } from './dce.js';
+import { DeadCodeEliminator, findDeadVariables, removeDeadLets } from './dce.js';
 import { EscapeAnalyzer } from './escape.js';
 
 class CompilerPipeline {
@@ -71,10 +71,20 @@ class CompilerPipeline {
       t0 = Date.now();
       const dce = new DeadCodeEliminator();
       const optimized = dce.eliminate(program);
-      this.timings.dce = Date.now() - t0;
       this.results.dceWarnings = dce.warnings;
       this.results.dceEliminated = dce.eliminatedCount;
-      this.results.deadVars = findDeadVariables(program);
+      
+      // Find and remove dead let statements
+      const deadVars = findDeadVariables(optimized);
+      this.results.deadVars = deadVars;
+      const { removed, converted } = removeDeadLets(optimized, deadVars);
+      this.results.deadLetsRemoved = removed;
+      this.results.deadLetsConverted = converted;
+      
+      // Update program reference to optimized version
+      program.statements = optimized.statements;
+      this.results.program = program;
+      this.timings.dce = Date.now() - t0;
     }
 
     // === CFG ===
@@ -149,6 +159,8 @@ class CompilerPipeline {
         parseErrors: this.results.parseErrors?.length || 0,
         constants: this.results.constants?.size || 0,
         deadVars: this.results.deadVars?.length || 0,
+        deadLetsRemoved: this.results.deadLetsRemoved || 0,
+        deadLetsConverted: this.results.deadLetsConverted || 0,
         deadAssignments: this.results.deadAssignments?.length || 0,
         dceEliminated: this.results.dceEliminated || 0,
         loops: this.results.loops?.length || 0,

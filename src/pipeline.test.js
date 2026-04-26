@@ -33,7 +33,7 @@ test('simple program: all passes succeed', () => {
 
 test('constants found by SSA const-prop', () => {
   const pipeline = new CompilerPipeline();
-  const result = pipeline.run('let x = 5; let y = 3;');
+  const result = pipeline.run('let x = 5; let y = 3; x + y;');
   assert.ok(result.stats.constants >= 2); // x_0=5, y_0=3
 });
 
@@ -41,6 +41,20 @@ test('dead variable detected', () => {
   const pipeline = new CompilerPipeline();
   const result = pipeline.run('let x = 5; let y = 10; puts(y);');
   assert.ok(result.stats.deadVars >= 1); // x is dead
+});
+
+test('dead let statements removed from AST', () => {
+  const pipeline = new CompilerPipeline();
+  const result = pipeline.run('let x = 5; let unused = 999; let y = 10; x + y;');
+  assert.equal(result.stats.deadLetsRemoved, 1); // unused removed
+  assert.equal(result.results.program.statements.length, 3); // 4 → 3
+});
+
+test('dead let with side effects converted to expression', () => {
+  const pipeline = new CompilerPipeline();
+  const result = pipeline.run('let x = sideEffect(); let y = 10; y;');
+  assert.equal(result.stats.deadLetsConverted, 1); // x kept as expression
+  assert.equal(result.results.program.statements.length, 3); // still 3 stmts
 });
 
 test('type errors reported', () => {
@@ -69,7 +83,7 @@ test('typecheck only', () => {
 
 test('CFG produces blocks', () => {
   const pipeline = new CompilerPipeline();
-  const result = pipeline.run('if (true) { let x = 1; } else { let y = 2; }');
+  const result = pipeline.run('let a = 1; if (a > 0) { let x = a + 1; x; } else { let y = a - 1; y; }');
   assert.ok(result.stats.blocks >= 4); // entry, then, else, merge
 });
 
@@ -113,11 +127,13 @@ test('complex: function with branch and loop', () => {
   const pipeline = new CompilerPipeline();
   const result = pipeline.run(`
     let x = 10;
-    let y = 0;
+    let y = x + 5;
     if (x > 5) {
       let z = x * 2;
+      z + y;
     } else {
       let z = x + 1;
+      z + y;
     }
   `);
   assert.equal(result.status, 'ok');
