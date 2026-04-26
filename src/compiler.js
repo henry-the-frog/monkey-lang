@@ -1152,7 +1152,17 @@ export class Compiler {
       this.compile(node.returnValue);
       this.emit(Opcodes.OpReturnValue);
     } else if (node instanceof AST.CallExpression) {
-      this.compile(node.function);
+      // Handle super.method() calls
+      if (node.function instanceof AST.SuperExpression && this._currentSuperClass) {
+        const resolvedName = `${this._currentSuperClass}__${node.function.method.value}`;
+        const resolvedIdent = new AST.Identifier(
+          { type: 'IDENT', literal: resolvedName },
+          resolvedName
+        );
+        this.compile(resolvedIdent);
+      } else {
+        this.compile(node.function);
+      }
       for (const arg of node.arguments) {
         this.compile(arg);
       }
@@ -1383,16 +1393,32 @@ export class Compiler {
     const initMethod = node.methods.find(m => m.name.value === 'init');
     const otherMethods = node.methods.filter(m => m.name.value !== 'init');
     
-    // Step 1: Emit non-init methods as let-bindings
+    // Step 1: Track super class for super.method() resolution
+    const savedSuperClass = this._currentSuperClass;
+    this._currentSuperClass = node.superClass?.value || null;
+    if (initMethod) {
+      const initFn = new AST.FunctionLiteral(
+        { type: 'FUNCTION', literal: 'fn' },
+        initMethod.params,
+        initMethod.body
+      );
+      this.compile(initFn);
+      // Define as ClassName__init for super resolution
+      const initSymbol = this.symbolTable.define(`${className}__init`);
+      if (initSymbol.scope === SymbolScopes.GLOBAL) {
+        this.emit(Opcodes.OpSetGlobal, initSymbol.index);
+      } else {
+        this.emit(Opcodes.OpSetLocal, initSymbol.index);
+      }
+    }
+    
+    // Step 2: Emit non-init methods as let-bindings
     for (const method of otherMethods) {
-      // Build a FunctionLiteral AST node for the method
       const fnLit = new AST.FunctionLiteral(
         { type: 'FUNCTION', literal: 'fn' },
         method.params,
         method.body
       );
-      
-      // Compile: let methodName = fn(self, ...) { ... };
       this.compile(fnLit);
       const symbol = this.symbolTable.define(method.name.value);
       if (symbol.scope === SymbolScopes.GLOBAL) {
@@ -1402,16 +1428,11 @@ export class Compiler {
       }
     }
     
-    // Step 2: Build the constructor factory function
-    // Constructor params = init params minus 'self'
+    // Step 3: Build the constructor factory function
     const ctorParams = initMethod
       ? initMethod.params.filter(p => p.value !== 'self')
       : [];
     
-    // Build constructor body as AST nodes:
-    // let self = {};
-    // <init body statements (with self in scope)>
-    // self  (return the instance)
     const bodyStatements = [];
     
     // let self = {};
@@ -1426,7 +1447,8 @@ export class Compiler {
       emptyHash
     ));
     
-    // Copy init body statements (excluding implicit return of self)
+    // If extends, DON'T auto-call parent init (user must use super.init() explicitly)
+    // Just copy the child init body as-is
     if (initMethod) {
       for (const stmt of initMethod.body.statements) {
         bodyStatements.push(stmt);
@@ -1450,7 +1472,6 @@ export class Compiler {
       ctorBody
     );
     
-    // Compile: let ClassName = fn(...) { ... };
     this.compile(ctorFn);
     const classSymbol = this.symbolTable.define(className);
     if (classSymbol.scope === SymbolScopes.GLOBAL) {
@@ -1458,6 +1479,9 @@ export class Compiler {
     } else {
       this.emit(Opcodes.OpSetLocal, classSymbol.index);
     }
+    
+    // Restore super class context
+    this._currentSuperClass = savedSuperClass;
   }
 
   /**
