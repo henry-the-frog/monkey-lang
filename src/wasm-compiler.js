@@ -39,6 +39,7 @@ class WasmCompiler {
   constructor(options = {}) {
     this.module = new WasmModule();
     this.functions = new Map();
+    this.globals = new Map(); // name → {index, mutable}
     this.currentLocals = null;
     this.currentLocalCount = 0;
     this.currentExtraLocals = 0;
@@ -82,9 +83,11 @@ class WasmCompiler {
   }
   
   compile(program) {
-    // Two passes:
     // Pass 0: Process import statements (creates WASM imports)
     this._processImports(program.statements);
+
+    // Pass 0.5: Process top-level let bindings as globals (non-function values)
+    this._processGlobals(program.statements);
 
     // Pass 1: Collect all function definitions and their signatures
     this._collectFunctions(program.statements);
@@ -96,6 +99,9 @@ class WasmCompiler {
       }
     }
     
+    // Pass 2.5: Initialize globals (compile init expressions into a start-like function)
+    this._initializeGlobals(program.statements);
+    
     // Find and compile a "main" function (last expression statement) if any
     const lastStmt = program.statements[program.statements.length - 1];
     if (lastStmt instanceof ast.ExpressionStatement) {
@@ -103,6 +109,50 @@ class WasmCompiler {
     }
     
     return this.module.encode();
+  }
+
+  _processGlobals(statements) {
+    for (const stmt of statements) {
+      if (stmt instanceof ast.LetStatement && !(stmt.value instanceof ast.FunctionLiteral)) {
+        const name = stmt.name.value;
+        // Create a mutable global for this variable
+        const idx = this.module.addGlobal(this.numType, true, 0);
+        this.globals.set(name, { index: idx, mutable: true });
+      }
+    }
+  }
+
+  _initializeGlobals(statements) {
+    const initBody = [];
+    let hasInits = false;
+
+    // Set up context for expression compilation
+    this.currentLocals = new Map();
+    this.currentLocalCount = 0;
+    this.currentExtraLocals = 0;
+
+    for (const stmt of statements) {
+      if (stmt instanceof ast.LetStatement && !(stmt.value instanceof ast.FunctionLiteral)) {
+        const name = stmt.name.value;
+        const global = this.globals.get(name);
+        if (global) {
+          this._compileExpr(stmt.value, initBody);
+          initBody.push(WasmOp.global_set, ...encodeULEB128(global.index));
+          hasInits = true;
+        }
+      }
+    }
+
+    if (hasInits) {
+      const typeIdx = this.module.addType([], []);
+      const locals = this.currentExtraLocals > 0
+        ? [{ count: this.currentExtraLocals, type: this.numType }]
+        : [];
+      const funcIdx = this.module.addFunction(typeIdx, locals, initBody);
+      this._initFuncIdx = funcIdx;
+    }
+    
+    this.currentLocals = null;
   }
   
   _processImports(statements) {
@@ -195,13 +245,19 @@ class WasmCompiler {
     this.currentExtraLocals = 0;
     
     const body = [];
+    
+    // Call __init to initialize globals before running main expression
+    if (this._initFuncIdx !== undefined) {
+      body.push(WasmOp.call, ...encodeULEB128(this._initFuncIdx));
+    }
+    
     this._compileExpr(expr, body);
     
     const locals = this.currentExtraLocals > 0
       ? [{ count: this.currentExtraLocals, type: this.numType }]
       : [];
     
-    const funcIdx = this.module.imports.length + this._localFunctionCount();
+    const funcIdx = this.module.imports.length + this.module.functions.length;
     this.module.addFunction(typeIdx, locals, body);
     this.module.exportFunction('main', funcIdx);
   }
@@ -328,6 +384,8 @@ class WasmCompiler {
       const localIdx = this.currentLocals?.get(expr.value);
       if (localIdx !== undefined) {
         body.push(WasmOp.local_get, ...encodeULEB128(localIdx));
+      } else if (this.globals.has(expr.value)) {
+        body.push(WasmOp.global_get, ...encodeULEB128(this.globals.get(expr.value).index));
       } else {
         throw new Error(`Undefined variable in WASM compilation: ${expr.value}`);
       }
