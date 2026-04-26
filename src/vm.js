@@ -520,6 +520,48 @@ export const builtins = [
     }
     return new MonkeyArray(elements);
   }),
+  // __nativeMap: native map with VM callback (array, fn) → array
+  Object.assign(new MonkeyBuiltin((vm, arr, fn) => {
+    if (!(arr instanceof MonkeyArray)) return new MonkeyError('first argument to __nativeMap must be ARRAY');
+    if (!(fn instanceof Closure)) return new MonkeyError('second argument to __nativeMap must be FUNCTION');
+    const results = [];
+    for (let i = 0; i < arr.elements.length; i++) {
+      results.push(vm.callClosureSync(fn, [arr.elements[i]]));
+    }
+    return new MonkeyArray(results);
+  }), { needsVM: true }),
+  // __nativeFilter: native filter with VM callback (array, fn) → array
+  Object.assign(new MonkeyBuiltin((vm, arr, fn) => {
+    if (!(arr instanceof MonkeyArray)) return new MonkeyError('first argument to __nativeFilter must be ARRAY');
+    if (!(fn instanceof Closure)) return new MonkeyError('second argument to __nativeFilter must be FUNCTION');
+    const results = [];
+    for (let i = 0; i < arr.elements.length; i++) {
+      const result = vm.callClosureSync(fn, [arr.elements[i]]);
+      if (vm.isTruthy(result)) {
+        results.push(arr.elements[i]);
+      }
+    }
+    return new MonkeyArray(results);
+  }), { needsVM: true }),
+  // __nativeReduce: native reduce with VM callback (array, init, fn) → value
+  Object.assign(new MonkeyBuiltin((vm, arr, init, fn) => {
+    if (!(arr instanceof MonkeyArray)) return new MonkeyError('first argument to __nativeReduce must be ARRAY');
+    if (!(fn instanceof Closure)) return new MonkeyError('third argument to __nativeReduce must be FUNCTION');
+    let acc = init;
+    for (let i = 0; i < arr.elements.length; i++) {
+      acc = vm.callClosureSync(fn, [acc, arr.elements[i]]);
+    }
+    return acc;
+  }), { needsVM: true }),
+  // __nativeForEach: native forEach with VM callback (array, fn) → null
+  Object.assign(new MonkeyBuiltin((vm, arr, fn) => {
+    if (!(arr instanceof MonkeyArray)) return new MonkeyError('first argument to __nativeForEach must be ARRAY');
+    if (!(fn instanceof Closure)) return new MonkeyError('second argument to __nativeForEach must be FUNCTION');
+    for (let i = 0; i < arr.elements.length; i++) {
+      vm.callClosureSync(fn, [arr.elements[i]]);
+    }
+    return NULL;
+  }), { needsVM: true }),
 ];
 
 /**
@@ -722,9 +764,10 @@ export class VM {
 
         case Opcodes.OpReturnValue: {
           const returnValue = this.pop();
-          if (this.framesIndex <= 1) {
-            // Top-level return — halt the VM
-            // Place value where lastPoppedStackElem can find it
+          const floor = this._frameFloor || 1;
+          if (this.framesIndex <= floor) {
+            // Floor return — halt this run() invocation
+            // Place value where caller can find it
             this.stack[this.sp] = returnValue;
             return;
           }
@@ -735,7 +778,8 @@ export class VM {
         }
 
         case Opcodes.OpReturn: {
-          if (this.framesIndex <= 1) {
+          const floor = this._frameFloor || 1;
+          if (this.framesIndex <= floor) {
             this.stack[this.sp] = NULL;
             return;
           }
@@ -1162,8 +1206,53 @@ export class VM {
     }
     this.sp -= numArgs + 1; // pop args + function
 
-    const result = builtin.fn(...args);
+    // VM-aware builtins receive the VM as first arg (for callClosureSync)
+    const result = builtin.needsVM ? builtin.fn(this, ...args) : builtin.fn(...args);
     this.push(result != null ? result : NULL);
+  }
+
+  /**
+   * Synchronously call a compiled closure from native code and return the result.
+   * This enables native builtins to invoke monkey-lang callbacks (e.g., map/filter/reduce).
+   * Works by pushing a closure frame, running the VM loop until that frame returns,
+   * then returning the result value.
+   */
+  /**
+   * Synchronously call a compiled closure from native code and return the result.
+   * This enables native builtins to invoke monkey-lang callbacks (e.g., map/filter/reduce).
+   * Pushes a closure frame and re-enters run() with a frame floor so it returns
+   * when the closure completes.
+   */
+  callClosureSync(closure, args) {
+    // Push the closure and args onto the stack (mimicking a call expression)
+    this.push(closure);
+    for (const arg of args) {
+      this.push(arg);
+    }
+    // Set up the closure frame (reuses existing callClosure with all param handling)
+    this.callClosure(closure, args.length);
+    
+    // Remember the frame we pushed so we can detect its return
+    const callFrameIndex = this.framesIndex;
+    const callBasePointer = this.currentFrame().basePointer;
+    
+    // Save and set the frame floor — run() will stop when a return reaches this level
+    const savedFloor = this._frameFloor || 1;
+    this._frameFloor = callFrameIndex;
+    
+    try {
+      this.run();
+    } finally {
+      this._frameFloor = savedFloor;
+    }
+    
+    // After run() returns at the floor:
+    // - OpReturnValue placed the value at stack[sp] without popping the frame
+    // - We need to: read the value, pop the frame, restore sp
+    const returnValue = this.stack[this.sp] || NULL;
+    this.framesIndex = callFrameIndex - 1;
+    this.sp = callBasePointer - 1; // -1 to also pop the closure reference
+    return returnValue;
   }
 
   isTruthy(obj) {

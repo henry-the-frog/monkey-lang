@@ -8,36 +8,11 @@ import { Parser } from './parser.js';
 import { VM } from './vm.js';
 
 const PRELUDE_SOURCE = `
-let map = fn(arr, f) {
-  let iter = fn(arr, acc) {
-    if (len(arr) == 0) { acc; }
-    else { iter(rest(arr), push(acc, f(first(arr)))); };
-  };
-  iter(arr, []);
-};
+let map = fn(arr, f) { __nativeMap(arr, f); };
 
-let filter = fn(arr, f) {
-  let iter = fn(arr, acc) {
-    if (len(arr) == 0) { acc; }
-    else {
-      let item = first(arr);
-      if (f(item)) {
-        iter(rest(arr), push(acc, item));
-      } else {
-        iter(rest(arr), acc);
-      };
-    };
-  };
-  iter(arr, []);
-};
+let filter = fn(arr, f) { __nativeFilter(arr, f); };
 
-let reduce = fn(arr, init, f) {
-  let iter = fn(arr, acc) {
-    if (len(arr) == 0) { acc; }
-    else { iter(rest(arr), f(acc, first(arr))); };
-  };
-  iter(arr, init);
-};
+let reduce = fn(arr, init, f) { __nativeReduce(arr, init, f); };
 
 let any = fn(arr, f) {
   let iter = fn(arr) {
@@ -184,13 +159,7 @@ let group_by = fn(arr, f) {
   });
 };
 
-let each = fn(arr, f) {
-  let iter = fn(arr) {
-    if (len(arr) == 0) { null; }
-    else { f(first(arr)); iter(rest(arr)); };
-  };
-  iter(arr);
-};
+let each = fn(arr, f) { __nativeForEach(arr, f); };
 `;
 
 let _compiledPrelude = null;

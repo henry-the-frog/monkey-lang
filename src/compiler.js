@@ -116,7 +116,7 @@ export class SymbolTable {
 }
 
 // Builtin function names (must match evaluator's builtin order)
-const builtinNames = ['len', 'first', 'last', 'rest', 'push', 'puts', 'print', 'type', 'str', 'int', 'bool', 'format', 'range', 'split', 'join', 'trim', 'upper', 'lower', 'contains', 'indexOf', 'replace', 'reverse', 'abs', 'min', 'max', 'startsWith', 'endsWith', 'char', 'ord', 'repeat', 'enumerate', 'zip', 'slice', 'sum', 'count', 'compact', 'unique', 'isEmpty', 'flatten', 'keys', 'values', 'sort', 'padStart', 'padEnd', 'float', 'floor', 'ceil', 'sqrt', 'pow', 'chars', 'sin', 'cos', 'merge', 'product', 'import', '__range_inclusive'];
+const builtinNames = ['len', 'first', 'last', 'rest', 'push', 'puts', 'print', 'type', 'str', 'int', 'bool', 'format', 'range', 'split', 'join', 'trim', 'upper', 'lower', 'contains', 'indexOf', 'replace', 'reverse', 'abs', 'min', 'max', 'startsWith', 'endsWith', 'char', 'ord', 'repeat', 'enumerate', 'zip', 'slice', 'sum', 'count', 'compact', 'unique', 'isEmpty', 'flatten', 'keys', 'values', 'sort', 'padStart', 'padEnd', 'float', 'floor', 'ceil', 'sqrt', 'pow', 'chars', 'sin', 'cos', 'merge', 'product', 'import', '__range_inclusive', '__nativeMap', '__nativeFilter', '__nativeReduce', '__nativeForEach'];
 
 /**
  * Compiler: walks the AST and produces Bytecode.
