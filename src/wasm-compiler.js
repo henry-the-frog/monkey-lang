@@ -192,7 +192,9 @@ class WasmCompiler {
         // Reserve function index (body filled in pass 2)
         // addFunction accounts for imports in the index space
         const funcIdx = this.module.imports.length + this._localFunctionCount();
-        this.functions.set(name, { index: funcIdx, params: paramCount, typeIdx });
+        // Add to table for indirect calling (higher-order functions)
+        const tableIdx = this.module.addTableElement(funcIdx);
+        this.functions.set(name, { index: funcIdx, params: paramCount, typeIdx, tableIdx });
       }
     }
   }
@@ -386,6 +388,10 @@ class WasmCompiler {
         body.push(WasmOp.local_get, ...encodeULEB128(localIdx));
       } else if (this.globals.has(expr.value)) {
         body.push(WasmOp.global_get, ...encodeULEB128(this.globals.get(expr.value).index));
+      } else if (this.functions.has(expr.value)) {
+        // Function reference — push table index as a value
+        const funcInfo = this.functions.get(expr.value);
+        this._emitConst(body, funcInfo.tableIdx);
       } else {
         throw new Error(`Undefined variable in WASM compilation: ${expr.value}`);
       }
@@ -445,12 +451,30 @@ class WasmCompiler {
     if (expr instanceof ast.CallExpression) {
       const funcName = expr.function.value;
       const funcInfo = this.functions.get(funcName);
-      if (!funcInfo) throw new Error(`Undefined function in WASM: ${funcName}`);
       
-      for (const arg of expr.arguments) {
-        this._compileExpr(arg, body);
+      if (funcInfo) {
+        // Direct call — known function
+        for (const arg of expr.arguments) {
+          this._compileExpr(arg, body);
+        }
+        body.push(WasmOp.call, ...encodeULEB128(funcInfo.index));
+      } else {
+        // Indirect call — function passed as parameter/variable
+        // Push arguments first, then the table index (from variable), then call_indirect
+        for (const arg of expr.arguments) {
+          this._compileExpr(arg, body);
+        }
+        // Push the function reference (table index) from the variable
+        this._compileExpr(expr.function, body);
+        // Need type index for the expected signature
+        const paramCount = expr.arguments.length;
+        const typeIdx = this.module.addType(
+          new Array(paramCount).fill(this.numType),
+          [this.numType]
+        );
+        if (this.useI64) body.push(WasmOp.i32_wrap_i64); // table index must be i32
+        body.push(WasmOp.call_indirect, ...encodeULEB128(typeIdx), 0x00);
       }
-      body.push(WasmOp.call, ...encodeULEB128(funcInfo.index));
       return;
     }
     
