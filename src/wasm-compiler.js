@@ -102,10 +102,13 @@ class WasmCompiler {
     // Pass 2.5: Initialize globals (compile init expressions into a start-like function)
     this._initializeGlobals(program.statements);
     
-    // Find and compile a "main" function (last expression statement) if any
-    const lastStmt = program.statements[program.statements.length - 1];
-    if (lastStmt instanceof ast.ExpressionStatement) {
-      this._compileMainExpression(lastStmt.expression);
+    // Collect non-let, non-function, non-import statements for main block
+    const mainStatements = program.statements.filter(stmt =>
+      !(stmt instanceof ast.LetStatement) &&
+      !(stmt instanceof ast.ImportStatement)
+    );
+    if (mainStatements.length > 0) {
+      this._compileMainBlock(mainStatements);
     }
     
     return this.module.encode();
@@ -238,27 +241,25 @@ class WasmCompiler {
     this.currentLocals = null;
   }
   
-  _compileMainExpression(expr) {
-    // Compile a standalone expression as a no-arg function "main"
+  _compileMainBlock(statements) {
     const typeIdx = this.module.addType([], [this.numType]);
-    
     this.currentLocals = new Map();
     this.currentLocalCount = 0;
     this.currentExtraLocals = 0;
     
     const body = [];
-    
-    // Call __init to initialize globals before running main expression
     if (this._initFuncIdx !== undefined) {
       body.push(WasmOp.call, ...encodeULEB128(this._initFuncIdx));
     }
     
-    this._compileExpr(expr, body);
+    for (let i = 0; i < statements.length; i++) {
+      const isLast = i === statements.length - 1;
+      this._compileStatement(statements[i], body, isLast);
+    }
     
     const locals = this.currentExtraLocals > 0
       ? [{ count: this.currentExtraLocals, type: this.numType }]
       : [];
-    
     const funcIdx = this.module.imports.length + this.module.functions.length;
     this.module.addFunction(typeIdx, locals, body);
     this.module.exportFunction('main', funcIdx);
@@ -283,13 +284,23 @@ class WasmCompiler {
       }
     } else if (stmt instanceof ast.SetStatement) {
       // Variable reassignment: set x = value
-      const localIdx = this.currentLocals?.get(stmt.name.value);
-      if (localIdx === undefined) throw new Error(`Undefined variable in WASM set: ${stmt.name.value}`);
-      this._compileExpr(stmt.value, body);
-      body.push(WasmOp.local_set, ...encodeULEB128(localIdx));
-      
-      if (isLast) {
-        body.push(WasmOp.local_get, ...encodeULEB128(localIdx));
+      const name = stmt.name?.value || (stmt.target?.left?.value);
+      const localIdx = this.currentLocals?.get(name);
+      if (localIdx !== undefined) {
+        this._compileExpr(stmt.value, body);
+        body.push(WasmOp.local_set, ...encodeULEB128(localIdx));
+        if (isLast) {
+          body.push(WasmOp.local_get, ...encodeULEB128(localIdx));
+        }
+      } else if (this.globals.has(name)) {
+        this._compileExpr(stmt.value, body);
+        const globalIdx = this.globals.get(name).index;
+        body.push(WasmOp.global_set, ...encodeULEB128(globalIdx));
+        if (isLast) {
+          body.push(WasmOp.global_get, ...encodeULEB128(globalIdx));
+        }
+      } else {
+        throw new Error(`Undefined variable in WASM set: ${name}`);
       }
     } else if (stmt instanceof ast.ExpressionStatement) {
       this._compileExpr(stmt.expression, body);
