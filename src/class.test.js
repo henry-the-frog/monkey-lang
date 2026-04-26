@@ -232,3 +232,96 @@ describe('Class: edge cases', () => {
     assert.strictEqual(r.value, 'Rex barks and Whiskers purrs');
   });
 });
+
+describe('Class: inheritance', () => {
+  it('child inherits parent methods', () => {
+    const r = run(`
+      class Animal {
+        init(self, name) { set self.name = name; }
+        speak(self) { self.name + " speaks" }
+      }
+      class Dog extends Animal {
+        init(self, name) { set self.name = name; set self.sound = "woof"; }
+        bark(self) { self.name + " goes " + self.sound }
+      }
+      let rex = Dog("Rex");
+      rex.speak() + " and " + rex.bark();
+    `);
+    assert.strictEqual(r.value, 'Rex speaks and Rex goes woof');
+  });
+
+  it('child overrides parent method', () => {
+    const r = run(`
+      class Animal {
+        init(self, name) { set self.name = name; }
+        speak(self) { self.name + " speaks" }
+      }
+      class Dog extends Animal {
+        init(self, name) { set self.name = name; }
+        speak(self) { self.name + " barks!" }
+      }
+      let rex = Dog("Rex");
+      rex.speak();
+    `);
+    assert.strictEqual(r.value, 'Rex barks!');
+  });
+
+  it('super.init calls parent constructor', () => {
+    const r = run(`
+      class Animal {
+        init(self, name, type) {
+          set self.name = name;
+          set self.type = type;
+        }
+      }
+      class Dog extends Animal {
+        init(self, name, breed) {
+          super.init(self, name, "dog");
+          set self.breed = breed;
+        }
+      }
+      let rex = Dog("Rex", "Labrador");
+      rex.name + " (" + rex.type + ", " + rex.breed + ")";
+    `);
+    assert.strictEqual(r.value, 'Rex (dog, Labrador)');
+  });
+
+  it('three-level inheritance', () => {
+    const r = run(`
+      class Base {
+        init(self) { set self.level = "base"; }
+        who(self) { "Base" }
+      }
+      class Mid extends Base {
+        init(self) { super.init(self); set self.level = "mid"; }
+      }
+      class Leaf extends Mid {
+        init(self) { super.init(self); set self.level = "leaf"; }
+      }
+      let l = Leaf();
+      l.who() + " at " + l.level;
+    `);
+    assert.strictEqual(r.value, 'Base at leaf');
+  });
+
+  it('child adds new methods', () => {
+    const r = run(`
+      class Vehicle {
+        init(self, speed) { set self.speed = speed; }
+        go(self) { "Moving at " + str(self.speed) }
+      }
+      class Car extends Vehicle {
+        init(self, speed, doors) {
+          super.init(self, speed);
+          set self.doors = doors;
+        }
+        info(self) {
+          self.go() + " with " + str(self.doors) + " doors"
+        }
+      }
+      let c = Car(60, 4);
+      c.info();
+    `);
+    assert.strictEqual(r.value, 'Moving at 60 with 4 doors');
+  });
+});
