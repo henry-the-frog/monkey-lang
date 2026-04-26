@@ -264,3 +264,51 @@ describe('WASM: for loop', () => {
     assert.strictEqual(wasmRun(src, 'power', 3, 5), 243);
   });
 });
+
+// --- i64 Tests ---
+
+function wasmRun64(source, funcName, ...args) {
+  const binary = compileToWasm(source, { useI64: true });
+  const mod = new WebAssembly.Module(binary);
+  const instance = new WebAssembly.Instance(mod);
+  return instance.exports[funcName](...args.map(BigInt));
+}
+
+describe('WASM i64: arithmetic', () => {
+  it('large multiplication (overflow i32)', () => {
+    assert.strictEqual(
+      wasmRun64('let mul = fn(a, b) { a * b; };', 'mul', 100000, 100000),
+      10000000000n
+    );
+  });
+
+  it('addition beyond i32 max', () => {
+    assert.strictEqual(
+      wasmRun64('let add = fn(a, b) { a + b; };', 'add', 2147483647, 1),
+      2147483648n
+    );
+  });
+});
+
+describe('WASM i64: fibonacci', () => {
+  it('recursive fibonacci with i64', () => {
+    const src = 'let fib = fn(n) { if (n < 2) { n; } else { fib(n - 1) + fib(n - 2); }; };';
+    assert.strictEqual(wasmRun64(src, 'fib', 10), 55n);
+    assert.strictEqual(wasmRun64(src, 'fib', 20), 6765n);
+  });
+});
+
+describe('WASM i64: while loop', () => {
+  it('iterative sum with i64', () => {
+    const src = `let sum = fn(n) {
+      let total = 0;
+      let i = 1;
+      while (i <= n) {
+        set total = total + i;
+        set i = i + 1;
+      };
+      total;
+    };`;
+    assert.strictEqual(wasmRun64(src, 'sum', 1000000), 500000500000n);
+  });
+});
