@@ -114,6 +114,25 @@ const WasmOp = {
   i32_div_s: 0x6D,
   i32_rem_s: 0x6F,
   
+  // i64 operations
+  i64_const: 0x42,
+  i64_eqz: 0x50,
+  i64_eq: 0x51,
+  i64_ne: 0x52,
+  i64_lt_s: 0x53,
+  i64_gt_s: 0x55,
+  i64_le_s: 0x57,
+  i64_ge_s: 0x59,
+  i64_add: 0x7C,
+  i64_sub: 0x7D,
+  i64_mul: 0x7E,
+  i64_div_s: 0x7F,
+  i64_rem_s: 0x81,
+  
+  // Conversion
+  i64_extend_i32_s: 0xAC, // sign-extend i32 to i64
+  i32_wrap_i64: 0xA7,     // truncate i64 to i32
+  
   // Drop
   drop: 0x1A,
 };

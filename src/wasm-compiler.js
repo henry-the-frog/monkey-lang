@@ -19,9 +19,10 @@ import { WasmModule, WasmOp, WASM_TYPE, encodeSLEB128, encodeULEB128 } from './w
  * Compile monkey-lang source to a WASM binary module.
  * Only supports the integer/function subset.
  * @param {string} source - Monkey-lang source code
+ * @param {{ useI64?: boolean }} [options]
  * @returns {Uint8Array} WASM binary
  */
-export function compileToWasm(source) {
+export function compileToWasm(source, options = {}) {
   const lexer = new Lexer(source);
   const parser = new Parser(lexer);
   const program = parser.parseProgram();
@@ -30,17 +31,27 @@ export function compileToWasm(source) {
     throw new Error(`Parse errors: ${parser.errors.join(', ')}`);
   }
   
-  const compiler = new WasmCompiler();
+  const compiler = new WasmCompiler(options);
   return compiler.compile(program);
 }
 
 class WasmCompiler {
-  constructor() {
+  constructor(options = {}) {
     this.module = new WasmModule();
-    this.functions = new Map();  // funcName → { index, params, localCount }
-    this.currentLocals = null;   // Map<string, localIndex> during function compilation
+    this.functions = new Map();
+    this.currentLocals = null;
     this.currentLocalCount = 0;
-    this.currentExtraLocals = 0; // Extra locals beyond params
+    this.currentExtraLocals = 0;
+    this.useI64 = options.useI64 || false;
+  }
+  
+  // Get the appropriate numeric type
+  get numType() { return this.useI64 ? WASM_TYPE.I64 : WASM_TYPE.I32; }
+  
+  // Get i32/i64 opcode by name
+  iop(name) {
+    const prefix = this.useI64 ? 'i64_' : 'i32_';
+    return WasmOp[prefix + name];
   }
   
   compile(program) {
@@ -71,8 +82,8 @@ class WasmCompiler {
         const fn = stmt.value;
         const paramCount = fn.parameters.length;
         const typeIdx = this.module.addType(
-          new Array(paramCount).fill(WASM_TYPE.I32),
-          [WASM_TYPE.I32]
+          new Array(paramCount).fill(this.numType),
+          [this.numType]
         );
         // Reserve function index (body filled in pass 2)
         const funcIdx = this.functions.size;
@@ -100,7 +111,7 @@ class WasmCompiler {
     
     if (stmts.length === 0) {
       // Empty body: return 0 (null equivalent)
-      body.push(WasmOp.i32_const, 0);
+      body.push(this.iop("const"), 0);
     } else {
       for (let i = 0; i < stmts.length; i++) {
         const isLast = i === stmts.length - 1;
@@ -110,7 +121,7 @@ class WasmCompiler {
     
     // Build locals declaration
     const locals = this.currentExtraLocals > 0
-      ? [{ count: this.currentExtraLocals, type: WASM_TYPE.I32 }]
+      ? [{ count: this.currentExtraLocals, type: this.numType }]
       : [];
     
     // Add to module
@@ -122,7 +133,7 @@ class WasmCompiler {
   
   _compileMainExpression(expr) {
     // Compile a standalone expression as a no-arg function "main"
-    const typeIdx = this.module.addType([], [WASM_TYPE.I32]);
+    const typeIdx = this.module.addType([], [this.numType]);
     
     this.currentLocals = new Map();
     this.currentLocalCount = 0;
@@ -132,7 +143,7 @@ class WasmCompiler {
     this._compileExpr(expr, body);
     
     const locals = this.currentExtraLocals > 0
-      ? [{ count: this.currentExtraLocals, type: WASM_TYPE.I32 }]
+      ? [{ count: this.currentExtraLocals, type: this.numType }]
       : [];
     
     const funcIdx = this.functions.size;
@@ -182,7 +193,7 @@ class WasmCompiler {
     
     // Condition
     this._compileExpr(condition, body);
-    body.push(WasmOp.i32_eqz);       // invert: break if condition is false
+    body.push(this.iop("eqz"));       // invert: break if condition is false
     body.push(WasmOp.br_if, 1);       // br_if to outer block (break)
     
     // Body
@@ -200,19 +211,19 @@ class WasmCompiler {
 
   _compileExpr(expr, body) {
     if (!expr) {
-      body.push(WasmOp.i32_const, 0);
+      body.push(this.iop("const"), 0);
       return;
     }
     
     // Integer literal
     if (expr instanceof ast.IntegerLiteral) {
-      body.push(WasmOp.i32_const, ...encodeSLEB128(expr.value));
+      body.push(this.iop("const"), ...encodeSLEB128(expr.value));
       return;
     }
     
     // Boolean literal
     if (expr instanceof ast.BooleanLiteral) {
-      body.push(WasmOp.i32_const, ...encodeSLEB128(expr.value ? 1 : 0));
+      body.push(this.iop("const"), ...encodeSLEB128(expr.value ? 1 : 0));
       return;
     }
     
@@ -233,17 +244,17 @@ class WasmCompiler {
       this._compileExpr(expr.right, body);
       
       switch (expr.operator) {
-        case '+': body.push(WasmOp.i32_add); break;
-        case '-': body.push(WasmOp.i32_sub); break;
-        case '*': body.push(WasmOp.i32_mul); break;
-        case '/': body.push(WasmOp.i32_div_s); break;
-        case '%': body.push(WasmOp.i32_rem_s); break;
-        case '<': body.push(WasmOp.i32_lt_s); break;
-        case '>': body.push(WasmOp.i32_gt_s); break;
-        case '==': body.push(WasmOp.i32_eq); break;
-        case '!=': body.push(WasmOp.i32_ne); break;
-        case '<=': body.push(WasmOp.i32_le_s); break;
-        case '>=': body.push(WasmOp.i32_ge_s); break;
+        case '+': body.push(this.iop("add")); break;
+        case '-': body.push(this.iop("sub")); break;
+        case '*': body.push(this.iop("mul")); break;
+        case '/': body.push(this.iop("div_s")); break;
+        case '%': body.push(this.iop("rem_s")); break;
+        case '<': body.push(this.iop("lt_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); break;
+        case '>': body.push(this.iop("gt_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); break;
+        case '==': body.push(this.iop("eq")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); break;
+        case '!=': body.push(this.iop("ne")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); break;
+        case '<=': body.push(this.iop("le_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); break;
+        case '>=': body.push(this.iop("ge_s")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); break;
         default: throw new Error(`Unsupported operator in WASM: ${expr.operator}`);
       }
       return;
@@ -252,12 +263,13 @@ class WasmCompiler {
     // Prefix expression
     if (expr instanceof ast.PrefixExpression) {
       if (expr.operator === '-') {
-        body.push(WasmOp.i32_const, 0); // push 0
+        body.push(this.iop("const"), 0); // push 0
         this._compileExpr(expr.right, body);
-        body.push(WasmOp.i32_sub); // 0 - x = -x
+        body.push(this.iop("sub")); // 0 - x = -x
       } else if (expr.operator === '!') {
         this._compileExpr(expr.right, body);
-        body.push(WasmOp.i32_eqz);
+        body.push(this.iop("eqz"));
+        if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
       } else {
         throw new Error(`Unsupported prefix operator in WASM: ${expr.operator}`);
       }
@@ -280,7 +292,9 @@ class WasmCompiler {
     // If expression
     if (expr instanceof ast.IfExpression) {
       this._compileExpr(expr.condition, body);
-      body.push(WasmOp.if_, WASM_TYPE.I32); // if with i32 result
+      // if_ expects i32 on stack; in i64 mode, wrap the condition
+      if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+      body.push(WasmOp.if_, this.numType); // if with numType result
       
       // Consequence
       if (expr.consequence) {
@@ -289,7 +303,7 @@ class WasmCompiler {
           this._compileStatement(stmts[i], body, i === stmts.length - 1);
         }
       } else {
-        body.push(WasmOp.i32_const, 0);
+        body.push(this.iop("const"), 0);
       }
       
       body.push(WasmOp.else_);
@@ -306,7 +320,7 @@ class WasmCompiler {
           this._compileExpr(expr.alternative, body);
         }
       } else {
-        body.push(WasmOp.i32_const, 0);
+        body.push(this.iop("const"), 0);
       }
       
       body.push(WasmOp.end);
@@ -316,7 +330,7 @@ class WasmCompiler {
     // While expression
     if (expr instanceof ast.WhileExpression) {
       this._compileWhile(expr.condition, expr.body, body);
-      body.push(WasmOp.i32_const, 0); // while returns 0 (null)
+      body.push(this.iop("const"), 0); // while returns 0 (null)
       return;
     }
 
@@ -341,7 +355,7 @@ class WasmCompiler {
         }
       }
       this._compileWhile(expr.condition, { statements: augmentedStmts }, body);
-      body.push(WasmOp.i32_const, 0); // for returns 0
+      body.push(this.iop("const"), 0); // for returns 0
       return;
     }
     
