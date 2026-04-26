@@ -163,3 +163,64 @@ Source → Lexer → Parser → AST
                             Optimizer Pipeline
                             (const-fold, SSA, DCE, escape)
 ```
+
+## WebAssembly Compilation
+
+Monkey-lang can compile a subset of programs directly to WebAssembly binary for 100-300x speedup.
+
+### Supported Features
+- Integer arithmetic (i32), 64-bit integers (i64), floating-point (f64)
+- Functions, recursion, if/else, while loops, for loops
+- Local variables, comparison operators
+- 73-302 byte .wasm binaries
+
+### Usage
+
+```bash
+# Run with WASM compilation
+echo 'let fib = fn(n) { if (n < 2) { n; } else { fib(n-1) + fib(n-2); }; }; fib(30);' | node src/main.js --wasm
+
+# Emit .wasm binary file
+echo 'let add = fn(a, b) { a + b; };' | node src/main.js --wasm-emit -o add.wasm
+
+# With HTML loader for browsers
+echo 'let fib = fn(n) { ... };' | node src/main.js --wasm-emit --html -o fib.wasm
+
+# Float64 mode (real floating-point)
+echo 'let area = fn(r) { 3.14159 * r * r; }; area(5.0);' | node src/main.js --wasm --f64
+```
+
+### Benchmark Results
+
+| Algorithm | WASM i32 | Bytecode VM | Speedup |
+|-----------|----------|-------------|---------|
+| Fibonacci (fib(30)) | 6.8ms | 886ms | **130x** |
+| Sum 1M iterations | 0.61ms | 97ms | **159x** |
+| Mandelbrot 80×60 | 0.67ms | 171ms | **256x** |
+
+## Class Syntax
+
+```monkey
+class Animal {
+  init(self, name) {
+    set self.name = name;
+  }
+  speak(self) {
+    self.name + " speaks"
+  }
+}
+
+class Dog extends Animal {
+  init(self, name) {
+    super.init(self, name);
+    set self.sound = "woof";
+  }
+  bark(self) {
+    self.name + " goes " + self.sound
+  }
+}
+
+let rex = Dog("Rex");
+rex.speak();  // "Rex speaks"
+rex.bark();   // "Rex goes woof"
+```
