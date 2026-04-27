@@ -1750,9 +1750,12 @@ export class WasmCompiler {
     const envPtrLocal = 0;
 
     // Bind actual parameters (starting at local 1)
+    // Infer integer types by scanning the function body
+    const intParams = this._inferIntegerParams(node);
     for (let i = 0; i < node.parameters.length; i++) {
       const name = node.parameters[i].value || node.parameters[i].token?.literal;
-      this.currentScope.define(name, i + 1, ValType.i32);
+      const isInt = intParams.has(name);
+      this.currentScope.define(name, i + 1, ValType.i32, isInt);
     }
 
     // Bind captured variables — read them from the environment
@@ -2508,6 +2511,57 @@ export class WasmCompiler {
         node.operator === '+' &&
         this._isStringExpression(node.left, node.right)) return true;
     return false;
+  }
+
+  // Scan a function body to infer which parameters are used as integers
+  _inferIntegerParams(funcNode) {
+    const intParams = new Set();
+    const paramNames = new Set(funcNode.parameters.map(p => p.value || p.token?.literal));
+    
+    const scan = (node) => {
+      if (!node) return;
+      // Pattern: param op literal (arithmetic or comparison)
+      if (node instanceof ast.InfixExpression) {
+        const ops = ['+', '-', '*', '/', '%', '<', '>', '<=', '>=', '==', '!=', '&', '|', '^'];
+        if (ops.includes(node.operator)) {
+          if (node.left instanceof ast.Identifier && paramNames.has(node.left.value)) {
+            intParams.add(node.left.value);
+          }
+          if (node.right instanceof ast.Identifier && paramNames.has(node.right.value)) {
+            intParams.add(node.right.value);
+          }
+        }
+        scan(node.left);
+        scan(node.right);
+      }
+      // Pattern: -param or !param
+      if (node instanceof ast.PrefixExpression) {
+        if (node.right instanceof ast.Identifier && paramNames.has(node.right.value)) {
+          intParams.add(node.right.value);
+        }
+        scan(node.right);
+      }
+      // Recurse into common structures
+      if (node instanceof ast.IfExpression) {
+        scan(node.condition);
+        if (node.consequence) node.consequence.statements?.forEach(scan);
+        if (node.alternative) node.alternative.statements?.forEach(scan);
+      }
+      if (node instanceof ast.BlockStatement) node.statements?.forEach(scan);
+      if (node instanceof ast.ExpressionStatement) scan(node.expression);
+      if (node instanceof ast.ReturnStatement) scan(node.returnValue);
+      if (node instanceof ast.LetStatement) scan(node.value);
+      if (node instanceof ast.CallExpression) {
+        node.arguments?.forEach(scan);
+        scan(node.function);
+      }
+    };
+    
+    if (funcNode.body?.statements) {
+      funcNode.body.statements.forEach(scan);
+    }
+    
+    return intParams;
   }
 
   _isDefinitelyInteger(node) {
