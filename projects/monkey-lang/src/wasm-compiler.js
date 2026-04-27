@@ -37,8 +37,8 @@ class Scope {
     this.nextLocal = parent ? 0 : 0; // set by compiler
   }
 
-  define(name, index, type = ValType.i32) {
-    this.vars.set(name, { index, type });
+  define(name, index, type = ValType.i32, knownInt = false) {
+    this.vars.set(name, { index, type, knownInt });
   }
 
   resolve(name) {
@@ -787,7 +787,8 @@ export class WasmCompiler {
     const name = stmt.name.value;
     const localIdx = this.nextLocalIndex++;
     this.currentBody.addLocal(ValType.i32);
-    this.currentScope.define(name, localIdx, ValType.i32);
+    const isInt = stmt.value ? this._isDefinitelyInteger(stmt.value) : false;
+    this.currentScope.define(name, localIdx, ValType.i32, isInt);
     if (stmt.isConst) {
       if (!this._constVars) this._constVars = new Set();
       this._constVars.add(name);
@@ -2512,6 +2513,12 @@ export class WasmCompiler {
   _isDefinitelyInteger(node) {
     if (node instanceof ast.IntegerLiteral) return true;
     if (node instanceof ast.BooleanLiteral) return true;
+    if (node instanceof ast.Identifier) {
+      // Check if the variable is known to be an integer from its binding
+      const binding = this.currentScope?.resolve(node.value);
+      if (binding && binding.knownInt) return true;
+      return false;
+    }
     if (node instanceof ast.InfixExpression) {
       const op = node.operator;
       if (['-', '*', '/', '%', '==', '!=', '<', '>', '<=', '>='].includes(op)) return true;
