@@ -18,6 +18,7 @@ const TAG_STRING = 1;
 const TAG_ARRAY = 2;
 const TAG_CLOSURE = 3;
 const TAG_HASH = 4;
+const TAG_FLOAT = 5;
 
 import { WasmModuleBuilder, FuncBodyBuilder, Op, ValType, ExportKind, encodeULEB128 } from './wasm.js';
 import { Lexer } from './lexer.js';
@@ -326,6 +327,30 @@ export class WasmCompiler {
 
     const gcRemoveRootIdx = this.builder.addImport('env', '__gc_remove_root', [ValType.i32], []);
     this._runtimeFuncs.gcRemoveRoot = gcRemoveRootIdx;
+
+    // Float support: create float from two i32 halves (lo, hi of f64 bits)
+    const floatNewIdx = this.builder.addImport('env', '__float_new', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.floatNew = floatNewIdx;
+
+    // Arithmetic host imports for mixed int/float
+    const subIdx = this.builder.addImport('env', '__sub', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.sub = subIdx;
+
+    const mulIdx = this.builder.addImport('env', '__mul', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.mul = mulIdx;
+
+    const divIdx = this.builder.addImport('env', '__div', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.div = divIdx;
+
+    const modIdx = this.builder.addImport('env', '__mod', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.mod = modIdx;
+
+    const negIdx = this.builder.addImport('env', '__neg', [ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.neg = negIdx;
+
+    // Float conversion: __to_float(i32) → float_ptr
+    const toFloatIdx = this.builder.addImport('env', '__to_float', [ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.toFloat = toFloatIdx;
 
     // __alloc(size) → pointer — bump allocator, registers with GC for tracking
     const { index: allocIdx, body: allocBody } = this.builder.addFunction(
@@ -882,8 +907,15 @@ export class WasmCompiler {
     if (node instanceof ast.IntegerLiteral) {
       this.currentBody.i32Const(node.value);
     } else if (node instanceof ast.FloatLiteral) {
-      // For now, truncate floats to i32
-      this.currentBody.i32Const(Math.trunc(node.value));
+      // Store float as heap object via host import
+      // Split f64 into two i32 halves and call __float_new(lo, hi)
+      const buf = new ArrayBuffer(8);
+      const f64 = new Float64Array(buf);
+      const i32 = new Int32Array(buf);
+      f64[0] = node.value;
+      this.currentBody.i32Const(i32[0]); // lo bits
+      this.currentBody.i32Const(i32[1]); // hi bits
+      this.currentBody.call(this._runtimeFuncs.floatNew);
     } else if (node instanceof ast.BooleanLiteral) {
       this.currentBody.i32Const(node.value ? 1 : 0);
     } else if (node instanceof ast.NullLiteral) {
@@ -1117,21 +1149,25 @@ export class WasmCompiler {
   }
 
   compilePrefixExpression(node) {
-    this.compileNode(node.right);
     switch (node.operator) {
       case '-':
-        // negate: 0 - value
-        this.currentBody.i32Const(0);
-        // Swap: we need 0 on the bottom, value on top
-        // WASM doesn't have swap, so use a local
-        // Actually, emit 0 first then subtract
-        // Fix: emit 0 first, then the value, then sub
+        if (this._isDefinitelyInteger(node.right)) {
+          // negate integer: 0 - value
+          this.currentBody.i32Const(0);
+          this.compileNode(node.right);
+          this.currentBody.emit(Op.i32_sub);
+        } else {
+          // Runtime dispatch (handles floats)
+          this.compileNode(node.right);
+          this.currentBody.call(this._runtimeFuncs.neg);
+        }
         break;
       case '!':
+        this.compileNode(node.right);
         this.currentBody.emit(Op.i32_eqz);
         break;
       default:
-        // Unknown prefix
+        this.compileNode(node.right);
         break;
     }
   }
@@ -1230,10 +1266,34 @@ export class WasmCompiler {
           this.stats.hostArith++;
         }
         break;
-      case '-':  this.currentBody.emit(Op.i32_sub); this.stats.directArith++; break;
-      case '*':  this.currentBody.emit(Op.i32_mul); this.stats.directArith++; break;
-      case '/':  this.currentBody.emit(Op.i32_div_s); this.stats.directArith++; break;
-      case '%':  this.currentBody.emit(Op.i32_rem_s); this.stats.directArith++; break;
+      case '-':
+        if (this._isDefinitelyInteger(node.left) && this._isDefinitelyInteger(node.right)) {
+          this.currentBody.emit(Op.i32_sub); this.stats.directArith++;
+        } else {
+          this.currentBody.call(this._runtimeFuncs.sub); this.stats.hostArith++;
+        }
+        break;
+      case '*':
+        if (this._isDefinitelyInteger(node.left) && this._isDefinitelyInteger(node.right)) {
+          this.currentBody.emit(Op.i32_mul); this.stats.directArith++;
+        } else {
+          this.currentBody.call(this._runtimeFuncs.mul); this.stats.hostArith++;
+        }
+        break;
+      case '/':
+        if (this._isDefinitelyInteger(node.left) && this._isDefinitelyInteger(node.right)) {
+          this.currentBody.emit(Op.i32_div_s); this.stats.directArith++;
+        } else {
+          this.currentBody.call(this._runtimeFuncs.div); this.stats.hostArith++;
+        }
+        break;
+      case '%':
+        if (this._isDefinitelyInteger(node.left) && this._isDefinitelyInteger(node.right)) {
+          this.currentBody.emit(Op.i32_rem_s); this.stats.directArith++;
+        } else {
+          this.currentBody.call(this._runtimeFuncs.mod); this.stats.hostArith++;
+        }
+        break;
       case '==':
         if (this._isDefinitelyInteger(node.left) && this._isDefinitelyInteger(node.right)) {
           this.currentBody.emit(Op.i32_eq);
@@ -2873,6 +2933,46 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
     return new TextDecoder().decode(bytes);
   }
 
+  function isFloatPtr(v) {
+    const mem = memoryRef.memory;
+    if (!mem || v < 16 || (v & 3) !== 0) return false;
+    const view = new DataView(mem.buffer);
+    if (v + 12 > view.byteLength) return false;
+    return view.getInt32(v, true) === TAG_FLOAT;
+  }
+
+  function readFloat(ptr) {
+    const mem = memoryRef.memory;
+    if (!mem) return 0;
+    const view = new DataView(mem.buffer);
+    return view.getFloat64(ptr + 4, true);
+  }
+
+  function writeFloat(value) {
+    const mem = memoryRef.memory;
+    if (!mem) return 0;
+    const view = new DataView(mem.buffer);
+    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 100000;
+    const ptr = memoryRef.jsHeapPtr;
+    memoryRef.jsHeapPtr += 12; // TAG_FLOAT(4) + f64(8)
+    memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
+    view.setInt32(ptr, TAG_FLOAT, true);
+    view.setFloat64(ptr + 4, value, true);
+    return ptr;
+  }
+
+  // Resolve a value to a JS number (handles both ints and float pointers)
+  function toNumber(v) {
+    if (isFloatPtr(v)) return readFloat(v);
+    return v;
+  }
+
+  // Return a result as int if it's whole, or float pointer if it has decimals
+  function fromNumber(n) {
+    if (Number.isInteger(n) && n >= -2147483648 && n <= 2147483647) return n;
+    return writeFloat(n);
+  }
+
   // Helper to write string into WASM memory (bump allocator via global[0])
   function writeString(str) {
     const mem = memoryRef.memory;
@@ -2942,7 +3042,6 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const mem = memoryRef.memory;
         if (mem) {
           const view = new DataView(mem.buffer);
-          // Validate pointer: must be >= 16, 4-byte aligned, in bounds, and have a valid tag+length
           const isStrPtr = (v) => {
             if (v < 16 || (v & 3) !== 0 || v + 8 > view.byteLength) return false;
             const tag = view.getInt32(v, true);
@@ -2951,12 +3050,14 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
             return len >= 0 && len < 1000000 && v + 8 + len <= view.byteLength;
           };
           try {
+            // Float handling
+            if (isFloatPtr(a) || isFloatPtr(b)) {
+              return fromNumber(toNumber(a) + toNumber(b));
+            }
             if (isStrPtr(a) || isStrPtr(b)) {
-              if (isStrPtr(a) || isStrPtr(b)) {
               const sA = isStrPtr(a) ? readString(a) : String(a);
               const sB = isStrPtr(b) ? readString(b) : String(b);
-                return writeString(sA + sB);
-              }
+              return writeString(sA + sB);
             }
           } catch (e) {}
         }
@@ -2964,61 +3065,102 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
       },
       __eq(a, b) {
         if (a === b) return 1;
-        const mem = memoryRef.memory;
-        if (mem) {
-          const view = new DataView(mem.buffer);
-          const isStrPtr = (v) => {
-            if (v < 16 || (v & 3) !== 0 || v + 8 > view.byteLength) return false;
-            const tag = view.getInt32(v, true);
-            if (tag !== TAG_STRING) return false;
-            const len = view.getInt32(v + 4, true);
-            return len >= 0 && len < 1000000 && v + 8 + len <= view.byteLength;
-          };
-          try {
+        try {
+          if (isFloatPtr(a) || isFloatPtr(b)) {
+            return toNumber(a) === toNumber(b) ? 1 : 0;
+          }
+          const mem = memoryRef.memory;
+          if (mem) {
+            const view = new DataView(mem.buffer);
+            const isStrPtr = (v) => {
+              if (v < 16 || (v & 3) !== 0 || v + 8 > view.byteLength) return false;
+              const tag = view.getInt32(v, true);
+              if (tag !== TAG_STRING) return false;
+              const len = view.getInt32(v + 4, true);
+              return len >= 0 && len < 1000000 && v + 8 + len <= view.byteLength;
+            };
             if (isStrPtr(a) && isStrPtr(b)) {
               return readString(a) === readString(b) ? 1 : 0;
             }
-          } catch (e) {}
-        }
+          }
+        } catch (e) {}
         return a === b ? 1 : 0;
       },
       __lt(a, b) {
-        const mem = memoryRef.memory;
-        if (mem) {
-          const view = new DataView(mem.buffer);
-          const isStrPtr = (v) => {
-            if (v < 16 || (v & 3) !== 0 || v + 8 > view.byteLength) return false;
-            const tag = view.getInt32(v, true);
-            if (tag !== TAG_STRING) return false;
-            const len = view.getInt32(v + 4, true);
-            return len >= 0 && len < 1000000 && v + 8 + len <= view.byteLength;
-          };
-          try {
+        try {
+          if (isFloatPtr(a) || isFloatPtr(b)) {
+            return toNumber(a) < toNumber(b) ? 1 : 0;
+          }
+          const mem = memoryRef.memory;
+          if (mem) {
+            const view = new DataView(mem.buffer);
+            const isStrPtr = (v) => {
+              if (v < 16 || (v & 3) !== 0 || v + 8 > view.byteLength) return false;
+              const tag = view.getInt32(v, true);
+              if (tag !== TAG_STRING) return false;
+              const len = view.getInt32(v + 4, true);
+              return len >= 0 && len < 1000000 && v + 8 + len <= view.byteLength;
+            };
             if (isStrPtr(a) && isStrPtr(b)) {
               return readString(a) < readString(b) ? 1 : 0;
             }
-          } catch (e) {}
-        }
+          }
+        } catch (e) {}
         return a < b ? 1 : 0;
       },
       __gt(a, b) {
-        const mem = memoryRef.memory;
-        if (mem) {
-          const view = new DataView(mem.buffer);
-          const isStrPtr = (v) => {
-            if (v < 16 || (v & 3) !== 0 || v + 8 > view.byteLength) return false;
-            const tag = view.getInt32(v, true);
-            if (tag !== TAG_STRING) return false;
-            const len = view.getInt32(v + 4, true);
-            return len >= 0 && len < 1000000 && v + 8 + len <= view.byteLength;
-          };
-          try {
+        try {
+          if (isFloatPtr(a) || isFloatPtr(b)) {
+            return toNumber(a) > toNumber(b) ? 1 : 0;
+          }
+          const mem = memoryRef.memory;
+          if (mem) {
+            const view = new DataView(mem.buffer);
+            const isStrPtr = (v) => {
+              if (v < 16 || (v & 3) !== 0 || v + 8 > view.byteLength) return false;
+              const tag = view.getInt32(v, true);
+              if (tag !== TAG_STRING) return false;
+              const len = view.getInt32(v + 4, true);
+              return len >= 0 && len < 1000000 && v + 8 + len <= view.byteLength;
+            };
             if (isStrPtr(a) && isStrPtr(b)) {
               return readString(a) > readString(b) ? 1 : 0;
             }
-          } catch (e) {}
-        }
+          }
+        } catch (e) {}
         return a > b ? 1 : 0;
+      },
+      // Float arithmetic host imports
+      __float_new(lo, hi) {
+        // Create a float from two i32 halves (lo, hi of f64 IEEE 754 bits)
+        const buf = new ArrayBuffer(8);
+        const i32 = new Int32Array(buf);
+        const f64 = new Float64Array(buf);
+        i32[0] = lo;
+        i32[1] = hi;
+        return writeFloat(f64[0]);
+      },
+      __sub(a, b) {
+        return fromNumber(toNumber(a) - toNumber(b));
+      },
+      __mul(a, b) {
+        return fromNumber(toNumber(a) * toNumber(b));
+      },
+      __div(a, b) {
+        const nb = toNumber(b);
+        if (nb === 0) return 0;
+        return fromNumber(toNumber(a) / nb);
+      },
+      __mod(a, b) {
+        const nb = toNumber(b);
+        if (nb === 0) return 0;
+        return fromNumber(toNumber(a) % nb);
+      },
+      __neg(a) {
+        return fromNumber(-toNumber(a));
+      },
+      __to_float(a) {
+        return writeFloat(a);
       },
       __array_concat(arrA, arrB) {
         const mem = memoryRef.memory;
@@ -3298,6 +3440,11 @@ export function formatWasmValue(value, dataView) {
           const bytes = new Uint8Array(dataView.buffer, value + 8, len);
           return new TextDecoder().decode(bytes);
         }
+      }
+      if (tag === TAG_FLOAT) {
+        const f = dataView.getFloat64(value + 4, true);
+        // Format: remove trailing zeros but keep at least one decimal
+        return Number.isInteger(f) ? f.toFixed(1) : String(f);
       }
       if (tag === TAG_ARRAY) {
         const len = dataView.getInt32(value + 4, true);
