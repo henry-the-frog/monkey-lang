@@ -2151,3 +2151,164 @@ describe('String Methods', () => {
     assert.strictEqual(outputLines[0], 'hello');
   });
 });
+
+describe('Higher-Order Function Builtins', () => {
+  // Helper: compile and get formatted result
+  async function run(code) {
+    const opts = { outputLines: [], instance: {} };
+    const result = await compileAndRun(code, opts);
+    const view = new DataView(opts.instance.ref.exports.memory.buffer);
+    return formatWasmValue(result, view);
+  }
+
+  describe('map', () => {
+    it('doubles each element', async () => {
+      assert.strictEqual(await run('map([1, 2, 3, 4, 5], fn(x) { x * 2 })'), '[2, 4, 6, 8, 10]');
+    });
+
+    it('squares each element', async () => {
+      assert.strictEqual(await run('map([3, 4, 5], fn(x) { x * x })'), '[9, 16, 25]');
+    });
+
+    it('empty array', async () => {
+      assert.strictEqual(await run('map([], fn(x) { x * 2 })'), '[]');
+    });
+
+    it('closure captures variable', async () => {
+      assert.strictEqual(await run('let f = 10; map([1, 2, 3], fn(x) { x * f })'), '[10, 20, 30]');
+    });
+
+    it('single element', async () => {
+      assert.strictEqual(await run('map([42], fn(x) { x + 1 })'), '[43]');
+    });
+  });
+
+  describe('filter', () => {
+    it('filters greater than', async () => {
+      assert.strictEqual(await run('filter([1, 2, 3, 4, 5, 6], fn(x) { x > 3 })'), '[4, 5, 6]');
+    });
+
+    it('filters even numbers', async () => {
+      assert.strictEqual(await run('filter([1, 2, 3, 4, 5, 6], fn(x) { x % 2 == 0 })'), '[2, 4, 6]');
+    });
+
+    it('empty result', async () => {
+      assert.strictEqual(await run('filter([1, 2, 3], fn(x) { x > 100 })'), '[]');
+    });
+
+    it('all pass', async () => {
+      assert.strictEqual(await run('filter([1, 2, 3], fn(x) { x > 0 })'), '[1, 2, 3]');
+    });
+
+    it('closure captures threshold', async () => {
+      assert.strictEqual(await run('let t = 3; filter([1, 2, 3, 4, 5], fn(x) { x > t })'), '[4, 5]');
+    });
+  });
+
+  describe('reduce', () => {
+    it('sum with initial value', async () => {
+      assert.strictEqual(await compileAndRun('reduce([1, 2, 3, 4, 5], fn(a, b) { a + b }, 0)'), 15);
+    });
+
+    it('sum without initial value', async () => {
+      assert.strictEqual(await compileAndRun('reduce([1, 2, 3, 4, 5], fn(a, b) { a + b })'), 15);
+    });
+
+    it('product', async () => {
+      assert.strictEqual(await compileAndRun('reduce([1, 2, 3, 4, 5], fn(a, b) { a * b }, 1)'), 120);
+    });
+
+    it('single element no init', async () => {
+      assert.strictEqual(await compileAndRun('reduce([42], fn(a, b) { a + b })'), 42);
+    });
+
+    it('max value', async () => {
+      assert.strictEqual(await compileAndRun(`
+        reduce([3, 1, 4, 1, 5, 9, 2, 6], fn(a, b) { if (b > a) { b } else { a } })
+      `), 9);
+    });
+  });
+
+  describe('find', () => {
+    it('finds first match', async () => {
+      assert.strictEqual(await compileAndRun('find([1, 2, 3, 4, 5], fn(x) { x > 3 })'), 4);
+    });
+
+    it('returns 0 (null) when not found', async () => {
+      assert.strictEqual(await compileAndRun('find([1, 2, 3], fn(x) { x > 100 })'), 0);
+    });
+  });
+
+  describe('any', () => {
+    it('returns true when match exists', async () => {
+      assert.strictEqual(await compileAndRun('any([1, 2, 10], fn(x) { x > 5 })'), 1);
+    });
+
+    it('returns false when no match', async () => {
+      assert.strictEqual(await compileAndRun('any([1, 2, 3], fn(x) { x > 5 })'), 0);
+    });
+  });
+
+  describe('every', () => {
+    it('returns true when all match', async () => {
+      assert.strictEqual(await compileAndRun('every([2, 4, 6], fn(x) { x > 0 })'), 1);
+    });
+
+    it('returns false when one fails', async () => {
+      assert.strictEqual(await compileAndRun('every([2, 4, -1], fn(x) { x > 0 })'), 0);
+    });
+
+    it('empty array returns true', async () => {
+      assert.strictEqual(await compileAndRun('every([], fn(x) { x > 0 })'), 1);
+    });
+  });
+
+  describe('chaining', () => {
+    it('filter then map', async () => {
+      assert.strictEqual(
+        await run('let a = [1,2,3,4,5,6,7,8,9,10]; let e = filter(a, fn(x) { x % 2 == 0 }); map(e, fn(x) { x * x })'),
+        '[4, 16, 36, 64, 100]'
+      );
+    });
+
+    it('map then reduce', async () => {
+      assert.strictEqual(
+        await compileAndRun('reduce(map([1, 2, 3, 4], fn(x) { x * x }), fn(a, b) { a + b }, 0)'),
+        30 // 1 + 4 + 9 + 16
+      );
+    });
+
+    it('filter then reduce', async () => {
+      assert.strictEqual(
+        await compileAndRun('reduce(filter([1, 2, 3, 4, 5, 6], fn(x) { x % 2 == 0 }), fn(a, b) { a + b }, 0)'),
+        12 // 2 + 4 + 6
+      );
+    });
+  });
+
+  describe('user-defined shadows', () => {
+    it('user-defined map takes precedence', async () => {
+      assert.strictEqual(await run(`
+        let map = fn(arr, f) {
+          let result = [];
+          for (x in arr) { result = push(result, f(x)); }
+          result
+        };
+        map([1, 2, 3], fn(x) { x + 10 })
+      `), '[11, 12, 13]');
+    });
+
+    it('user-defined filter takes precedence', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let filter = fn(arr, pred) {
+          let result = [];
+          for (x in arr) {
+            if (pred(x)) { result = push(result, x); }
+          }
+          len(result)
+        };
+        filter([1, 2, 3, 4, 5], fn(x) { x > 2 })
+      `), 3);
+    });
+  });
+});
