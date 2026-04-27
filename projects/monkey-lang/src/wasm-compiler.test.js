@@ -665,12 +665,28 @@ describe('WASM Compiler', () => {
     });
 
     it('counter closure', async () => {
-      // Note: can't modify captured variables (value capture, not ref capture)
-      // So this tests the capture at creation time
+      // Captured variable read at creation time
       assert.strictEqual(await compileAndRun(`
         let x = 5;
         let getX = fn() { x };
         getX()
+      `), 5);
+    });
+
+    it('closure mutation persists between calls', async () => {
+      // Mutations to captured variables write back to the heap environment
+      assert.strictEqual(await compileAndRun(`
+        let make = fn() { let c = 0; fn() { c = c + 1; c } };
+        let inc = make();
+        inc(); inc(); inc()
+      `), 3);
+    });
+
+    it('closure counter 5 calls', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let make = fn() { let c = 0; fn() { c = c + 1; c } };
+        let inc = make();
+        inc(); inc(); inc(); inc(); inc()
       `), 5);
     });
 

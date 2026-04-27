@@ -42,6 +42,16 @@ class Scope {
     this.vars.set(name, { index, type, knownInt });
   }
 
+  // Mark a variable as captured from a closure environment (needs write-back on mutation)
+  markCaptured(name, envPtrLocal, envOffset) {
+    const v = this.vars.get(name);
+    if (v) {
+      v.captured = true;
+      v.envPtrLocal = envPtrLocal;
+      v.envOffset = envOffset;
+    }
+  }
+
   resolve(name) {
     if (this.vars.has(name)) return this.vars.get(name);
     if (this.parent) return this.parent.resolve(name);
@@ -2073,6 +2083,16 @@ export class WasmCompiler {
     if (binding) {
       this.compileNode(node.value);
       this.currentBody.localTee(binding.index); // assign and leave value on stack
+      
+      // If this is a captured variable, also write back to the heap environment
+      // so subsequent closure calls see the updated value
+      if (binding.captured) {
+        this.currentBody.localGet(binding.envPtrLocal);
+        this.currentBody.i32Const(binding.envOffset);
+        this.currentBody.emit(Op.i32_add);
+        this.currentBody.localGet(binding.index);
+        this.currentBody.i32Store();
+      }
     } else {
       const _l4 = node?.token?.line ? ` (line ${node.token.line})` : ""; this.errors.push(`undefined variable for assignment: ${name}${_l4}`);
       this.currentBody.i32Const(0);
@@ -2214,6 +2234,8 @@ export class WasmCompiler {
         .i32Load()
         .localSet(localIdx);
       this.currentScope.define(captures[i], localIdx, ValType.i32, captureKnownInt[i]);
+      // Mark as captured so assignments write back to the environment
+      this.currentScope.markCaptured(captures[i], envPtrLocal, 4 + i * 4);
     }
 
     // Compile function body
