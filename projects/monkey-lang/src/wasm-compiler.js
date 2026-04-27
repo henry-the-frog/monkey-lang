@@ -1815,6 +1815,12 @@ export class WasmCompiler {
     // 1. Analyze free variables (captures from current scope)
     const captures = this._findCaptures(node);
 
+    // Collect knownInt status from outer scope before we switch
+    const captureKnownInt = captures.map(name => {
+      const binding = this.currentScope.resolve(name);
+      return binding ? !!binding.knownInt : false;
+    });
+
     // 2. Create the WASM function with extra env_ptr as first param
     const params = [ValType.i32, ...node.parameters.map(() => ValType.i32)]; // env_ptr + params
     const results = [ValType.i32]; // all functions return i32
@@ -1852,6 +1858,7 @@ export class WasmCompiler {
     }
 
     // Bind captured variables — read them from the environment
+    // Propagate knownInt status from outer scope through captures
     for (let i = 0; i < captures.length; i++) {
       const localIdx = this.nextLocalIndex++;
       funcBody.addLocal(ValType.i32);
@@ -1862,7 +1869,7 @@ export class WasmCompiler {
         .emit(Op.i32_add)
         .i32Load()
         .localSet(localIdx);
-      this.currentScope.define(captures[i], localIdx, ValType.i32);
+      this.currentScope.define(captures[i], localIdx, ValType.i32, captureKnownInt[i]);
     }
 
     // Compile function body
