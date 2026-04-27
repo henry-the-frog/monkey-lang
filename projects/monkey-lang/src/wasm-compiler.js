@@ -70,6 +70,7 @@ export class WasmCompiler {
     this.closureFuncs = []; // [{funcLit, captures, tableIndex, wasmFuncIndex}]
     this.nextTableSlot = 0;
     this._classRegistry = new Map(); // className -> { fields, methods: [{name, tableSlot, paramCount}], ctorFuncIdx }
+    this._currentClassName = null; // set during class method compilation
 
     // Compilation statistics
     this.stats = {
@@ -1324,6 +1325,12 @@ export class WasmCompiler {
   }
 
   compileCallExpression(node) {
+    // Handle super.method(args) calls
+    if (node.function instanceof ast.IndexExpression &&
+        node.function.left instanceof ast.SuperExpression) {
+      return this._compileSuperCall(node);
+    }
+    
     // Check for builtin functions first
     if (node.function instanceof ast.Identifier) {
       const name = node.function.value;
@@ -2315,6 +2322,9 @@ export class WasmCompiler {
     
     // 1. Compile each method as a WASM function with (self, ...params) -> i32
     const methodEntries = []; // [{name, wasmFuncIdx, tableSlot, paramCount}]
+    const prevClassName = this._currentClassName;
+    this._currentClassName = className;
+    this._currentSuperClass = stmt.superClass || null;
     
     for (const method of stmt.methods) {
       const params = [ValType.i32, ...method.params.map(() => ValType.i32)]; // self + params
@@ -2375,6 +2385,9 @@ export class WasmCompiler {
         paramCount: method.params.length,
       });
     }
+    
+    this._currentClassName = prevClassName;
+    this._currentSuperClass = null;
     
     // 2. Handle inheritance: merge parent fields and methods
     let allFields = [...stmt.fields];
@@ -2522,6 +2535,71 @@ export class WasmCompiler {
       initMethod,
       ctorFuncIdx,
     });
+  }
+
+  // Compile super.method(args) — calls parent class method with self
+  _compileSuperCall(node) {
+    const methodName = node.function.index?.value || node.function.index;
+    const parentName = this._currentSuperClass;
+    
+    if (!parentName) {
+      this.errors.push(`super used outside of a class with parent`);
+      this.currentBody.i32Const(0);
+      return;
+    }
+    
+    const parentInfo = this._classRegistry.get(parentName);
+    if (!parentInfo) {
+      this.errors.push(`Parent class '${parentName}' not found in registry`);
+      this.currentBody.i32Const(0);
+      return;
+    }
+    
+    const parentMethod = parentInfo.methods.find(m => m.name === methodName);
+    if (!parentMethod && parentInfo.initMethod?.name === methodName) {
+      // Calling super.init()
+      const initMethod = parentInfo.initMethod;
+      // Push self
+      const selfBinding = this.currentScope.resolve('self');
+      if (selfBinding) {
+        this.currentBody.localGet(selfBinding.index);
+      } else {
+        this.currentBody.i32Const(0);
+      }
+      // Push args
+      for (const arg of node.arguments || []) {
+        this.compileNode(arg);
+      }
+      // Call via table
+      const paramTypes = [ValType.i32, ...(node.arguments || []).map(() => ValType.i32)];
+      const typeIdx = this.builder.addType(paramTypes, [ValType.i32]);
+      this.currentBody.i32Const(initMethod.tableSlot);
+      this.currentBody.callIndirect(typeIdx);
+      return;
+    }
+    
+    if (!parentMethod) {
+      this.errors.push(`Method '${methodName}' not found in parent class '${parentName}'`);
+      this.currentBody.i32Const(0);
+      return;
+    }
+    
+    // Push self
+    const selfBinding = this.currentScope.resolve('self');
+    if (selfBinding) {
+      this.currentBody.localGet(selfBinding.index);
+    } else {
+      this.currentBody.i32Const(0);
+    }
+    // Push arguments
+    for (const arg of node.arguments || []) {
+      this.compileNode(arg);
+    }
+    // Call parent method via table (self + args)
+    const paramTypes = [ValType.i32, ...(node.arguments || []).map(() => ValType.i32)];
+    const typeIdx = this.builder.addType(paramTypes, [ValType.i32]);
+    this.currentBody.i32Const(parentMethod.tableSlot);
+    this.currentBody.callIndirect(typeIdx);
   }
 
   // Hash literal: {"key": value, ...}

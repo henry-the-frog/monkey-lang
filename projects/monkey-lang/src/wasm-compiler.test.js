@@ -1687,3 +1687,48 @@ describe('Integration Tests', () => {
     `), 5050);
   });
 });
+
+describe('Super Calls', () => {
+  it('super.method() calls parent method', async () => {
+    assert.strictEqual(await compileAndRun(`
+      class A {
+        fn init() { }
+        fn value() { 10 }
+      }
+      class B extends A {
+        fn value() { super.value() + 20 }
+      }
+      let b = B()
+      b.value()
+    `), 30);
+  });
+
+  it('super.method() with self field access', async () => {
+    assert.strictEqual(await compileAndRun(`
+      class Animal {
+        let name
+        fn init(n) { self.name = n }
+        fn getName() { self.name }
+      }
+      class Dog extends Animal {
+        fn getName() { super.getName() + 1000 }
+      }
+      let d = Dog(42)
+      d.getName()
+    `), 1042);
+  });
+
+  it('super with arguments', async () => {
+    assert.strictEqual(await compileAndRun(`
+      class Base {
+        fn init() { }
+        fn add(a, b) { a + b }
+      }
+      class Child extends Base {
+        fn add(a, b) { super.add(a, b) * 2 }
+      }
+      let c = Child()
+      c.add(3, 4)
+    `), 14);
+  });
+});
