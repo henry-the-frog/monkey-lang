@@ -1916,8 +1916,6 @@ describe('Edge Cases (Stress Tests)', () => {
 
   describe('Complex patterns', () => {
     it('deeply nested closures (3 levels)', async () => {
-      // Note: captures are by-value, so deeply nested captures work
-      // when each level properly captures from its immediate scope
       assert.strictEqual(await compileAndRun(`
         let make_adder = fn(x) {
           fn(y) {
@@ -1927,7 +1925,7 @@ describe('Edge Cases (Stress Tests)', () => {
         let add5 = make_adder(5);
         let add5_10 = add5(10);
         add5_10(20)
-      `), 20); // Returns 20 due to by-value capture limitations in nested closures
+      `), 35);
     });
 
     it('higher-order map function', async () => {

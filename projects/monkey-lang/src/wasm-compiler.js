@@ -217,7 +217,11 @@ export class WasmCompiler {
     if (this.closureFuncs.length > 0) {
       const tableSize = this.closureFuncs.length;
       this.builder.addTable(ValType.funcref, tableSize, tableSize);
-      const funcIndices = this.closureFuncs.map(cf => cf.wasmFuncIndex);
+      // Map function indices by their assigned table slot, not insertion order
+      const funcIndices = new Array(tableSize);
+      for (const cf of this.closureFuncs) {
+        funcIndices[cf.tableIndex] = cf.wasmFuncIndex;
+      }
       this.builder.addElement(0, 0, funcIndices);
     }
 
