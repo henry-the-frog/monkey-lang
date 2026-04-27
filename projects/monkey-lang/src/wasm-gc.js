@@ -451,7 +451,7 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
       __map(arrPtr, closurePtr) {
         const mem = memoryRef.memory;
         if (!mem) return 0;
-        const view = new DataView(mem.buffer);
+        let view = new DataView(mem.buffer);
         if (arrPtr < 16 || (view.getInt32(arrPtr, true) & TAG_MASK) !== TAG_ARRAY) return 0;
         const table = memoryRef.table;
         if (!table) return 0;
@@ -459,14 +459,18 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         const tableIdx = view.getInt32(closurePtr + 4, true);
         const envPtr = view.getInt32(closurePtr + 8, true);
         const fn = table.get(tableIdx);
-        const size = (8 + len * 4 + 3) & ~3;
-        const ptr = gc.alloc(size);
-        view.setInt32(ptr, TAG_ARRAY, true);
-        view.setInt32(ptr + 4, len, true);
+        const results = [];
         for (let i = 0; i < len; i++) {
+          view = new DataView(mem.buffer);
           const elem = view.getInt32(arrPtr + 8 + i * 4, true);
-          view.setInt32(ptr + 8 + i * 4, fn(envPtr, elem), true);
+          results.push(fn(envPtr, elem));
         }
+        const size = (8 + results.length * 4 + 3) & ~3;
+        const ptr = gc.alloc(size);
+        view = new DataView(mem.buffer);
+        view.setInt32(ptr, TAG_ARRAY, true);
+        view.setInt32(ptr + 4, results.length, true);
+        for (let i = 0; i < results.length; i++) view.setInt32(ptr + 8 + i * 4, results[i], true);
         return ptr;
       },
       __filter(arrPtr, closurePtr) {
@@ -495,7 +499,7 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
       __reduce(arrPtr, closurePtr, initValue) {
         const mem = memoryRef.memory;
         if (!mem) return 0;
-        const view = new DataView(mem.buffer);
+        let view = new DataView(mem.buffer);
         if (arrPtr < 16 || (view.getInt32(arrPtr, true) & TAG_MASK) !== TAG_ARRAY) return 0;
         const table = memoryRef.table;
         if (!table) return 0;
@@ -507,6 +511,7 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         let acc = initValue !== sentinel ? initValue : (len > 0 ? view.getInt32(arrPtr + 8, true) : 0);
         const startIdx = initValue !== sentinel ? 0 : 1;
         for (let i = startIdx; i < len; i++) {
+          view = new DataView(mem.buffer);
           acc = fn(envPtr, acc, view.getInt32(arrPtr + 8 + i * 4, true));
         }
         return acc;
