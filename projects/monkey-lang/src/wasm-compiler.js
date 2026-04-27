@@ -1095,8 +1095,13 @@ export class WasmCompiler {
       this.compileThrowExpression(node);
     } else if (node instanceof ast.SelfExpression) {
       // self is local[0] in methods (env_ptr = instance hash)
+      // But if 'self' is a regular variable (e.g., closure parameter named 'self'),
+      // use the variable binding instead
       const binding = this.currentScope.resolve('self');
-      if (binding) {
+      if (binding && binding.index !== 0) {
+        // Regular variable named 'self' (not class env_ptr)
+        this.currentBody.localGet(binding.index);
+      } else if (binding) {
         this.currentBody.localGet(binding.index);
       } else {
         this.currentBody.i32Const(0);
@@ -2360,6 +2365,13 @@ export class WasmCompiler {
         if (!params.has(name) && this.currentScope.resolve(name) &&
             this.currentScope.resolve(name).type !== 'func') {
           captures.add(name);
+        }
+      }
+      // SelfExpression: treat 'self' like a regular identifier for capture purposes
+      if (node instanceof ast.SelfExpression) {
+        if (!params.has('self') && this.currentScope.resolve('self') &&
+            this.currentScope.resolve('self').type !== 'func') {
+          captures.add('self');
         }
       }
       // Walk children
