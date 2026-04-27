@@ -216,13 +216,15 @@ export class WasmCompiler {
     // Finalize closure table
     if (this.closureFuncs.length > 0) {
       const tableSize = this.closureFuncs.length;
-      this.builder.addTable(ValType.funcref, tableSize, tableSize);
+      const tableIdx = this.builder.addTable(ValType.funcref, tableSize, tableSize);
       // Map function indices by their assigned table slot, not insertion order
       const funcIndices = new Array(tableSize);
       for (const cf of this.closureFuncs) {
         funcIndices[cf.tableIndex] = cf.wasmFuncIndex;
       }
       this.builder.addElement(0, 0, funcIndices);
+      // Export the table so host imports (map/filter/reduce) can call closures
+      this.builder.addExport('__indirect_function_table', ExportKind.Table, tableIdx);
     }
 
     // Peephole optimize all function bodies
@@ -350,6 +352,27 @@ export class WasmCompiler {
 
     const reverseIdx = this.builder.addImport('env', '__reverse', [ValType.i32], [ValType.i32]);
     this._runtimeFuncs.reverse = reverseIdx;
+
+    // Higher-order function imports: map/filter/reduce/find/any/every
+    // These take (arr_ptr, closure_ptr) and call back into WASM via exported table
+    const mapIdx = this.builder.addImport('env', '__map', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.map = mapIdx;
+
+    const filterIdx = this.builder.addImport('env', '__filter', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.filter = filterIdx;
+
+    // __reduce(arr_ptr, closure_ptr, initial_value) → i32
+    const reduceIdx = this.builder.addImport('env', '__reduce', [ValType.i32, ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.reduce = reduceIdx;
+
+    const findIdx = this.builder.addImport('env', '__find', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.find = findIdx;
+
+    const anyIdx = this.builder.addImport('env', '__any', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.any = anyIdx;
+
+    const everyIdx = this.builder.addImport('env', '__every', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.every = everyIdx;
 
     // Import __slice from JS host: env.__slice(arr: i32, start: i32, end: i32) → i32
     const sliceIdx = this.builder.addImport('env', '__slice', [ValType.i32, ValType.i32, ValType.i32], [ValType.i32]);
@@ -1456,8 +1479,12 @@ export class WasmCompiler {
     if (node.function instanceof ast.Identifier) {
       const name = node.function.value;
 
+      // If the name is locally defined (user shadowed a builtin), use normal call path
+      const isLocallyDefined = (this.currentScope && this.currentScope.vars.has(name)) ||
+        this.functions.some(f => f.name === name);
+
       // Built-in: len(x)
-      if (name === 'len' && node.arguments.length === 1) {
+      if (!isLocallyDefined && name === 'len' && node.arguments.length === 1) {
         this.compileNode(node.arguments[0]);
         this.currentBody.call(this._runtimeFuncs.len);
         return;
@@ -1520,6 +1547,27 @@ export class WasmCompiler {
         // Import rest from JS host
         this.compileNode(node.arguments[0]);
         this.currentBody.call(this._runtimeFuncs.rest);
+        return;
+      }
+
+      // Higher-order builtins: map(arr, fn), filter(arr, fn), find(arr, fn), any(arr, fn), every(arr, fn)
+      if (!isLocallyDefined && ['map', 'filter', 'find', 'any', 'every'].includes(name) && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]); // array
+        this.compileNode(node.arguments[1]); // closure
+        this.currentBody.call(this._runtimeFuncs[name]);
+        return;
+      }
+
+      // Built-in: reduce(arr, fn, init) or reduce(arr, fn)
+      if (!isLocallyDefined && name === 'reduce' && (node.arguments.length === 2 || node.arguments.length === 3)) {
+        this.compileNode(node.arguments[0]); // array
+        this.compileNode(node.arguments[1]); // closure
+        if (node.arguments.length === 3) {
+          this.compileNode(node.arguments[2]); // initial value
+        } else {
+          this.currentBody.i32Const(-2147483648); // sentinel: no initial value (MIN_INT)
+        }
+        this.currentBody.call(this._runtimeFuncs.reduce);
         return;
       }
 
@@ -3359,6 +3407,129 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         }
         return writeArray(elems);
       },
+
+      // Higher-order functions: call closure via exported table
+      __map(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        const results = [];
+        for (let i = 0; i < len; i++) {
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          results.push(fn(envPtr, elem));
+        }
+        return writeArray(results);
+      },
+
+      __filter(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        const results = [];
+        for (let i = 0; i < len; i++) {
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          if (fn(envPtr, elem)) results.push(elem);
+        }
+        return writeArray(results);
+      },
+
+      __reduce(arrPtr, closurePtr, initValue) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        const sentinel = -2147483648; // MIN_INT sentinel = no initial value
+        let acc;
+        let startIdx;
+        if (initValue !== sentinel) {
+          acc = initValue;
+          startIdx = 0;
+        } else {
+          if (len === 0) return 0;
+          acc = view.getInt32(arrPtr + 8, true);
+          startIdx = 1;
+        }
+        for (let i = startIdx; i < len; i++) {
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          acc = fn(envPtr, acc, elem);
+        }
+        return acc;
+      },
+
+      __find(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        for (let i = 0; i < len; i++) {
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          if (fn(envPtr, elem)) return elem;
+        }
+        return 0; // null
+      },
+
+      __any(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        for (let i = 0; i < len; i++) {
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          if (fn(envPtr, elem)) return 1;
+        }
+        return 0;
+      },
+
+      __every(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        for (let i = 0; i < len; i++) {
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          if (!fn(envPtr, elem)) return 0;
+        }
+        return 1;
+      },
+
       __add(a, b) {
         const mem = memoryRef.memory;
         if (mem) {
@@ -3870,6 +4041,7 @@ export async function compileAndRun(input, options = {}) {
   const t3 = performance.now();
   const instance = await WebAssembly.instantiate(module, imports);
   memoryRef.memory = instance.exports.memory;
+  memoryRef.table = instance.exports.__indirect_function_table || null;
   timings.instantiate = performance.now() - t3;
 
   const t4 = performance.now();
@@ -3901,6 +4073,7 @@ export async function compileToInstance(input, options = {}) {
 
   const instance = await WebAssembly.instantiate(module, imports);
   memoryRef.memory = instance.exports.memory;
+  memoryRef.table = instance.exports.__indirect_function_table || null;
 
   return instance;
 }
@@ -3925,6 +4098,7 @@ export async function precompile(input) {
     const imports = createWasmImports(outputLines, memoryRef);
     const instance = await WebAssembly.instantiate(module, imports);
     memoryRef.memory = instance.exports.memory;
+    memoryRef.table = instance.exports.__indirect_function_table || null;
     return instance.exports.main();
   };
 }
