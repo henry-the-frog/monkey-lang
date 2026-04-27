@@ -318,6 +318,35 @@ export class WasmCompiler {
     this._runtimeFuncs.int = intIdx;
     this.globalScope.define('int', intIdx, 'func');
 
+    // Utility builtins
+    const absIdx = this.builder.addImport('env', '__abs', [ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.abs = absIdx;
+    this.globalScope.define('abs', absIdx, 'func');
+
+    const maxIdx = this.builder.addImport('env', '__max', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.max = maxIdx;
+
+    const minIdx = this.builder.addImport('env', '__min', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.min = minIdx;
+
+    const rangeIdx = this.builder.addImport('env', '__range', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.range = rangeIdx;
+
+    const joinIdx = this.builder.addImport('env', '__join', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.join = joinIdx;
+
+    const keysIdx = this.builder.addImport('env', '__keys', [ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.keys = keysIdx;
+
+    const valuesIdx = this.builder.addImport('env', '__values', [ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.values = valuesIdx;
+
+    const containsIdx = this.builder.addImport('env', '__contains', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.contains = containsIdx;
+
+    const reverseIdx = this.builder.addImport('env', '__reverse', [ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.reverse = reverseIdx;
+
     // Import __slice from JS host: env.__slice(arr: i32, start: i32, end: i32) → i32
     const sliceIdx = this.builder.addImport('env', '__slice', [ValType.i32, ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.slice = sliceIdx;
@@ -1546,6 +1575,53 @@ export class WasmCompiler {
           this.currentBody.i32Const(-1); // sentinel for "to end"
         }
         this.currentBody.call(this._runtimeFuncs.strSubstring);
+        return;
+      }
+
+      // Utility builtins
+      if (name === 'max' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        this.currentBody.call(this._runtimeFuncs.max);
+        return;
+      }
+      if (name === 'min' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        this.currentBody.call(this._runtimeFuncs.min);
+        return;
+      }
+      if (name === 'range' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        this.currentBody.call(this._runtimeFuncs.range);
+        return;
+      }
+      if (name === 'join' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        this.currentBody.call(this._runtimeFuncs.join);
+        return;
+      }
+      if (name === 'keys' && node.arguments.length === 1) {
+        this.compileNode(node.arguments[0]);
+        this.currentBody.call(this._runtimeFuncs.keys);
+        return;
+      }
+      if (name === 'values' && node.arguments.length === 1) {
+        this.compileNode(node.arguments[0]);
+        this.currentBody.call(this._runtimeFuncs.values);
+        return;
+      }
+      if (name === 'contains' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        this.currentBody.call(this._runtimeFuncs.contains);
+        return;
+      }
+      if (name === 'reverse' && node.arguments.length === 1) {
+        this.compileNode(node.arguments[0]);
+        this.currentBody.call(this._runtimeFuncs.reverse);
         return;
       }
     }
@@ -3170,6 +3246,114 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const s = readString(ptr);
         if (end === -1) return writeString(s.substring(start));
         return writeString(s.substring(start, end));
+      },
+      // Utility builtins
+      __abs(v) {
+        if (isFloatPtr(v)) return fromNumber(Math.abs(toNumber(v)));
+        return Math.abs(v);
+      },
+      __max(a, b) {
+        return fromNumber(Math.max(toNumber(a), toNumber(b)));
+      },
+      __min(a, b) {
+        return fromNumber(Math.min(toNumber(a), toNumber(b)));
+      },
+      __range(start, stop) {
+        const arr = [];
+        for (let i = start; i < stop; i++) arr.push(i);
+        return writeArray(arr);
+      },
+      __join(arrPtr, sepPtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return writeString('');
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || arrPtr + 8 > view.byteLength) return writeString('');
+        const tag = view.getInt32(arrPtr, true);
+        if (tag !== TAG_ARRAY) return writeString('');
+        const len = view.getInt32(arrPtr + 4, true);
+        const sep = readString(sepPtr);
+        const parts = [];
+        for (let i = 0; i < len; i++) {
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          parts.push(readString(elem));
+        }
+        return writeString(parts.join(sep));
+      },
+      __keys(hashPtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return writeArray([]);
+        const view = new DataView(mem.buffer);
+        if (hashPtr < 16) return writeArray([]);
+        const tag = view.getInt32(hashPtr, true);
+        if (tag !== TAG_HASH) return writeArray([]);
+        const numEntries = view.getInt32(hashPtr + 4, true);
+        const capacity = view.getInt32(hashPtr + 8, true);
+        const entriesPtr = view.getInt32(hashPtr + 12, true);
+        const keys = [];
+        for (let i = 0; i < capacity; i++) {
+          const entryAddr = entriesPtr + i * 12;
+          const status = view.getInt32(entryAddr, true);
+          if (status === 1) { // OCCUPIED
+            keys.push(view.getInt32(entryAddr + 4, true)); // key pointer
+          }
+        }
+        return writeArray(keys);
+      },
+      __values(hashPtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return writeArray([]);
+        const view = new DataView(mem.buffer);
+        if (hashPtr < 16) return writeArray([]);
+        const tag = view.getInt32(hashPtr, true);
+        if (tag !== TAG_HASH) return writeArray([]);
+        const numEntries = view.getInt32(hashPtr + 4, true);
+        const capacity = view.getInt32(hashPtr + 8, true);
+        const entriesPtr = view.getInt32(hashPtr + 12, true);
+        const vals = [];
+        for (let i = 0; i < capacity; i++) {
+          const entryAddr = entriesPtr + i * 12;
+          const status = view.getInt32(entryAddr, true);
+          if (status === 1) { // OCCUPIED
+            vals.push(view.getInt32(entryAddr + 8, true)); // value
+          }
+        }
+        return writeArray(vals);
+      },
+      __contains(arrPtr, elem) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || arrPtr + 8 > view.byteLength) return 0;
+        const tag = view.getInt32(arrPtr, true);
+        if (tag === TAG_STRING) {
+          // String contains
+          const s = readString(arrPtr);
+          const search = readString(elem);
+          return s.includes(search) ? 1 : 0;
+        }
+        if (tag !== TAG_ARRAY) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        for (let i = 0; i < len; i++) {
+          if (view.getInt32(arrPtr + 8 + i * 4, true) === elem) return 1;
+        }
+        return 0;
+      },
+      __reverse(arrPtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16) return 0;
+        const tag = view.getInt32(arrPtr, true);
+        if (tag === TAG_STRING) {
+          return writeString(readString(arrPtr).split('').reverse().join(''));
+        }
+        if (tag !== TAG_ARRAY) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const elems = [];
+        for (let i = len - 1; i >= 0; i--) {
+          elems.push(view.getInt32(arrPtr + 8 + i * 4, true));
+        }
+        return writeArray(elems);
       },
       __add(a, b) {
         const mem = memoryRef.memory;
