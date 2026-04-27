@@ -4035,11 +4035,45 @@ export function formatWasmValue(value, dataView) {
   return String(value);
 }
 
+// Module cache: source string → { module: WebAssembly.Module, binary: Uint8Array, warnings }
+const _moduleCache = new Map();
+const _MODULE_CACHE_MAX = 64;
+
+function _hashString(str) {
+  // Simple FNV-1a hash for cache keying
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    hash ^= str.charCodeAt(i);
+    hash = (hash * 0x01000193) | 0;
+  }
+  return hash >>> 0; // unsigned
+}
+
 export async function compileAndRun(input, options = {}) {
   const timings = {};
   const t0 = performance.now();
 
-  const compiler = new WasmCompiler();
+  // Check module cache (skip compile+encode+wasmCompile on hit)
+  const useCache = options.cache !== false; // enabled by default
+  const cacheKey = useCache ? `${_hashString(input)}:${options.optimize ? 1 : 0}` : null;
+  let module = null;
+  let cacheHit = false;
+
+  if (useCache && _moduleCache.has(cacheKey)) {
+    const cached = _moduleCache.get(cacheKey);
+    module = cached.module;
+    if (options.warnings && cached.warnings.length > 0) {
+      options.warnings.push(...cached.warnings);
+    }
+    timings.compile = 0;
+    timings.encode = 0;
+    timings.wasmCompile = 0;
+    timings.cacheHit = true;
+    cacheHit = true;
+  }
+
+  if (!module) {
+    const compiler = new WasmCompiler();
   
   // Run optimization pipeline if enabled
   if (options.optimize) {
@@ -4090,13 +4124,24 @@ export async function compileAndRun(input, options = {}) {
     options.warnings.push(...compiler.warnings);
   }
 
-  const t1 = performance.now();
-  const binary = compiler.builder.build();
-  timings.encode = performance.now() - t1;
+    const t1 = performance.now();
+    const binary = compiler.builder.build();
+    timings.encode = performance.now() - t1;
 
-  const t2 = performance.now();
-  const module = await WebAssembly.compile(binary);
-  timings.wasmCompile = performance.now() - t2;
+    const t2 = performance.now();
+    module = await WebAssembly.compile(binary);
+    timings.wasmCompile = performance.now() - t2;
+
+    // Store in cache
+    if (useCache) {
+      if (_moduleCache.size >= _MODULE_CACHE_MAX) {
+        // Evict oldest entry
+        const firstKey = _moduleCache.keys().next().value;
+        _moduleCache.delete(firstKey);
+      }
+      _moduleCache.set(cacheKey, { module, warnings: compiler.warnings.slice() });
+    }
+  } // end if (!module)
 
   const outputLines = options.outputLines || [];
   const memoryRef = { memory: null };
@@ -4173,4 +4218,12 @@ export async function precompile(input) {
     memoryRef.table = instance.exports.__indirect_function_table || null;
     return instance.exports.main();
   };
+}
+
+export function clearModuleCache() {
+  _moduleCache.clear();
+}
+
+export function getModuleCacheStats() {
+  return { size: _moduleCache.size, maxSize: _MODULE_CACHE_MAX };
 }
