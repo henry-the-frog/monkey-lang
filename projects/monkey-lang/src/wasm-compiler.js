@@ -3180,3 +3180,27 @@ export async function compileToInstance(input, options = {}) {
 
   return instance;
 }
+
+// Pre-compile a WASM module, returning a fast run function
+// Usage: const run = await precompile(source); const result = await run();
+export async function precompile(input) {
+  const compiler = new WasmCompiler();
+  compiler.compile(input);
+
+  if (compiler.errors.length > 0) {
+    throw new Error(`Compilation errors: ${compiler.errors.join(', ')}`);
+  }
+
+  const binary = compiler.builder.build();
+  const module = await WebAssembly.compile(binary);
+
+  // Return a fast run function that only instantiates + executes
+  return async function run() {
+    const outputLines = [];
+    const memoryRef = { memory: null };
+    const imports = createWasmImports(outputLines, memoryRef);
+    const instance = await WebAssembly.instantiate(module, imports);
+    memoryRef.memory = instance.exports.memory;
+    return instance.exports.main();
+  };
+}

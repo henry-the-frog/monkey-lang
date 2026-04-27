@@ -10,7 +10,7 @@ import { Compiler } from './compiler.js';
 import { VM } from './vm.js';
 import { Environment } from './object.js';
 import { Transpiler } from './transpiler.js';
-import { compileAndRun as wasmCompileAndRun, WasmCompiler } from './wasm-compiler.js';
+import { compileAndRun as wasmCompileAndRun, WasmCompiler, precompile as wasmPrecompile } from './wasm-compiler.js';
 
 // Benchmarks that work across all 5 backends (no stdlib, no hash maps, no strings)
 const BENCHMARKS = [
@@ -182,36 +182,16 @@ for (const bench of BENCHMARKS) {
     }
 
     // WASM
-    if (bench.wasmExpected !== null) {
+    const wasmExp = bench.wasmExpected !== undefined ? bench.wasmExpected : bench.expected;
+    if (wasmExp !== null) {
       try {
-        // Pre-compile the WASM module
-        const compiler = new WasmCompiler();
-        const builder = compiler.compile(bench.input);
-        if (builder && compiler.errors.length === 0) {
-          const binary = builder.build();
-          const module = await WebAssembly.compile(binary);
-
-          const wasmR = await timeNAsync(async () => {
-            const outputLines = [];
-            const memoryRef = { memory: null };
-            const imports = {
-              env: {
-                puts() {},
-                str(v) { return v; },
-                __str_concat(a, b) { return 0; },
-                __str_eq(a, b) { return 0; },
-                __rest(a) { return 0; },
-                __type(a) { return 0; },
-                __int(a) { return a; },
-              }
-            };
-            const instance = await WebAssembly.instantiate(module, imports);
-            return instance.exports.main();
-          }, ITERS);
-          row.wasm = wasmR.median;
-        } else {
-          row.wasm = null;
-        }
+        // Pre-compile once, then just instantiate+run per iteration
+        const run = await wasmPrecompile(bench.input);
+        
+        const wasmR = await timeNAsync(async () => {
+          return await run();
+        }, ITERS);
+        row.wasm = wasmR.median;
       } catch (e) {
         row.wasm = null;
       }
