@@ -2328,12 +2328,8 @@ describe('Higher-Order Function Builtins', () => {
     });
   });
 
-  describe('known issues', () => {
-    // Y-combinator closure parameter capture bug - logged in TODO.md
-    // When a closure parameter is captured by an inner closure and called,
-    // it returns a heap pointer instead of the correct value.
-    // Direct recursion works fine; issue only with HOF closure-parameter chains.
-    it('Y-combinator factorial (closure parameter capture bug)', async () => {
+  describe('higher-order closures', () => {
+    it('Y-combinator factorial', async () => {
       assert.strictEqual(await compileAndRun(`
         let Y = fn(f) { f(fn(x) { Y(f)(x) }) };
         let fact = Y(fn(self) { fn(n) { if (n <= 1) { 1 } else { n * self(n - 1) } } });
@@ -2341,7 +2337,7 @@ describe('Higher-Order Function Builtins', () => {
       `), 120);
     });
 
-    it('closure parameter single call (same bug)', async () => {
+    it('closure parameter single call', async () => {
       assert.strictEqual(await compileAndRun(`
         let wrap = fn(f) { f(fn(x) { x }) };
         let fn1 = wrap(fn(self) { fn(n) { self(n) } });
