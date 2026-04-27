@@ -376,6 +376,190 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         }
         return a > b ? 1 : 0;
       },
+      __sub(a, b) { return a - b; },
+      __mul(a, b) { return a * b; },
+      __div(a, b) { return b !== 0 ? Math.trunc(a / b) : 0; },
+      __mod(a, b) { return b !== 0 ? a % b : 0; },
+      __neg(a) { return -a; },
+      __abs(a) { return Math.abs(a); },
+      __max(a, b) { return a > b ? a : b; },
+      __min(a, b) { return a < b ? a : b; },
+      __range(start, end) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const len = Math.max(0, end - start);
+        const size = (8 + len * 4 + 3) & ~3;
+        const ptr = gc.alloc(size);
+        const view = new DataView(mem.buffer);
+        view.setInt32(ptr, TAG_ARRAY, true);
+        view.setInt32(ptr + 4, len, true);
+        for (let i = 0; i < len; i++) view.setInt32(ptr + 8 + i * 4, start + i, true);
+        return ptr;
+      },
+      __join(arrPtr, sepPtr) {
+        const mem = memoryRef.memory;
+        if (!mem || arrPtr <= 0) return writeString('');
+        const view = new DataView(mem.buffer);
+        const tag = view.getInt32(arrPtr, true) & TAG_MASK;
+        if (tag !== TAG_ARRAY) return writeString('');
+        const len = view.getInt32(arrPtr + 4, true);
+        const sep = sepPtr > 0 ? readString(sepPtr) : ',';
+        const parts = [];
+        for (let i = 0; i < len; i++) parts.push(String(view.getInt32(arrPtr + 8 + i * 4, true)));
+        return writeString(parts.join(sep));
+      },
+      __keys(hashId) { return 0; }, // stub
+      __values(hashId) { return 0; }, // stub
+      __contains(arrPtr, elem) {
+        const mem = memoryRef.memory;
+        if (!mem || arrPtr <= 0) return 0;
+        const view = new DataView(mem.buffer);
+        if ((view.getInt32(arrPtr, true) & TAG_MASK) !== TAG_ARRAY) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        for (let i = 0; i < len; i++) {
+          if (view.getInt32(arrPtr + 8 + i * 4, true) === elem) return 1;
+        }
+        return 0;
+      },
+      __reverse(arrPtr) {
+        const mem = memoryRef.memory;
+        if (!mem || arrPtr <= 0) return 0;
+        const view = new DataView(mem.buffer);
+        if ((view.getInt32(arrPtr, true) & TAG_MASK) !== TAG_ARRAY) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const size = (8 + len * 4 + 3) & ~3;
+        const ptr = gc.alloc(size);
+        view.setInt32(ptr, TAG_ARRAY, true);
+        view.setInt32(ptr + 4, len, true);
+        for (let i = 0; i < len; i++) {
+          view.setInt32(ptr + 8 + i * 4, view.getInt32(arrPtr + 8 + (len - 1 - i) * 4, true), true);
+        }
+        return ptr;
+      },
+      __float_new(hi, lo) { return 0; }, // stub
+      __to_float(v) { return v; }, // stub
+      __str_split(strPtr, sepPtr) { return 0; }, // stub
+      __str_trim(strPtr) { return writeString(readString(strPtr).trim()); },
+      __str_replace(strPtr, fromPtr, toPtr) { return writeString(readString(strPtr).replace(readString(fromPtr), readString(toPtr))); },
+      __str_indexOf(strPtr, searchPtr) { return readString(strPtr).indexOf(readString(searchPtr)); },
+      __str_startsWith(strPtr, prefixPtr) { return readString(strPtr).startsWith(readString(prefixPtr)) ? 1 : 0; },
+      __str_endsWith(strPtr, suffixPtr) { return readString(strPtr).endsWith(readString(suffixPtr)) ? 1 : 0; },
+      __str_toUpper(strPtr) { return writeString(readString(strPtr).toUpperCase()); },
+      __str_toLower(strPtr) { return writeString(readString(strPtr).toLowerCase()); },
+      __str_substring(strPtr, start, end) { return writeString(readString(strPtr).substring(start, end)); },
+      // Higher-order function imports
+      __map(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || (view.getInt32(arrPtr, true) & TAG_MASK) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        const size = (8 + len * 4 + 3) & ~3;
+        const ptr = gc.alloc(size);
+        view.setInt32(ptr, TAG_ARRAY, true);
+        view.setInt32(ptr + 4, len, true);
+        for (let i = 0; i < len; i++) {
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          view.setInt32(ptr + 8 + i * 4, fn(envPtr, elem), true);
+        }
+        return ptr;
+      },
+      __filter(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || (view.getInt32(arrPtr, true) & TAG_MASK) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        const results = [];
+        for (let i = 0; i < len; i++) {
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          if (fn(envPtr, elem)) results.push(elem);
+        }
+        const size = (8 + results.length * 4 + 3) & ~3;
+        const ptr = gc.alloc(size);
+        view.setInt32(ptr, TAG_ARRAY, true);
+        view.setInt32(ptr + 4, results.length, true);
+        for (let i = 0; i < results.length; i++) view.setInt32(ptr + 8 + i * 4, results[i], true);
+        return ptr;
+      },
+      __reduce(arrPtr, closurePtr, initValue) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || (view.getInt32(arrPtr, true) & TAG_MASK) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        const sentinel = -2147483648;
+        let acc = initValue !== sentinel ? initValue : (len > 0 ? view.getInt32(arrPtr + 8, true) : 0);
+        const startIdx = initValue !== sentinel ? 0 : 1;
+        for (let i = startIdx; i < len; i++) {
+          acc = fn(envPtr, acc, view.getInt32(arrPtr + 8 + i * 4, true));
+        }
+        return acc;
+      },
+      __find(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || (view.getInt32(arrPtr, true) & TAG_MASK) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        for (let i = 0; i < len; i++) {
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          if (fn(envPtr, elem)) return elem;
+        }
+        return 0;
+      },
+      __any(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || (view.getInt32(arrPtr, true) & TAG_MASK) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        for (let i = 0; i < len; i++) {
+          if (fn(envPtr, view.getInt32(arrPtr + 8 + i * 4, true))) return 1;
+        }
+        return 0;
+      },
+      __every(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || (view.getInt32(arrPtr, true) & TAG_MASK) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        for (let i = 0; i < len; i++) {
+          if (!fn(envPtr, view.getInt32(arrPtr + 8 + i * 4, true))) return 0;
+        }
+        return 1;
+      },
       __array_concat(arrA, arrB) {
         const mem = memoryRef.memory;
         if (!mem) return 0;
