@@ -952,8 +952,8 @@ describe('Feature Integration Tests', () => {
   it('destructuring in loop', () => {
     testIntegerObject(compileAndRunJIT('let s = 0; for (p in [[1,10],[2,20],[3,30]]) { let [a,b] = p; s += a + b; }; s'), 66);
   });
-  it('do-while with mutation', { skip: 'JIT infinite loop with do-while array mutation' }, () => {
-    testIntegerObject(compileAndRunJIT('let a = [0]; do { a[0]++; } while (a[0] < 5); a[0]'), 5);
+  it('do-while with mutation', () => {
+    testIntegerObject(compileAndRunJIT('let a = [0]; do { a[0] += 1; } while (a[0] < 5); a[0]'), 5);
   });
   it('ternary chain', () => {
     testStringObject(compileAndRunJIT('let f = fn(n) { n < 0 ? "neg" : n == 0 ? "zero" : n < 10 ? "small" : "big" }; f(5)'), 'small');
