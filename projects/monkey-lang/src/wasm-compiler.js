@@ -88,7 +88,7 @@ export class WasmCompiler {
     };
 
     // Add 1 page of memory for strings/arrays
-    this.builder.addMemory(16); // 16 pages = 1MB (WASM heap uses lower half, JS heap uses upper half)
+    this.builder.addMemory(32); // 32 pages = 2MB
     
     // Exception handling: create a tag for monkey-lang exceptions (carries i32 value)
     const exTagType = this.builder.addType([ValType.i32], []);
@@ -3178,7 +3178,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
     const mem = memoryRef.memory;
     if (!mem) return 0;
     const view = new DataView(mem.buffer);
-    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 524288;
+    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
     const ptr = memoryRef.jsHeapPtr;
     memoryRef.jsHeapPtr += 12; // TAG_FLOAT(4) + f64(8)
     memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
@@ -3210,7 +3210,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
     // Read heap pointer from global — we need to bump-allocate
     // The heap pointer is stored as a WASM global, but we can't read it from JS.
     // Instead, we'll track our own allocation offset.
-    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 524288; // start high to avoid collisions
+    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576; // start high to avoid collisions
     const ptr = memoryRef.jsHeapPtr;
     memoryRef.jsHeapPtr += 8 + bytes.length;
     // Align to 4 bytes
@@ -3228,7 +3228,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
     const mem = memoryRef.memory;
     if (!mem) return 0;
     const view = new DataView(mem.buffer);
-    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 524288;
+    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
     const ptr = memoryRef.jsHeapPtr;
     const size = 8 + elements.length * 4; // [TAG_ARRAY:i32][length:i32][elem0:i32][elem1:i32]...
     memoryRef.jsHeapPtr += size;
@@ -3751,7 +3751,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const lenB = (arrB > 0 && view.getInt32(arrB, true) === TAG_ARRAY) ? view.getInt32(arrB + 4, true) : 0;
         const newLen = lenA + lenB;
         
-        if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 524288;
+        if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
         const newPtr = memoryRef.jsHeapPtr;
         memoryRef.jsHeapPtr += 8 + newLen * 4;
         memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
@@ -3777,7 +3777,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
 
         // Allocate new array with len-1 elements
         const newLen = len - 1;
-        if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 524288;
+        if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
         const newPtr = memoryRef.jsHeapPtr;
         const newSize = 8 + newLen * 4;
         memoryRef.jsHeapPtr += newSize;
@@ -3833,7 +3833,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         if (end > len) end = len;
         const newLen = Math.max(0, end - start);
 
-        if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 524288;
+        if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
         const newPtr = memoryRef.jsHeapPtr;
         memoryRef.jsHeapPtr += 8 + newLen * 4;
         memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
