@@ -64,7 +64,7 @@ export class WasmCompiler {
     this.errors = [];
     this.warnings = [];
     this.stringConstants = []; // [{offset, length, value}] — data segment entries
-    this.nextDataOffset = 16; // start at 16, skip first bytes as reserved
+    this.nextDataOffset = 65536; // start high to avoid integer/pointer confusion
 
     // Closure support
     this.closureFuncs = []; // [{funcLit, captures, tableIndex, wasmFuncIndex}]
@@ -84,7 +84,7 @@ export class WasmCompiler {
     this.builder.addExport('memory', ExportKind.Memory, 0);
 
     // Heap pointer global — starts after data segment (set after compilation)
-    this.heapPtr = this.builder.addGlobal(ValType.i32, true, 4096); // default, updated later
+    this.heapPtr = this.builder.addGlobal(ValType.i32, true, 131072); // default, updated later
 
     // Runtime function indices (added during compileProgram)
     this._runtimeFuncs = {};
@@ -152,6 +152,12 @@ export class WasmCompiler {
           continue; // Already handled in first pass
         }
         // Otherwise, compile as a let with a closure value
+      }
+
+      // Handle class definitions: let ClassName = class { ... }
+      if (stmt instanceof ast.LetStatement && stmt.value instanceof ast.ClassStatement) {
+        this.compileClassStatement(stmt.value, stmt.name.value);
+        continue;
       }
 
       if (stmt instanceof ast.ExpressionStatement) {
@@ -695,6 +701,30 @@ export class WasmCompiler {
         this.currentBody.localSet(localIdx);
         this.currentScope.define(stmt.variants[i], localIdx, 'local');
       }
+    } else if (stmt instanceof ast.ClassStatement) {
+      this.compileClassStatement(stmt);
+    } else if (stmt instanceof ast.ImportStatement) {
+      // Import statement: bind module name to empty hash (stub for WASM)
+      // Real modules would require host-backed function imports per module
+      this.warnings.push(`import "${stmt.moduleName}" is limited in WASM mode`);
+      const bindName = stmt.alias || stmt.moduleName;
+      if (stmt.bindings) {
+        // Selective import: define each binding as 0 (stub)
+        for (const name of stmt.bindings) {
+          const localIdx = this.nextLocalIndex++;
+          this.currentBody.addLocal(ValType.i32);
+          this.currentBody.i32Const(0);
+          this.currentBody.localSet(localIdx);
+          this.currentScope.define(name, localIdx, 'local');
+        }
+      } else {
+        // Namespace import: bind to empty hash
+        this.currentBody.call(this._runtimeFuncs.hashNew);
+        const localIdx = this.nextLocalIndex++;
+        this.currentBody.addLocal(ValType.i32);
+        this.currentBody.localSet(localIdx);
+        this.currentScope.define(bindName, localIdx, 'local');
+      }
     } else if (stmt instanceof ast.DestructuringLet) {
       // let [a, b, c] = expr
       this.compileNode(stmt.value);
@@ -708,6 +738,22 @@ export class WasmCompiler {
         this.currentBody.addLocal(ValType.i32);
         this.currentBody.localGet(arrLocal);
         this.currentBody.i32Const(i);
+        this.currentBody.call(this._runtimeFuncs.indexGet);
+        this.currentBody.localSet(localIdx);
+        this.currentScope.define(name.value, localIdx, 'local');
+      }
+    } else if (stmt instanceof ast.HashDestructuringLet) {
+      // let {x, y, z} = expr — extract hash keys by name
+      this.compileNode(stmt.value);
+      const hashLocal = this.nextLocalIndex++;
+      this.currentBody.addLocal(ValType.i32);
+      this.currentBody.localSet(hashLocal);
+      for (const name of stmt.names) {
+        const localIdx = this.nextLocalIndex++;
+        this.currentBody.addLocal(ValType.i32);
+        this.currentBody.localGet(hashLocal);
+        // Create string key from the identifier name
+        this.compileStringLiteral({ value: name.value });
         this.currentBody.call(this._runtimeFuncs.indexGet);
         this.currentBody.localSet(localIdx);
         this.currentScope.define(name.value, localIdx, 'local');
@@ -824,6 +870,35 @@ export class WasmCompiler {
       this.compileHashLiteral(node);
     } else if (node instanceof ast.MatchExpression) {
       this.compileMatchExpression(node);
+    } else if (node instanceof ast.ArrayComprehension) {
+      this.compileArrayComprehension(node);
+    } else if (node instanceof ast.TryExpression) {
+      this.compileTryExpression(node);
+    } else if (node instanceof ast.ThrowExpression) {
+      this.compileThrowExpression(node);
+    } else if (node instanceof ast.SelfExpression) {
+      // self is local[0] in methods (env_ptr = instance hash)
+      const binding = this.currentScope.resolve('self');
+      if (binding) {
+        this.currentBody.localGet(binding.index);
+      } else {
+        this.currentBody.i32Const(0);
+      }
+    } else if (node instanceof ast.ClassStatement) {
+      // Class used as expression — compile and push 0 (constructor is bound by name)
+      this.compileClassStatement(node);
+      this.currentBody.i32Const(0); // class expressions evaluate to 0
+    } else if (node instanceof ast.GeneratorLiteral) {
+      // Generators require coroutine state machines — not supported in WASM
+      this.warnings.push(`Generators are not supported in WASM mode (line ${node.token?.line || '?'})`);
+      this.currentBody.i32Const(0);
+    } else if (node instanceof ast.YieldExpression) {
+      this.warnings.push(`yield is not supported in WASM mode (line ${node.token?.line || '?'})`);
+      if (node.value) {
+        this.compileNode(node.value);
+      } else {
+        this.currentBody.i32Const(0);
+      }
     } else if (node instanceof ast.OptionalChainExpression) {
       // obj?.key — if obj is 0 (null), return 0; else index
       this.compileNode(node.left);
@@ -1987,6 +2062,323 @@ export class WasmCompiler {
     }
   }
 
+  // Array comprehension: [body for variable in iterable if condition]
+  // Desugars to: make empty array, loop over iterable, optionally filter, push body result
+  compileArrayComprehension(node) {
+    // Allocate result array (empty)
+    this.currentBody.i32Const(0);
+    this.currentBody.call(this._runtimeFuncs.makeArray);
+    const resultLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    this.currentBody.localSet(resultLocal);
+
+    // Compile iterable, store in temp
+    this.compileNode(node.iterable);
+    const iterLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    this.currentBody.localSet(iterLocal);
+
+    // Get length
+    this.currentBody.localGet(iterLocal);
+    this.currentBody.call(this._runtimeFuncs.len);
+    const lenLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    this.currentBody.localSet(lenLocal);
+
+    // Loop counter
+    const iLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    this.currentBody.i32Const(0);
+    this.currentBody.localSet(iLocal);
+
+    // Loop variable binding
+    const elemLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    const varName = node.variable?.value || node.variable;
+    this.currentScope.define(varName, elemLocal, 'local');
+
+    // block { loop {
+    this.currentBody.block();
+    this.blockDepth++;
+    this.currentBody.loop();
+    this.blockDepth++;
+
+    const loopBreakDepth = this.blockDepth;
+    const loopContinueDepth = this.blockDepth;
+    this.loopStack.push({ breakDepth: loopBreakDepth - 1, continueDepth: loopContinueDepth });
+
+    // if (i >= len) break
+    this.currentBody.localGet(iLocal);
+    this.currentBody.localGet(lenLocal);
+    this.currentBody.emit(Op.i32_ge_s);
+    this.currentBody.brIf(1); // break out of block
+
+    // elem = iterable[i]
+    this.currentBody.localGet(iterLocal);
+    this.currentBody.localGet(iLocal);
+    this.currentBody.call(this._runtimeFuncs.indexGet);
+    this.currentBody.localSet(elemLocal);
+
+    if (node.condition) {
+      // if (condition) { result = push(result, body) }
+      this.compileNode(node.condition);
+      this.currentBody.if_();
+      this.blockDepth++;
+      this.compileNode(node.body);
+      const bodyVal = this.nextLocalIndex++;
+      this.currentBody.addLocal(ValType.i32);
+      this.currentBody.localSet(bodyVal);
+      this.currentBody.localGet(resultLocal);
+      this.currentBody.localGet(bodyVal);
+      this.currentBody.call(this._runtimeFuncs.push);
+      this.currentBody.localSet(resultLocal);
+      this.blockDepth--;
+      this.currentBody.end(); // end if
+    } else {
+      // result = push(result, body)
+      this.compileNode(node.body);
+      const bodyVal = this.nextLocalIndex++;
+      this.currentBody.addLocal(ValType.i32);
+      this.currentBody.localSet(bodyVal);
+      this.currentBody.localGet(resultLocal);
+      this.currentBody.localGet(bodyVal);
+      this.currentBody.call(this._runtimeFuncs.push);
+      this.currentBody.localSet(resultLocal);
+    }
+
+    // i++
+    this.currentBody.localGet(iLocal);
+    this.currentBody.i32Const(1);
+    this.currentBody.emit(Op.i32_add);
+    this.currentBody.localSet(iLocal);
+
+    // br loop
+    this.currentBody.br(0);
+
+    this.loopStack.pop();
+    this.blockDepth--;
+    this.currentBody.end(); // end loop
+    this.blockDepth--;
+    this.currentBody.end(); // end block
+
+    // Return result array
+    this.currentBody.localGet(resultLocal);
+  }
+
+  // Try/catch expression — simplified for WASM
+  // Since WASM doesn't have native exception handling,
+  // we use host imports: __try_start() saves state, try body runs,
+  // __try_end() clears state. On throw, __throw() signals the host.
+  // For simplicity: try body always runs; if it throws (via host trap),
+  // the host catches it and the catch body gets 0 as the error value.
+  compileTryExpression(node) {
+    // Compile try body — wrap in a host-assisted try/catch
+    // We use the convention: __try_call(funcTableIndex) → result or error flag
+    // Simplified approach: just compile the try body inline.
+    // If throw is called, it's a host trap. The catch block is a fallback.
+    
+    // For practical WASM: compile try body, if ThrowExpression is encountered,
+    // it calls unreachable which traps. The catch body can't execute in pure WASM.
+    // But we can compile both and let the host runtime handle exception flow.
+    
+    // Simple approach: compile try block as the value, ignore catch for now
+    // This matches most use cases (try without actual exceptions)
+    if (node.tryBlock) {
+      this._compileBlockReturning(node.tryBlock);
+    } else {
+      this.currentBody.i32Const(0);
+    }
+    // Note: catch/finally blocks are not executed in WASM mode
+    // This is a known limitation — full exception handling requires WASM EH proposal
+  }
+
+  // Throw expression — triggers WASM unreachable trap
+  compileThrowExpression(node) {
+    if (node.value) {
+      this.compileNode(node.value);
+      this.currentBody.drop(); // value can't be propagated in WASM
+    }
+    this.currentBody.emit(Op.unreachable);
+    this.currentBody.i32Const(0); // dead code, but needed for type checking
+  }
+
+  // Class compilation: compiles class as a constructor function
+  // that creates an instance hash with fields and method closures
+  compileClassStatement(stmt, bindingName) {
+    const className = bindingName || stmt.name;
+    
+    // 1. Compile each method as a WASM function with (self, ...params) -> i32
+    const methodEntries = []; // [{name, wasmFuncIdx, tableSlot, paramCount}]
+    
+    for (const method of stmt.methods) {
+      const params = [ValType.i32, ...method.params.map(() => ValType.i32)]; // self + params
+      const results = [ValType.i32];
+      
+      const { index: wasmFuncIdx, body: funcBody } = this.builder.addFunction(params, results);
+      const tableSlot = this.nextTableSlot++;
+      
+      // Save compiler state
+      const prevBody = this.currentBody;
+      const prevScope = this.currentScope;
+      const prevFunc = this.currentFunc;
+      const prevLocalIdx = this.nextLocalIndex;
+      const prevParamIdx = this.nextParamIndex;
+      const prevTempLocal = this._tempLocal;
+      const prevBlockDepth = this.blockDepth;
+      
+      this.currentBody = funcBody;
+      this.blockDepth = 0;
+      this.currentFunc = { name: `${className}_${method.name}`, index: wasmFuncIdx };
+      this.currentScope = new Scope(this.globalScope);
+      this.nextParamIndex = 0;
+      this.nextLocalIndex = params.length;
+      this._tempLocal = null;
+      
+      // Bind self as local 0 (the first parameter)
+      this.currentScope.define('self', 0, ValType.i32);
+      
+      // Bind method parameters
+      for (let i = 0; i < method.params.length; i++) {
+        const pname = method.params[i].value || method.params[i];
+        this.currentScope.define(pname, i + 1, ValType.i32);
+      }
+      
+      // Compile method body
+      this._compileBlockReturning(method.body);
+      
+      // Restore state
+      this.currentBody = prevBody;
+      this.blockDepth = prevBlockDepth;
+      this.currentScope = prevScope;
+      this.currentFunc = prevFunc;
+      this.nextLocalIndex = prevLocalIdx;
+      this.nextParamIndex = prevParamIdx;
+      this._tempLocal = prevTempLocal;
+      
+      this.closureFuncs.push({
+        funcLit: method,
+        captures: [],
+        tableIndex: tableSlot,
+        wasmFuncIndex: wasmFuncIdx,
+      });
+      
+      methodEntries.push({
+        name: method.name,
+        wasmFuncIdx,
+        tableSlot,
+        paramCount: method.params.length,
+      });
+    }
+    
+    // 2. Create the constructor function
+    // Constructor signature: (...init_args) -> i32 (returns instance hash)
+    // Find init method
+    const initMethod = methodEntries.find(m => m.name === 'init');
+    const initParamCount = initMethod ? initMethod.paramCount : 0;
+    
+    // Constructor params: same as init params (or empty if no init)
+    const ctorParams = Array(initParamCount).fill(ValType.i32);
+    const { index: ctorFuncIdx, body: ctorBody } = this.builder.addFunction(ctorParams, [ValType.i32]);
+    
+    // Save state for constructor compilation
+    const prevBody = this.currentBody;
+    const prevScope = this.currentScope;
+    const prevFunc = this.currentFunc;
+    const prevLocalIdx = this.nextLocalIndex;
+    const prevBlockDepth = this.blockDepth;
+    const prevTempLocal = this._tempLocal;
+    
+    this.currentBody = ctorBody;
+    this.blockDepth = 0;
+    this.currentFunc = { name: `${className}_ctor`, index: ctorFuncIdx };
+    this.currentScope = new Scope(this.globalScope);
+    this.nextLocalIndex = ctorParams.length;
+    this._tempLocal = null;
+    
+    // Create instance hash
+    this.currentBody.call(this._runtimeFuncs.hashNew);
+    const instanceLocal = this.nextLocalIndex++;
+    ctorBody.addLocal(ValType.i32);
+    this.currentBody.localSet(instanceLocal);
+    
+    // Initialize fields to 0
+    for (const field of stmt.fields) {
+      this.currentBody.localGet(instanceLocal);
+      this.compileStringLiteral({ value: field });
+      this.currentBody.i32Const(0);
+      this.currentBody.call(this._runtimeFuncs.hashSet);
+      this.currentBody.drop(); // hashSet returns hash id
+    }
+    
+    // Store method closures in the instance hash
+    for (const method of methodEntries) {
+      if (method.name === 'init') continue; // init is called, not stored
+      
+      // Create closure: [TAG_CLOSURE][tableSlot][env_ptr=instance]
+      this.currentBody.i32Const(12);
+      this.currentBody.call(this._runtimeFuncs.alloc);
+      const closureLocal = this.nextLocalIndex++;
+      ctorBody.addLocal(ValType.i32);
+      this.currentBody.localSet(closureLocal);
+      
+      // Tag
+      this.currentBody.localGet(closureLocal);
+      this.currentBody.i32Const(TAG_CLOSURE);
+      this.currentBody.i32Store();
+      
+      // Table slot
+      this.currentBody.localGet(closureLocal);
+      this.currentBody.i32Const(4);
+      this.currentBody.emit(Op.i32_add);
+      this.currentBody.i32Const(method.tableSlot);
+      this.currentBody.i32Store();
+      
+      // Env ptr = instance hash
+      this.currentBody.localGet(closureLocal);
+      this.currentBody.i32Const(8);
+      this.currentBody.emit(Op.i32_add);
+      this.currentBody.localGet(instanceLocal);
+      this.currentBody.i32Store();
+      
+      // Store in instance hash
+      this.currentBody.localGet(instanceLocal);
+      this.compileStringLiteral({ value: method.name });
+      this.currentBody.localGet(closureLocal);
+      this.currentBody.call(this._runtimeFuncs.hashSet);
+      this.currentBody.drop();
+    }
+    
+    // Call init if present
+    if (initMethod) {
+      // Create init closure with instance as env
+      this.currentBody.localGet(instanceLocal); // self (env_ptr)
+      // Push constructor args
+      for (let i = 0; i < initParamCount; i++) {
+        this.currentBody.localGet(i); // constructor param
+      }
+      // Call init directly via table
+      const initParamTypes = [ValType.i32, ...Array(initParamCount).fill(ValType.i32)]; // self + args
+      const typeIdx = this.builder.addType(initParamTypes, [ValType.i32]);
+      this.currentBody.i32Const(initMethod.tableSlot);
+      this.currentBody.callIndirect(typeIdx);
+      this.currentBody.drop(); // discard init return value
+    }
+    
+    // Return instance
+    this.currentBody.localGet(instanceLocal);
+    
+    // Restore state
+    this.currentBody = prevBody;
+    this.blockDepth = prevBlockDepth;
+    this.currentScope = prevScope;
+    this.currentFunc = prevFunc;
+    this.nextLocalIndex = prevLocalIdx;
+    this._tempLocal = prevTempLocal;
+    
+    // 3. Bind class name to the constructor function
+    this.currentScope.define(className, ctorFuncIdx, 'func');
+  }
+
   // Hash literal: {"key": value, ...}
   compileHashLiteral(node) {
     // Check if all keys are integer-like (no string keys)
@@ -2245,15 +2637,23 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
       },
       __add(a, b) {
         const mem = memoryRef.memory;
-        if (mem && a > 0 && b > 0) {
+        if (mem) {
           const view = new DataView(mem.buffer);
+          // Validate pointer: must be >= 16, 4-byte aligned, in bounds, and have a valid tag+length
+          const isStrPtr = (v) => {
+            if (v < 16 || (v & 3) !== 0 || v + 8 > view.byteLength) return false;
+            const tag = view.getInt32(v, true);
+            if (tag !== TAG_STRING) return false;
+            const len = view.getInt32(v + 4, true);
+            return len >= 0 && len < 1000000 && v + 8 + len <= view.byteLength;
+          };
           try {
-            const tagA = view.getInt32(a, true);
-            const tagB = view.getInt32(b, true);
-            if (tagA === TAG_STRING || tagB === TAG_STRING) {
-              const sA = tagA === TAG_STRING ? readString(a) : String(a);
-              const sB = tagB === TAG_STRING ? readString(b) : String(b);
-              return writeString(sA + sB);
+            if (isStrPtr(a) || isStrPtr(b)) {
+              if (isStrPtr(a) || isStrPtr(b)) {
+              const sA = isStrPtr(a) ? readString(a) : String(a);
+              const sB = isStrPtr(b) ? readString(b) : String(b);
+                return writeString(sA + sB);
+              }
             }
           } catch (e) {}
         }
@@ -2262,12 +2662,17 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
       __eq(a, b) {
         if (a === b) return 1;
         const mem = memoryRef.memory;
-        if (mem && a > 0 && b > 0) {
+        if (mem) {
           const view = new DataView(mem.buffer);
+          const isStrPtr = (v) => {
+            if (v < 16 || (v & 3) !== 0 || v + 8 > view.byteLength) return false;
+            const tag = view.getInt32(v, true);
+            if (tag !== TAG_STRING) return false;
+            const len = view.getInt32(v + 4, true);
+            return len >= 0 && len < 1000000 && v + 8 + len <= view.byteLength;
+          };
           try {
-            const tagA = view.getInt32(a, true);
-            const tagB = view.getInt32(b, true);
-            if (tagA === TAG_STRING && tagB === TAG_STRING) {
+            if (isStrPtr(a) && isStrPtr(b)) {
               return readString(a) === readString(b) ? 1 : 0;
             }
           } catch (e) {}
@@ -2276,12 +2681,17 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
       },
       __lt(a, b) {
         const mem = memoryRef.memory;
-        if (mem && a > 0 && b > 0) {
+        if (mem) {
           const view = new DataView(mem.buffer);
+          const isStrPtr = (v) => {
+            if (v < 16 || (v & 3) !== 0 || v + 8 > view.byteLength) return false;
+            const tag = view.getInt32(v, true);
+            if (tag !== TAG_STRING) return false;
+            const len = view.getInt32(v + 4, true);
+            return len >= 0 && len < 1000000 && v + 8 + len <= view.byteLength;
+          };
           try {
-            const tagA = view.getInt32(a, true);
-            const tagB = view.getInt32(b, true);
-            if (tagA === TAG_STRING && tagB === TAG_STRING) {
+            if (isStrPtr(a) && isStrPtr(b)) {
               return readString(a) < readString(b) ? 1 : 0;
             }
           } catch (e) {}
@@ -2290,12 +2700,17 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
       },
       __gt(a, b) {
         const mem = memoryRef.memory;
-        if (mem && a > 0 && b > 0) {
+        if (mem) {
           const view = new DataView(mem.buffer);
+          const isStrPtr = (v) => {
+            if (v < 16 || (v & 3) !== 0 || v + 8 > view.byteLength) return false;
+            const tag = view.getInt32(v, true);
+            if (tag !== TAG_STRING) return false;
+            const len = view.getInt32(v + 4, true);
+            return len >= 0 && len < 1000000 && v + 8 + len <= view.byteLength;
+          };
           try {
-            const tagA = view.getInt32(a, true);
-            const tagB = view.getInt32(b, true);
-            if (tagA === TAG_STRING && tagB === TAG_STRING) {
+            if (isStrPtr(a) && isStrPtr(b)) {
               return readString(a) > readString(b) ? 1 : 0;
             }
           } catch (e) {}
@@ -2355,11 +2770,12 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const mem = memoryRef.memory;
         if (!mem) return writeString('unknown');
         const view = new DataView(mem.buffer);
-        if (value > 0 && value + 8 <= view.byteLength) {
+        if (value >= 16 && (value & 3) === 0 && value + 8 <= view.byteLength) {
           try {
             const tag = view.getInt32(value, true);
-            if (tag === TAG_STRING) return writeString('STRING');
-            if (tag === TAG_ARRAY) return writeString('ARRAY');
+            const len = view.getInt32(value + 4, true);
+            if (tag === TAG_STRING && len >= 0 && len < 1000000) return writeString('STRING');
+            if (tag === TAG_ARRAY && len >= 0 && len < 1000000) return writeString('ARRAY');
             if (tag === TAG_CLOSURE) return writeString('FUNCTION');
           } catch (e) {}
         }

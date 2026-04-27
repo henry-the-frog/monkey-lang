@@ -1330,4 +1330,192 @@ describe('WASM Compiler', () => {
       assert.deepStrictEqual(lines, ['apple', 'banana', 'cherry']);
     });
   });
+
+  describe('Array Comprehensions', () => {
+    it('simple comprehension', async () => {
+      const lines = [];
+      await compileAndRun(`
+        let arr = [1, 2, 3, 4, 5];
+        let doubled = [x * 2 for x in arr];
+        for (v in doubled) { puts(v); }
+      `, { outputLines: lines });
+      assert.deepStrictEqual(lines, ['2', '4', '6', '8', '10']);
+    });
+
+    it('comprehension with filter', async () => {
+      const lines = [];
+      await compileAndRun(`
+        let arr = [1, 2, 3, 4, 5, 6];
+        let evens = [x for x in arr if x % 2 == 0];
+        for (v in evens) { puts(v); }
+      `, { outputLines: lines });
+      assert.deepStrictEqual(lines, ['2', '4', '6']);
+    });
+
+    it('comprehension returns correct length', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let arr = [1, 2, 3];
+        let result = [x + 10 for x in arr];
+        len(result)
+      `), 3);
+    });
+
+    it('comprehension with range iterable', async () => {
+      const lines = [];
+      await compileAndRun(`
+        let squares = [x * x for x in 1..6];
+        for (v in squares) { puts(v); }
+      `, { outputLines: lines });
+      assert.deepStrictEqual(lines, ['1', '4', '9', '16', '25']);
+    });
+
+    it('comprehension with filter reduces length', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let big = [x for x in arr if x > 7];
+        len(big)
+      `), 3);
+    });
+  });
+
+  describe('Hash Destructuring', () => {
+    it('basic hash destructuring', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let h = {"x": 10, "y": 20};
+        let {x, y} = h;
+        x + y
+      `), 30);
+    });
+
+    it('hash destructuring with three keys', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let h = {"a": 1, "b": 2, "c": 3};
+        let {a, b, c} = h;
+        a + b + c
+      `), 6);
+    });
+  });
+
+  describe('Try/Throw', () => {
+    it('try-catch without throw returns try body value', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let result = try { 42 } catch (e) { 0 };
+        result
+      `), 42);
+    });
+
+    it('try-catch with computation returns result', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let x = 10;
+        let result = try { x * 5 } catch (e) { 0 };
+        result
+      `), 50);
+    });
+
+    it('throw triggers trap', async () => {
+      await assert.rejects(async () => {
+        await compileAndRun(`throw 1`);
+      });
+    });
+  });
+
+  describe('Classes', () => {
+    it('basic class with init and field access', async () => {
+      assert.strictEqual(await compileAndRun(`
+        class Dog {
+          let name;
+          fn init(n) { self.name = n; }
+        }
+        let d = Dog(42);
+        d.name
+      `), 42);
+    });
+
+    it('class with method calls', async () => {
+      assert.strictEqual(await compileAndRun(`
+        class Calculator {
+          let result;
+          fn init() { self.result = 0; }
+          fn add(n) { self.result = self.result + n; self.result }
+        }
+        let c = Calculator();
+        c.add(10);
+        c.add(20);
+        c.add(5)
+      `), 35);
+    });
+
+    it('class with multiple fields and methods', async () => {
+      assert.strictEqual(await compileAndRun(`
+        class Point {
+          let x;
+          let y;
+          fn init(x, y) { self.x = x; self.y = y; }
+          fn distance() { self.x * self.x + self.y * self.y }
+        }
+        let p = Point(3, 4);
+        p.distance()
+      `), 25);
+    });
+
+    it('multiple instances are independent', async () => {
+      assert.strictEqual(await compileAndRun(`
+        class Counter {
+          let count;
+          fn init() { self.count = 0; }
+          fn inc() { self.count = self.count + 1; self.count }
+        }
+        let a = Counter();
+        let b = Counter();
+        a.inc();
+        a.inc();
+        a.inc();
+        b.inc();
+        a.count * 10 + b.count
+      `), 31);
+    });
+
+    it('method with arguments', async () => {
+      assert.strictEqual(await compileAndRun(`
+        class Math {
+          fn init() { }
+          fn multiply(a, b) { a * b }
+        }
+        let m = Math();
+        m.multiply(7, 6)
+      `), 42);
+    });
+
+    it('class with no init args', async () => {
+      assert.strictEqual(await compileAndRun(`
+        class Greeter {
+          let value;
+          fn init() { self.value = 100; }
+          fn get() { self.value }
+        }
+        let g = Greeter();
+        g.get()
+      `), 100);
+    });
+  });
+
+  describe('Import/Generator stubs', () => {
+    it('import statement compiles with warning', async () => {
+      const warnings = [];
+      await compileAndRun(`
+        import "math";
+        0
+      `, { warnings });
+      assert.ok(warnings.some(w => w.includes('limited in WASM')));
+    });
+
+    it('generator literal compiles with warning', async () => {
+      const warnings = [];
+      await compileAndRun(`
+        let g = gen(n) { yield n; };
+        0
+      `, { warnings });
+      assert.ok(warnings.some(w => w.includes('not supported in WASM')));
+    });
+  });
 });

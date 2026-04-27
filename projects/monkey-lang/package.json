@@ -1,7 +1,7 @@
 {
   "name": "monkey-lang-interpreter",
   "version": "0.3.0",
-  "description": "Monkey programming language — 5 execution backends (eval, VM, JIT, transpiler, WASM), closures, pattern matching, 1341 tests",
+  "description": "Monkey programming language — 5 execution backends (eval, VM, JIT, transpiler, WASM), closures, classes, pattern matching, 1786 tests",
   "main": "src/index.js",
   "bin": { "monkey": "./src/repl.js" },
   "scripts": {
