@@ -78,6 +78,11 @@ export class WasmCompiler {
       closuresCreated: 0,
       stringsAllocated: 0,
       arraysAllocated: 0,
+      directArith: 0,     // direct i32 arithmetic (fast path)
+      hostArith: 0,       // host import arithmetic (slow path)
+      directCalls: 0,     // direct function calls
+      indirectCalls: 0,   // call_indirect via table
+      knownIntVars: 0,    // variables with knownInt flag
     };
 
     // Add 1 page of memory for strings/arrays
@@ -126,7 +131,7 @@ export class WasmCompiler {
       if (stmt instanceof ast.LetStatement &&
           (stmt.value instanceof ast.FunctionLiteral)) {
         const params = new Set(stmt.value.parameters.map(p => p.value || p.token?.literal));
-        const hasFreeVars = this._hasFreeVariables(stmt.value, params, topLevelFuncNames);
+        const hasFreeVars = this._hasFreeVariables(stmt.value, params, topLevelFuncNames, stmt.name.value);
         if (!hasFreeVars) {
           this._declareFunction(stmt.name.value, stmt.value);
         }
@@ -188,6 +193,9 @@ export class WasmCompiler {
     }
 
     // Now compile all collected functions
+    // Infer return types for direct functions (enables i32_add for result arithmetic)
+    this._inferReturnTypes();
+    
     this._compileFunctions();
 
     // Add string constant data segments
@@ -604,6 +612,71 @@ export class WasmCompiler {
     this.globalScope.define('__make_array', makeArrIdx, 'func');
     this.globalScope.define('__push', pushIdx, 'func');
   }
+  // Infer return types: if all return paths of a function return integers, mark it
+  _inferReturnTypes() {
+    const funcNames = new Set(this.functions.map(f => f.name));
+    
+    // Fixed-point iteration for recursive functions
+    // Start by assuming all functions return int, then refine
+    for (const func of this.functions) {
+      func.returnsInt = true; // optimistic assumption
+    }
+    
+    for (let iteration = 0; iteration < 3; iteration++) {
+      const returnIntFuncs = new Set(
+        this.functions.filter(f => f.returnsInt).map(f => f.name)
+      );
+      
+      for (const func of this.functions) {
+        func.returnsInt = this._allReturnPathsInt(func.funcLit.body, func.funcLit.parameters, returnIntFuncs);
+      }
+    }
+  }
+  
+  // Check if all return paths in a block produce integer values
+  _allReturnPathsInt(body, params, returnIntFuncs) {
+    if (!body || !body.statements || body.statements.length === 0) return false;
+    
+    const paramNames = new Set((params || []).map(p => p.value || p.token?.literal));
+    
+    const isIntExpr = (node) => {
+      if (!node) return false;
+      if (node instanceof ast.IntegerLiteral) return true;
+      if (node instanceof ast.BooleanLiteral) return true;
+      if (node instanceof ast.Identifier) return paramNames.has(node.value);
+      if (node instanceof ast.InfixExpression) {
+        if (['-', '*', '/', '%', '<', '>', '<=', '>=', '==', '!='].includes(node.operator)) return true;
+        if (node.operator === '+') return isIntExpr(node.left) && isIntExpr(node.right);
+        return false;
+      }
+      if (node instanceof ast.PrefixExpression) return true;
+      if (node instanceof ast.IfExpression) {
+        // Both branches must return int
+        const consInt = node.consequence ? isIntBlock(node.consequence) : false;
+        const altInt = node.alternative ? isIntBlock(node.alternative) : false;
+        return consInt && altInt;
+      }
+      if (node instanceof ast.CallExpression) {
+        // Known function with int return
+        if (node.function instanceof ast.Identifier && returnIntFuncs.has(node.function.value)) {
+          return true;
+        }
+        return false;
+      }
+      if (node instanceof ast.BlockStatement) return isIntBlock(node);
+      return false;
+    };
+    
+    const isIntBlock = (block) => {
+      if (!block || !block.statements || block.statements.length === 0) return false;
+      const last = block.statements[block.statements.length - 1];
+      if (last instanceof ast.ExpressionStatement) return isIntExpr(last.expression);
+      if (last instanceof ast.ReturnStatement) return isIntExpr(last.returnValue);
+      return false;
+    };
+    
+    return isIntBlock(body);
+  }
 
   _declareFunction(name, funcLit) {
     const params = funcLit.parameters.map(() => ValType.i32);
@@ -613,7 +686,7 @@ export class WasmCompiler {
     this.builder.addExport(name, ExportKind.Func, index);
 
     this.functions.push({
-      name, index, body, funcLit, params,
+      name, index, body, funcLit, params, returnsInt: false,
     });
 
     // Register in global scope so calls can find it
@@ -1150,27 +1223,33 @@ export class WasmCompiler {
         // Use runtime dispatch when string operations are possible
         if (this._isDefinitelyInteger(node.left) && this._isDefinitelyInteger(node.right)) {
           this.currentBody.emit(Op.i32_add);
+          this.stats.directArith++;
         } else {
           this.currentBody.call(this._runtimeFuncs.add);
+          this.stats.hostArith++;
         }
         break;
-      case '-':  this.currentBody.emit(Op.i32_sub); break;
-      case '*':  this.currentBody.emit(Op.i32_mul); break;
-      case '/':  this.currentBody.emit(Op.i32_div_s); break;
-      case '%':  this.currentBody.emit(Op.i32_rem_s); break;
+      case '-':  this.currentBody.emit(Op.i32_sub); this.stats.directArith++; break;
+      case '*':  this.currentBody.emit(Op.i32_mul); this.stats.directArith++; break;
+      case '/':  this.currentBody.emit(Op.i32_div_s); this.stats.directArith++; break;
+      case '%':  this.currentBody.emit(Op.i32_rem_s); this.stats.directArith++; break;
       case '==':
         if (this._isDefinitelyInteger(node.left) && this._isDefinitelyInteger(node.right)) {
           this.currentBody.emit(Op.i32_eq);
+          this.stats.directArith++;
         } else {
           this.currentBody.call(this._runtimeFuncs.eq);
+          this.stats.hostArith++;
         }
         break;
       case '!=':
         if (this._isDefinitelyInteger(node.left) && this._isDefinitelyInteger(node.right)) {
           this.currentBody.emit(Op.i32_ne);
+          this.stats.directArith++;
         } else {
           this.currentBody.call(this._runtimeFuncs.eq);
           this.currentBody.emit(Op.i32_eqz);
+          this.stats.hostArith++;
         }
         break;
       case '<':
@@ -1853,9 +1932,10 @@ export class WasmCompiler {
   }
 
   // Check if a function literal has free variables (references to non-param, non-global names)
-  _hasFreeVariables(funcLit, params, topLevelFuncNames = new Set()) {
+  _hasFreeVariables(funcLit, params, topLevelFuncNames = new Set(), selfName = null) {
     let hasFree = false;
     const locals = new Set(params); // Track locally-defined names
+    if (selfName) locals.add(selfName); // Self-reference in recursive functions is not free
     const walk = (node) => {
       if (!node || hasFree) return;
       if (node instanceof ast.FunctionLiteral) return; // Don't walk into nested functions
@@ -2571,6 +2651,14 @@ export class WasmCompiler {
       // Check if the variable is known to be an integer from its binding
       const binding = this.currentScope?.resolve(node.value);
       if (binding && binding.knownInt) return true;
+      return false;
+    }
+    if (node instanceof ast.CallExpression) {
+      // Check if the called function is a known direct function with int return type
+      if (node.function instanceof ast.Identifier) {
+        const func = this.functions?.find(f => f.name === node.function.value);
+        if (func && func.returnsInt) return true;
+      }
       return false;
     }
     if (node instanceof ast.InfixExpression) {
