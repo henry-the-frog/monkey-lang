@@ -2311,4 +2311,48 @@ describe('Higher-Order Function Builtins', () => {
       `), 3);
     });
   });
+
+  describe('sort', () => {
+    it('default ascending sort', async () => {
+      assert.strictEqual(await run('sort([5, 3, 1, 4, 2])'), '[1, 2, 3, 4, 5]');
+    });
+
+    it('custom comparator (descending)', async () => {
+      assert.strictEqual(await run('sort([5, 3, 1, 4, 2], fn(a, b) { b - a })'), '[5, 4, 3, 2, 1]');
+    });
+
+    it('empty array', async () => {
+      assert.strictEqual(await run('sort([])'), '[]');
+    });
+
+    it('single element', async () => {
+      assert.strictEqual(await run('sort([42])'), '[42]');
+    });
+
+    it('already sorted', async () => {
+      assert.strictEqual(await run('sort([1, 2, 3])'), '[1, 2, 3]');
+    });
+
+    it('duplicates', async () => {
+      assert.strictEqual(await run('sort([3, 1, 2, 1, 3])'), '[1, 1, 2, 3, 3]');
+    });
+  });
+
+  describe('forEach', () => {
+    it('calls function for each element', async () => {
+      const outputLines = [];
+      await compileAndRun('forEach([10, 20, 30], fn(x) { puts(x) })', { outputLines });
+      assert.deepStrictEqual(outputLines, ['10', '20', '30']);
+    });
+
+    it('empty array does nothing', async () => {
+      const outputLines = [];
+      await compileAndRun('forEach([], fn(x) { puts(x) })', { outputLines });
+      assert.deepStrictEqual(outputLines, []);
+    });
+
+    it('returns null (0)', async () => {
+      assert.strictEqual(await compileAndRun('forEach([1, 2, 3], fn(x) { x })'), 0);
+    });
+  });
 });

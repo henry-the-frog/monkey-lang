@@ -374,6 +374,14 @@ export class WasmCompiler {
     const everyIdx = this.builder.addImport('env', '__every', [ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.every = everyIdx;
 
+    // sort(arr) or sort(arr, cmpFn) — sort takes optional comparator closure
+    const sortIdx = this.builder.addImport('env', '__sort', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.sort = sortIdx;
+
+    // forEach(arr, fn) — call fn for each element, returns 0 (null)
+    const forEachIdx = this.builder.addImport('env', '__forEach', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.forEach = forEachIdx;
+
     // Import __slice from JS host: env.__slice(arr: i32, start: i32, end: i32) → i32
     const sliceIdx = this.builder.addImport('env', '__slice', [ValType.i32, ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.slice = sliceIdx;
@@ -1568,6 +1576,26 @@ export class WasmCompiler {
           this.currentBody.i32Const(-2147483648); // sentinel: no initial value (MIN_INT)
         }
         this.currentBody.call(this._runtimeFuncs.reduce);
+        return;
+      }
+
+      // Built-in: sort(arr) or sort(arr, cmpFn)
+      if (!isLocallyDefined && name === 'sort' && (node.arguments.length === 1 || node.arguments.length === 2)) {
+        this.compileNode(node.arguments[0]); // array
+        if (node.arguments.length === 2) {
+          this.compileNode(node.arguments[1]); // comparator closure
+        } else {
+          this.currentBody.i32Const(0); // 0 = no comparator (default sort)
+        }
+        this.currentBody.call(this._runtimeFuncs.sort);
+        return;
+      }
+
+      // Built-in: forEach(arr, fn) — calls fn for each element
+      if (!isLocallyDefined && name === 'forEach' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]); // array
+        this.compileNode(node.arguments[1]); // closure
+        this.currentBody.call(this._runtimeFuncs.forEach);
         return;
       }
 
@@ -3528,6 +3556,50 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
           if (!fn(envPtr, elem)) return 0;
         }
         return 1;
+      },
+
+      __sort(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        // Read elements
+        const elems = [];
+        for (let i = 0; i < len; i++) {
+          elems.push(view.getInt32(arrPtr + 8 + i * 4, true));
+        }
+        if (closurePtr > 0 && view.getInt32(closurePtr, true) === TAG_CLOSURE) {
+          // Custom comparator
+          const table = memoryRef.table;
+          if (table) {
+            const tableIdx = view.getInt32(closurePtr + 4, true);
+            const envPtr = view.getInt32(closurePtr + 8, true);
+            const cmpFn = table.get(tableIdx);
+            elems.sort((a, b) => cmpFn(envPtr, a, b));
+          }
+        } else {
+          // Default ascending integer sort
+          elems.sort((a, b) => a - b);
+        }
+        return writeArray(elems);
+      },
+
+      __forEach(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        for (let i = 0; i < len; i++) {
+          fn(envPtr, view.getInt32(arrPtr + 8 + i * 4, true));
+        }
+        return 0; // null
       },
 
       __add(a, b) {
