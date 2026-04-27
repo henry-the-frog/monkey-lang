@@ -3131,12 +3131,19 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
       },
       __div(a, b) {
         const nb = toNumber(b);
-        if (nb === 0) return 0;
+        if (nb === 0) {
+          // Float division by zero → Infinity/-Infinity/NaN
+          if (isFloatPtr(a) || isFloatPtr(b)) return fromNumber(toNumber(a) / nb);
+          return 0; // Integer division by zero → 0 (graceful)
+        }
         return fromNumber(toNumber(a) / nb);
       },
       __mod(a, b) {
         const nb = toNumber(b);
-        if (nb === 0) return 0;
+        if (nb === 0) {
+          if (isFloatPtr(a) || isFloatPtr(b)) return fromNumber(NaN);
+          return 0;
+        }
         return fromNumber(toNumber(a) % nb);
       },
       __neg(a) {
