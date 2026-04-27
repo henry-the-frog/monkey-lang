@@ -1928,6 +1928,46 @@ describe('Edge Cases (Stress Tests)', () => {
       `), 35);
     });
 
+    it('middle function with puts and nested closure', async () => {
+      const outputLines = [];
+      await compileAndRun(`
+        let f = fn(x) {
+          fn(y) {
+            puts(y);
+            fn(z) { z }
+          }
+        };
+        f(5)(10)(20)
+      `, { outputLines });
+      assert.strictEqual(outputLines[0], '10');
+    });
+
+    it('4-level nested closures', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let f = fn(a) {
+          fn(b) {
+            fn(c) {
+              fn(d) { a + b + c + d }
+            }
+          }
+        };
+        f(1)(2)(3)(4)
+      `), 10);
+    });
+
+    it('nested closure with intermediate computation', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let f = fn(x) {
+          let doubled = x * 2;
+          fn(y) {
+            let sum = doubled + y;
+            fn(z) { sum + z }
+          }
+        };
+        f(5)(10)(20)
+      `), 40); // doubled=10, sum=10+10=20, result=20+20=40
+    });
+
     it('higher-order map function', async () => {
       assert.strictEqual(await compileAndRun(`
         let map = fn(arr, f) {
