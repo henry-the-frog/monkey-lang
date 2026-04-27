@@ -1606,3 +1606,84 @@ describe('WASM Compiler', () => {
     });
   });
 });
+
+describe('Integration Tests', () => {
+  it('fibonacci with WASM exception on negative input', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let fib = fn(n) {
+        if (n < 0) { throw -1 }
+        if (n < 2) { n } else { fib(n-1) + fib(n-2) }
+      }
+      let result = try { fib(10) } catch (e) { e }
+      result
+    `), 55);
+  });
+
+  it('class with inheritance + method calls + arithmetic', async () => {
+    assert.strictEqual(await compileAndRun(`
+      class Shape {
+        let sides
+        fn init(s) { self.sides = s }
+        fn perimeter(length) { self.sides * length }
+      }
+      class Square extends Shape {
+        fn area(length) { length * length }
+      }
+      let s = Square(4)
+      s.perimeter(5) + s.area(3)
+    `), 29);
+  });
+
+  it('array comprehension + hash destructuring + HOF', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let config = {"scale": 2, "offset": 10}
+      let {scale, offset} = config
+      let data = [1, 2, 3, 4, 5]
+      let transformed = [x * scale + offset for x in data]
+      let sum = 0
+      for (v in transformed) { sum = sum + v }
+      sum
+    `), 80);
+  });
+
+  it('closure factory + for-in loop + accumulator', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let makeAdder = fn(x) { fn(y) { x + y } }
+      let add10 = makeAdder(10)
+      let add20 = makeAdder(20)
+      let total = 0
+      for (i in 0..5) {
+        total = total + add10(i) + add20(i)
+      }
+      total
+    `), 170); // 30+32+34+36+38 = 170
+  });
+
+  it('nested try-catch with class methods', async () => {
+    assert.strictEqual(await compileAndRun(`
+      class Validator {
+        fn init() { }
+        fn check(n) {
+          if (n < 0) { throw n }
+          n * 2
+        }
+      }
+      let v = Validator()
+      let a = try { v.check(5) } catch (e) { e }
+      let b = try { v.check(-3) } catch (e) { e }
+      a * 10 + b
+    `), 97);
+  });
+
+  it('while loop with break-like pattern', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let sum = 0
+      let i = 1
+      while (i <= 100) {
+        sum = sum + i
+        i = i + 1
+      }
+      sum
+    `), 5050);
+  });
+});
