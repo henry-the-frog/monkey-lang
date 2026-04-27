@@ -98,7 +98,7 @@ export class WasmCompiler {
     };
 
     // Add 1 page of memory for strings/arrays
-    this.builder.addMemory(32); // 32 pages = 2MB
+    this.builder.addMemory(64, 256); // 64 pages initial (4MB), max 256 pages (16MB)
     
     // Exception handling: create a tag for monkey-lang exceptions (carries i32 value)
     const exTagType = this.builder.addType([ValType.i32], []);
@@ -466,22 +466,47 @@ export class WasmCompiler {
     const toFloatIdx = this.builder.addImport('env', '__to_float', [ValType.i32], [ValType.i32]);
     this._runtimeFuncs.toFloat = toFloatIdx;
 
-    // __alloc(size) → pointer — bump allocator, registers with GC for tracking
+    // __alloc(size) → pointer — bump allocator with memory growth
     const { index: allocIdx, body: allocBody } = this.builder.addFunction(
       [ValType.i32], [ValType.i32]
     );
     allocBody.addLocal(ValType.i32); // local[1] = ptr
+    allocBody.addLocal(ValType.i32); // local[2] = new_heap_ptr
     allocBody
       .globalGet(this.heapPtr) // ptr = heap_ptr
       .localTee(1)
       .localGet(0)             // size
-      .emit(Op.i32_add)        // heap_ptr + size
-      .globalSet(this.heapPtr) // heap_ptr = heap_ptr + size
-      // Register allocation with GC
-      .localGet(1)             // ptr
-      .localGet(0)             // size
-      .call(gcRegisterIdx);    // __gc_register(ptr, size)
-    allocBody.localGet(1);      // return old heap_ptr
+      .emit(Op.i32_add)        // new_heap_ptr = heap_ptr + size
+      .localTee(2);
+    // Check if we need to grow memory
+    allocBody
+      .emit(Op.memory_size, 0x00)  // memory_size in pages (memory 0)
+      .i32Const(16)
+      .emit(Op.i32_shl)            // current_mem_bytes = pages * 65536
+      .emit(Op.i32_gt_u);          // new_heap_ptr > current_mem_bytes?
+    allocBody.if_();                // if need growth
+    // Grow by needed pages + 16 extra pages for headroom
+    allocBody
+      .localGet(2)                  // new_heap_ptr
+      .emit(Op.memory_size, 0x00)
+      .i32Const(16)
+      .emit(Op.i32_shl)
+      .emit(Op.i32_sub)            // bytes_over = new_heap_ptr - current_bytes
+      .i32Const(16)
+      .emit(Op.i32_shr_u)          // pages_over = bytes_over / 65536
+      .i32Const(17)                 // + 16 + 1 for headroom
+      .emit(Op.i32_add)
+      .emit(Op.memory_grow, 0x00)  // grow by pages_over + 17
+      .emit(Op.drop);              // drop result
+    allocBody.end();                // end if
+
+    allocBody
+      .localGet(2)
+      .globalSet(this.heapPtr)      // heap_ptr = new_heap_ptr
+      .localGet(1)                  // ptr
+      .localGet(0)                  // size
+      .call(gcRegisterIdx);         // __gc_register(ptr, size)
+    allocBody.localGet(1);          // return old heap_ptr
     this._runtimeFuncs.alloc = allocIdx;
     this.builder.addExport('__alloc', ExportKind.Func, allocIdx);
 
@@ -3254,6 +3279,17 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
     if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
     const ptr = memoryRef.jsHeapPtr;
     memoryRef.jsHeapPtr += size;
+    // Grow memory if needed (each page = 64KB)
+    const mem = memoryRef.memory;
+    if (mem && memoryRef.jsHeapPtr > mem.buffer.byteLength) {
+      const needed = Math.ceil((memoryRef.jsHeapPtr - mem.buffer.byteLength) / 65536);
+      try {
+        mem.grow(needed);
+      } catch (e) {
+        // Memory growth failed — OOM
+        throw new Error(`WASM heap exhausted: needed ${memoryRef.jsHeapPtr} bytes, have ${mem.buffer.byteLength}`);
+      }
+    }
     return ptr;
   }
 

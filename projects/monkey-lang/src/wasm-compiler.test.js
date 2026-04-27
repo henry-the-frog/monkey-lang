@@ -2397,6 +2397,13 @@ describe('Higher-Order Function Builtins', () => {
         25005000
       );
     });
+
+    it('push loop + map on 1000 elements (memory growth)', async () => {
+      assert.strictEqual(
+        await compileAndRun('let a = []; let i = 0; while (i < 1000) { a = push(a, i); i = i + 1; }; let b = map(a, fn(x) { x * 2 }); b[999]'),
+        1998
+      );
+    });
   });
 
   describe('forEach', () => {
