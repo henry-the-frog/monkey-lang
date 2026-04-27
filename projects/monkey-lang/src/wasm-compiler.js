@@ -2897,23 +2897,6 @@ export class WasmCompiler {
 }
 
 // === Prefix negation fix ===
-// Override compilePrefixExpression to handle negation correctly
-const origPrefix = WasmCompiler.prototype.compilePrefixExpression;
-WasmCompiler.prototype.compilePrefixExpression = function(node) {
-  if (node.operator === '-') {
-    this.currentBody.i32Const(0);
-    this.compileNode(node.right);
-    this.currentBody.emit(Op.i32_sub);
-    return;
-  }
-  if (node.operator === '!') {
-    this.compileNode(node.right);
-    this.currentBody.emit(Op.i32_eqz);
-    return;
-  }
-  this.compileNode(node.right);
-};
-
 // === High-level API ===
 
 // Create default JS host imports for WASM modules

@@ -1732,3 +1732,152 @@ describe('Super Calls', () => {
     `), 14);
   });
 });
+
+describe('Float Support', () => {
+  // Helper: run code and capture puts() output (which formats floats correctly)
+  async function runWithOutput(code) {
+    const outputLines = [];
+    await compileAndRun(code, { outputLines });
+    return outputLines;
+  }
+
+  describe('Float literals', () => {
+    it('compiles float literal via puts', async () => {
+      const output = await runWithOutput('puts(3.14)');
+      assert.strictEqual(output[0], '3.14');
+    });
+
+    it('compiles negative float literal', async () => {
+      const output = await runWithOutput('puts(-2.5)');
+      assert.strictEqual(output[0], '-2.5');
+    });
+
+    it('compiles float with zero fractional part', async () => {
+      const output = await runWithOutput('puts(5.0)');
+      assert.strictEqual(output[0], '5.0');
+    });
+  });
+
+  describe('Float arithmetic', () => {
+    it('adds two floats', async () => {
+      const output = await runWithOutput('puts(1.5 + 2.5)');
+      assert.strictEqual(output[0], '4');
+    });
+
+    it('subtracts floats', async () => {
+      const output = await runWithOutput('puts(5.5 - 2.3)');
+      assert.strictEqual(output[0], '3.2');
+    });
+
+    it('multiplies floats', async () => {
+      const output = await runWithOutput('puts(2.5 * 4.0)');
+      assert.strictEqual(output[0], '10');
+    });
+
+    it('divides floats', async () => {
+      const output = await runWithOutput('puts(7.5 / 2.5)');
+      assert.strictEqual(output[0], '3');
+    });
+
+    it('modulus with floats', async () => {
+      const output = await runWithOutput('puts(7.5 % 2.0)');
+      assert.strictEqual(output[0], '1.5');
+    });
+
+    it('negates a float', async () => {
+      const output = await runWithOutput('puts(-3.14)');
+      assert.strictEqual(output[0], '-3.14');
+    });
+  });
+
+  describe('Mixed int/float arithmetic', () => {
+    it('adds int and float', async () => {
+      const output = await runWithOutput('puts(1 + 2.5)');
+      assert.strictEqual(output[0], '3.5');
+    });
+
+    it('subtracts float from int', async () => {
+      const output = await runWithOutput('puts(5 - 1.5)');
+      assert.strictEqual(output[0], '3.5');
+    });
+
+    it('multiplies int by float', async () => {
+      const output = await runWithOutput('puts(3 * 2.5)');
+      assert.strictEqual(output[0], '7.5');
+    });
+
+    it('divides int by float', async () => {
+      const output = await runWithOutput('puts(10 / 2.5)');
+      assert.strictEqual(output[0], '4');
+    });
+
+    it('int division returning float', async () => {
+      const output = await runWithOutput('puts(7.0 / 2.0)');
+      assert.strictEqual(output[0], '3.5');
+    });
+  });
+
+  describe('Float comparisons', () => {
+    it('float equality', async () => {
+      const output = await runWithOutput('puts(3.14 == 3.14)');
+      assert.strictEqual(output[0], '1');
+    });
+
+    it('float inequality', async () => {
+      const output = await runWithOutput('puts(3.14 == 2.71)');
+      assert.strictEqual(output[0], '0');
+    });
+
+    it('float less than', async () => {
+      const output = await runWithOutput('puts(2.5 < 3.5)');
+      assert.strictEqual(output[0], '1');
+    });
+
+    it('float greater than', async () => {
+      const output = await runWithOutput('puts(3.5 > 2.5)');
+      assert.strictEqual(output[0], '1');
+    });
+
+    it('mixed int/float comparison', async () => {
+      const output = await runWithOutput('puts(2 < 2.5)');
+      assert.strictEqual(output[0], '1');
+    });
+  });
+
+  describe('Float in variables and functions', () => {
+    it('let binding with float', async () => {
+      const output = await runWithOutput('let x = 3.14; puts(x)');
+      assert.strictEqual(output[0], '3.14');
+    });
+
+    it('float in function return', async () => {
+      const output = await runWithOutput(`
+        let circle_area = fn(r) { 3.14159 * r * r };
+        puts(circle_area(2.0))
+      `);
+      assert.strictEqual(output[0], '12.56636');
+    });
+
+    it('float accumulation in loop', async () => {
+      const output = await runWithOutput(`
+        let sum = 0.0;
+        let i = 0;
+        while (i < 5) {
+          sum = sum + 0.5;
+          i = i + 1;
+        }
+        puts(sum)
+      `);
+      assert.strictEqual(output[0], '2.5');
+    });
+
+    it('float in closure capture', async () => {
+      const output = await runWithOutput(`
+        let pi = 3.14;
+        let scale = fn(x) { pi * x };
+        puts(scale(2))
+      `);
+      assert.strictEqual(output[0], '6.28');
+    });
+  });
+});
