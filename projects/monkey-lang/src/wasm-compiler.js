@@ -461,6 +461,7 @@ export class WasmCompiler {
       .call(gcRegisterIdx);    // __gc_register(ptr, size)
     allocBody.localGet(1);      // return old heap_ptr
     this._runtimeFuncs.alloc = allocIdx;
+    this.builder.addExport('__alloc', ExportKind.Func, allocIdx);
 
     // __len(ptr) → i32 — get length of string or array
     const { index: lenIdx, body: lenBody } = this.builder.addFunction(
@@ -3174,14 +3175,24 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
     return view.getFloat64(ptr + 4, true);
   }
 
+  // Unified allocator: uses WASM alloc if available, falls back to JS heap
+  function hostAlloc(size) {
+    size = (size + 3) & ~3; // align to 4 bytes
+    if (memoryRef.alloc) {
+      return memoryRef.alloc(size);
+    }
+    // Fallback: JS-side bump allocator
+    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
+    const ptr = memoryRef.jsHeapPtr;
+    memoryRef.jsHeapPtr += size;
+    return ptr;
+  }
+
   function writeFloat(value) {
     const mem = memoryRef.memory;
     if (!mem) return 0;
     const view = new DataView(mem.buffer);
-    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
-    const ptr = memoryRef.jsHeapPtr;
-    memoryRef.jsHeapPtr += 12; // TAG_FLOAT(4) + f64(8)
-    memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
+    const ptr = hostAlloc(12); // TAG_FLOAT(4) + f64(8)
     view.setInt32(ptr, TAG_FLOAT, true);
     view.setFloat64(ptr + 4, value, true);
     return ptr;
@@ -3205,16 +3216,9 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
     if (!mem) return 0;
     const encoder = new TextEncoder();
     const bytes = encoder.encode(str);
+    const size = 8 + bytes.length; // [TAG_STRING:i32][length:i32][bytes...]
+    const ptr = hostAlloc(size);
     const view = new DataView(mem.buffer);
-
-    // Read heap pointer from global — we need to bump-allocate
-    // The heap pointer is stored as a WASM global, but we can't read it from JS.
-    // Instead, we'll track our own allocation offset.
-    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576; // start high to avoid collisions
-    const ptr = memoryRef.jsHeapPtr;
-    memoryRef.jsHeapPtr += 8 + bytes.length;
-    // Align to 4 bytes
-    memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
 
     // Write: [TAG_STRING:i32][length:i32][bytes...]
     view.setInt32(ptr, TAG_STRING, true);
@@ -3227,12 +3231,9 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
   function writeArray(elements) {
     const mem = memoryRef.memory;
     if (!mem) return 0;
+    const size = 8 + elements.length * 4; // [TAG_ARRAY:i32][length:i32][elem0:i32]...
+    const ptr = hostAlloc(size);
     const view = new DataView(mem.buffer);
-    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
-    const ptr = memoryRef.jsHeapPtr;
-    const size = 8 + elements.length * 4; // [TAG_ARRAY:i32][length:i32][elem0:i32][elem1:i32]...
-    memoryRef.jsHeapPtr += size;
-    memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
 
     view.setInt32(ptr, TAG_ARRAY, true);
     view.setInt32(ptr + 4, elements.length, true);
@@ -4168,6 +4169,7 @@ export async function compileAndRun(input, options = {}) {
   const instance = await WebAssembly.instantiate(module, imports);
   memoryRef.memory = instance.exports.memory;
   memoryRef.table = instance.exports.__indirect_function_table || null;
+  memoryRef.alloc = instance.exports.__alloc || null;
   timings.instantiate = performance.now() - t3;
 
   const t4 = performance.now();
@@ -4200,6 +4202,7 @@ export async function compileToInstance(input, options = {}) {
   const instance = await WebAssembly.instantiate(module, imports);
   memoryRef.memory = instance.exports.memory;
   memoryRef.table = instance.exports.__indirect_function_table || null;
+  memoryRef.alloc = instance.exports.__alloc || null;
 
   return instance;
 }
@@ -4225,6 +4228,7 @@ export async function precompile(input) {
     const instance = await WebAssembly.instantiate(module, imports);
     memoryRef.memory = instance.exports.memory;
     memoryRef.table = instance.exports.__indirect_function_table || null;
+  memoryRef.alloc = instance.exports.__alloc || null;
     return instance.exports.main();
   };
 }
