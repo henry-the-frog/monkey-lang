@@ -1559,10 +1559,11 @@ export class WasmCompiler {
     this.currentBody.i32Const(0);
     this.currentBody.localSet(iLocal);
 
-    // Bind loop variable
+    // Bind loop variable — knownInt if iterating over a numeric range
     const varLocal = this.nextLocalIndex++;
     this.currentBody.addLocal(ValType.i32);
-    this.currentScope.define(node.variable, varLocal, ValType.i32);
+    const isNumericRange = node.iterable instanceof ast.RangeExpression;
+    this.currentScope.define(node.variable, varLocal, ValType.i32, isNumericRange);
 
     // block $break
     this.currentBody.block();
