@@ -6,6 +6,8 @@ import { SymbolTable, SCOPE } from './symbol-table.js';
 import { MonkeyInteger, MonkeyFloat, MonkeyString, MonkeyHash, internString, MonkeyEnum } from './object.js';
 import * as ast from './ast.js';
 import { getModule } from './modules.js';
+import { constantFold } from './constant-fold.js';
+import { eliminateDeadCode } from './dead-code.js';
 
 // Compiled function object (different from interpreted MonkeyFunction)
 let _cfId = 0;
@@ -126,6 +128,10 @@ export class Compiler {
 
   compile(node) {
     if (node instanceof ast.Program) {
+      // AST optimization: remove dead code after return/break
+      eliminateDeadCode(node);
+      // Note: constant folding not applied here because it changes AST shapes
+      // that the VM compiler doesn't handle (e.g., if(true){x} → BlockStatement)
       for (const stmt of node.statements) {
         const err = this.compile(stmt);
         if (err) return err;
