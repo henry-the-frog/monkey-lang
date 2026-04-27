@@ -1396,7 +1396,7 @@ describe('WASM Compiler', () => {
     });
   });
 
-  describe('Try/Throw', () => {
+  describe('Try/Throw (real WASM exception handling)', () => {
     it('try-catch without throw returns try body value', async () => {
       assert.strictEqual(await compileAndRun(`
         let result = try { 42 } catch (e) { 0 };
@@ -1412,10 +1412,39 @@ describe('WASM Compiler', () => {
       `), 50);
     });
 
-    it('throw triggers trap', async () => {
-      await assert.rejects(async () => {
-        await compileAndRun(`throw 1`);
-      });
+    it('throw is caught by catch block', async () => {
+      assert.strictEqual(await compileAndRun(`
+        try { throw 99; 0 } catch (e) { e }
+      `), 99);
+    });
+
+    it('catch block receives thrown value', async () => {
+      assert.strictEqual(await compileAndRun(`
+        try { throw 42; 0 } catch (e) { e + 8 }
+      `), 50);
+    });
+
+    it('try-catch in let binding', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let result = try { throw 10; 0 } catch (e) { e * 3 };
+        result
+      `), 30);
+    });
+
+    it('nested try-catch', async () => {
+      assert.strictEqual(await compileAndRun(`
+        try {
+          try { throw 5; 0 } catch (e) { e + 10 }
+        } catch (e) { 0 }
+      `), 15);
+    });
+
+    it('throw propagates through nested try', async () => {
+      assert.strictEqual(await compileAndRun(`
+        try {
+          try { throw 5; 0 } catch (e) { throw e + 10; 0 }
+        } catch (e) { e }
+      `), 15);
     });
   });
 
@@ -1496,6 +1525,64 @@ describe('WASM Compiler', () => {
         let g = Greeter();
         g.get()
       `), 100);
+    });
+
+    it('inheritance — inherited method', async () => {
+      assert.strictEqual(await compileAndRun(`
+        class Animal {
+          let name;
+          fn init(n) { self.name = n; }
+          fn getName() { self.name }
+        }
+        class Dog extends Animal {
+          fn bark() { 42 }
+        }
+        let d = Dog(99);
+        d.getName()
+      `), 99);
+    });
+
+    it('inheritance — method override', async () => {
+      assert.strictEqual(await compileAndRun(`
+        class Animal {
+          fn init() { }
+          fn speak() { 0 }
+        }
+        class Dog extends Animal {
+          fn speak() { 42 }
+        }
+        let d = Dog();
+        d.speak()
+      `), 42);
+    });
+
+    it('inheritance — combined parent + child methods', async () => {
+      assert.strictEqual(await compileAndRun(`
+        class Base {
+          fn init() { }
+          fn baseMethod() { 10 }
+        }
+        class Child extends Base {
+          fn childMethod() { 20 }
+        }
+        let c = Child();
+        c.baseMethod() + c.childMethod()
+      `), 30);
+    });
+
+    it('inheritance — parent and child fields', async () => {
+      assert.strictEqual(await compileAndRun(`
+        class Animal {
+          let name;
+          fn init(n) { self.name = n; }
+        }
+        class Dog extends Animal {
+          let breed;
+          fn setBreed(b) { self.breed = b; self.breed }
+        }
+        let d = Dog(99);
+        d.setBreed(42) + d.name
+      `), 141);
     });
   });
 

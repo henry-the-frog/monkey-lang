@@ -69,6 +69,7 @@ export class WasmCompiler {
     // Closure support
     this.closureFuncs = []; // [{funcLit, captures, tableIndex, wasmFuncIndex}]
     this.nextTableSlot = 0;
+    this._classRegistry = new Map(); // className -> { fields, methods: [{name, tableSlot, paramCount}], ctorFuncIdx }
 
     // Compilation statistics
     this.stats = {
@@ -81,6 +82,10 @@ export class WasmCompiler {
 
     // Add 1 page of memory for strings/arrays
     this.builder.addMemory(4); // 4 pages = 256KB
+    
+    // Exception handling: create a tag for monkey-lang exceptions (carries i32 value)
+    const exTagType = this.builder.addType([ValType.i32], []);
+    this._exceptionTagIdx = this.builder.addTag(exTagType);
     this.builder.addExport('memory', ExportKind.Memory, 0);
 
     // Heap pointer global — starts after data segment (set after compilation)
@@ -2165,41 +2170,51 @@ export class WasmCompiler {
     this.currentBody.localGet(resultLocal);
   }
 
-  // Try/catch expression — simplified for WASM
-  // Since WASM doesn't have native exception handling,
-  // we use host imports: __try_start() saves state, try body runs,
-  // __try_end() clears state. On throw, __throw() signals the host.
-  // For simplicity: try body always runs; if it throws (via host trap),
-  // the host catches it and the catch body gets 0 as the error value.
+  // Try/catch expression — using WASM exception handling proposal
   compileTryExpression(node) {
-    // Compile try body — wrap in a host-assisted try/catch
-    // We use the convention: __try_call(funcTableIndex) → result or error flag
-    // Simplified approach: just compile the try body inline.
-    // If throw is called, it's a host trap. The catch block is a fallback.
+    // try (result i32)
+    this.currentBody.try_(ValType.i32);
     
-    // For practical WASM: compile try body, if ThrowExpression is encountered,
-    // it calls unreachable which traps. The catch body can't execute in pure WASM.
-    // But we can compile both and let the host runtime handle exception flow.
-    
-    // Simple approach: compile try block as the value, ignore catch for now
-    // This matches most use cases (try without actual exceptions)
+    // Compile try body
     if (node.tryBlock) {
       this._compileBlockReturning(node.tryBlock);
     } else {
       this.currentBody.i32Const(0);
     }
-    // Note: catch/finally blocks are not executed in WASM mode
-    // This is a known limitation — full exception handling requires WASM EH proposal
+    
+    // catch — handles the exception
+    this.currentBody.catch_(this._exceptionTagIdx);
+    
+    // The caught value (i32) is on the stack
+    if (node.catchBlock) {
+      // Bind the exception variable if present
+      if (node.catchParam) {
+        const paramName = node.catchParam.value || node.catchParam;
+        const localIdx = this.nextLocalIndex++;
+        this.currentBody.addLocal(ValType.i32);
+        this.currentBody.localSet(localIdx);
+        this.currentScope.define(paramName, localIdx, 'local');
+      } else {
+        this.currentBody.drop(); // discard caught value
+      }
+      this._compileBlockReturning(node.catchBlock);
+    }
+    // If no catch block, the caught value stays on the stack as the result
+    
+    // end try
+    this.currentBody.end();
   }
 
-  // Throw expression — triggers WASM unreachable trap
+  // Throw expression — throws a WASM exception with the value
   compileThrowExpression(node) {
     if (node.value) {
       this.compileNode(node.value);
-      this.currentBody.drop(); // value can't be propagated in WASM
+    } else {
+      this.currentBody.i32Const(0);
     }
-    this.currentBody.emit(Op.unreachable);
-    this.currentBody.i32Const(0); // dead code, but needed for type checking
+    this.currentBody.throw_(this._exceptionTagIdx);
+    // Dead code after throw, but WASM needs a value for type checking
+    this.currentBody.i32Const(0);
   }
 
   // Class compilation: compiles class as a constructor function
@@ -2270,10 +2285,41 @@ export class WasmCompiler {
       });
     }
     
-    // 2. Create the constructor function
-    // Constructor signature: (...init_args) -> i32 (returns instance hash)
-    // Find init method
-    const initMethod = methodEntries.find(m => m.name === 'init');
+    // 2. Handle inheritance: merge parent fields and methods
+    let allFields = [...stmt.fields];
+    let allMethodEntries = [...methodEntries];
+    let parentMethods = [];
+    
+    if (stmt.superClass) {
+      const parentInfo = this._classRegistry.get(stmt.superClass);
+      if (parentInfo) {
+        // Add parent fields that aren't overridden
+        for (const field of parentInfo.fields) {
+          if (!allFields.includes(field)) {
+            allFields.unshift(field);
+          }
+        }
+        // Add parent methods that aren't overridden by child
+        const childMethodNames = new Set(methodEntries.map(m => m.name));
+        for (const pm of parentInfo.methods) {
+          if (!childMethodNames.has(pm.name)) {
+            allMethodEntries.push(pm);
+            parentMethods.push(pm);
+          }
+        }
+      }
+    }
+    
+    // 3. Create the constructor function
+    // Find init method (child's init takes priority, then parent's)
+    let initMethod = allMethodEntries.find(m => m.name === 'init');
+    if (!initMethod && stmt.superClass) {
+      const parentInfo = this._classRegistry.get(stmt.superClass);
+      if (parentInfo && parentInfo.initMethod) {
+        initMethod = parentInfo.initMethod;
+        allMethodEntries.push(initMethod);
+      }
+    }
     const initParamCount = initMethod ? initMethod.paramCount : 0;
     
     // Constructor params: same as init params (or empty if no init)
@@ -2302,7 +2348,7 @@ export class WasmCompiler {
     this.currentBody.localSet(instanceLocal);
     
     // Initialize fields to 0
-    for (const field of stmt.fields) {
+    for (const field of allFields) {
       this.currentBody.localGet(instanceLocal);
       this.compileStringLiteral({ value: field });
       this.currentBody.i32Const(0);
@@ -2311,7 +2357,7 @@ export class WasmCompiler {
     }
     
     // Store method closures in the instance hash
-    for (const method of methodEntries) {
+    for (const method of allMethodEntries) {
       if (method.name === 'init') continue; // init is called, not stored
       
       // Create closure: [TAG_CLOSURE][tableSlot][env_ptr=instance]
@@ -2375,8 +2421,16 @@ export class WasmCompiler {
     this.nextLocalIndex = prevLocalIdx;
     this._tempLocal = prevTempLocal;
     
-    // 3. Bind class name to the constructor function
+    // 4. Bind class name to the constructor function
     this.currentScope.define(className, ctorFuncIdx, 'func');
+    
+    // 5. Register class for inheritance
+    this._classRegistry.set(className, {
+      fields: allFields,
+      methods: allMethodEntries.filter(m => m.name !== 'init'),
+      initMethod,
+      ctorFuncIdx,
+    });
   }
 
   // Hash literal: {"key": value, ...}

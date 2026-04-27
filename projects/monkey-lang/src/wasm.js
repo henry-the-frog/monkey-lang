@@ -64,6 +64,14 @@ export const Op = {
   return: 0x0f,
   call: 0x10,
   call_indirect: 0x11,
+  
+  // Exception handling
+  try_: 0x06,
+  catch_: 0x07,
+  throw_: 0x08,
+  rethrow: 0x09,
+  delegate: 0x18,
+  catch_all: 0x19,
 
   // Parametric
   drop: 0x1a,
@@ -177,6 +185,7 @@ const Section = {
   Code: 10,
   Data: 11,
   DataCount: 12,
+  Tag: 13,
 };
 
 // === Export Kinds ===
@@ -255,6 +264,13 @@ export class FuncBodyBuilder {
   block(blockType = 0x40) { return this.emit(Op.block, blockType); }
   loop(blockType = 0x40) { return this.emit(Op.loop, blockType); }
   if_(blockType = 0x40) { return this.emit(Op.if, blockType); }
+  
+  // Exception handling
+  try_(blockType = 0x40) { return this.emit(Op.try_, blockType); }
+  catch_(tagIndex) { return this.emit(Op.catch_, ...encodeULEB128(tagIndex)); }
+  catchAll() { return this.emit(Op.catch_all); }
+  throw_(tagIndex) { return this.emit(Op.throw_, ...encodeULEB128(tagIndex)); }
+  rethrow(depth) { return this.emit(Op.rethrow, ...encodeULEB128(depth)); }
   else_() { return this.emit(Op.else); }
   end() { return this.emit(Op.end); }
   br(labelIndex) { return this.emit(Op.br, ...encodeULEB128(labelIndex)); }
@@ -296,6 +312,7 @@ export class WasmModuleBuilder {
     this.tables = [];    // [{type, min, max?}]
     this.elements = [];  // [{tableIndex, offset, funcIndices}]
     this.dataSegments = []; // [{offset, bytes}]
+    this.tags = [];        // [{attribute, typeIndex}] — exception handling
     this._typeCache = new Map();
   }
 
@@ -350,6 +367,13 @@ export class WasmModuleBuilder {
   addGlobal(type, mutable, initValue = 0) {
     const idx = this.globals.length;
     this.globals.push({ type, mutable, initValue });
+    return idx;
+  }
+
+  // Add a tag (for exception handling). Returns the tag index.
+  addTag(typeIndex) {
+    const idx = this.tags.length;
+    this.tags.push({ attribute: 0, typeIndex }); // attribute 0 = exception
     return idx;
   }
 
@@ -563,6 +587,17 @@ export class WasmModuleBuilder {
         }
       }
       sections.push(this._makeSection(Section.Memory, bytes));
+    }
+
+    // Tag section (exception handling, must come before Global)
+    if (this.tags.length > 0) {
+      const bytes = [];
+      bytes.push(...encodeULEB128(this.tags.length));
+      for (const { attribute, typeIndex } of this.tags) {
+        bytes.push(attribute); // 0x00 = exception
+        bytes.push(...encodeULEB128(typeIndex));
+      }
+      sections.push(this._makeSection(Section.Tag, bytes));
     }
 
     // Global section
