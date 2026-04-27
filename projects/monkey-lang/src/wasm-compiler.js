@@ -1893,33 +1893,37 @@ export class WasmCompiler {
     });
 
     // 5. Emit code to create the closure object at runtime
-    // Allocate environment: [num_captures:i32][cap0:i32][cap1:i32]...
-    const envSize = 4 + captures.length * 4;
-    this.currentBody.i32Const(envSize);
-    this.currentBody.call(this._runtimeFuncs.alloc);
+    let envLocal;
+    if (captures.length > 0) {
+      // Allocate environment: [num_captures:i32][cap0:i32][cap1:i32]...
+      const envSize = 4 + captures.length * 4;
+      this.currentBody.i32Const(envSize);
+      this.currentBody.call(this._runtimeFuncs.alloc);
 
-    const envLocal = this.nextLocalIndex++;
-    this.currentBody.addLocal(ValType.i32);
-    this.currentBody.localSet(envLocal);
+      envLocal = this.nextLocalIndex++;
+      this.currentBody.addLocal(ValType.i32);
+      this.currentBody.localSet(envLocal);
 
-    // Store num captures
-    this.currentBody.localGet(envLocal);
-    this.currentBody.i32Const(captures.length);
-    this.currentBody.i32Store();
-
-    // Store captured variables
-    for (let i = 0; i < captures.length; i++) {
-      const binding = this.currentScope.resolve(captures[i]);
+      // Store num captures
       this.currentBody.localGet(envLocal);
-      this.currentBody.i32Const(4 + i * 4);
-      this.currentBody.emit(Op.i32_add);
-      if (binding) {
-        this.currentBody.localGet(binding.index);
-      } else {
-        this.currentBody.i32Const(0);
-      }
+      this.currentBody.i32Const(captures.length);
       this.currentBody.i32Store();
+
+      // Store captured variables
+      for (let i = 0; i < captures.length; i++) {
+        const binding = this.currentScope.resolve(captures[i]);
+        this.currentBody.localGet(envLocal);
+        this.currentBody.i32Const(4 + i * 4);
+        this.currentBody.emit(Op.i32_add);
+        if (binding) {
+          this.currentBody.localGet(binding.index);
+        } else {
+          this.currentBody.i32Const(0);
+        }
+        this.currentBody.i32Store();
+      }
     }
+    // else: 0 captures — skip environment allocation, use env_ptr=0
 
     // Allocate closure object: [TAG_CLOSURE:i32][table_index:i32][env_ptr:i32]
     this.currentBody.i32Const(12); // 3 * i32
@@ -1941,11 +1945,15 @@ export class WasmCompiler {
     this.currentBody.i32Const(tableSlot);
     this.currentBody.i32Store();
 
-    // Store env_ptr
+    // Store env_ptr (0 for non-capturing closures)
     this.currentBody.localGet(closureLocal);
     this.currentBody.i32Const(8);
     this.currentBody.emit(Op.i32_add);
-    this.currentBody.localGet(envLocal);
+    if (captures.length > 0) {
+      this.currentBody.localGet(envLocal);
+    } else {
+      this.currentBody.i32Const(0);
+    }
     this.currentBody.i32Store();
 
     // Leave closure pointer on stack
