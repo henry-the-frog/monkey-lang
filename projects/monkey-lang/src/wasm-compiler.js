@@ -256,6 +256,34 @@ export class WasmCompiler {
     const strCharAtIdx = this.builder.addImport('env', '__str_char_at', [ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.strCharAt = strCharAtIdx;
 
+    // String method host imports
+    const strSplitIdx = this.builder.addImport('env', '__str_split', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.strSplit = strSplitIdx;
+
+    const strTrimIdx = this.builder.addImport('env', '__str_trim', [ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.strTrim = strTrimIdx;
+
+    const strReplaceIdx = this.builder.addImport('env', '__str_replace', [ValType.i32, ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.strReplace = strReplaceIdx;
+
+    const strIndexOfIdx = this.builder.addImport('env', '__str_indexOf', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.strIndexOf = strIndexOfIdx;
+
+    const strStartsWithIdx = this.builder.addImport('env', '__str_startsWith', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.strStartsWith = strStartsWithIdx;
+
+    const strEndsWithIdx = this.builder.addImport('env', '__str_endsWith', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.strEndsWith = strEndsWithIdx;
+
+    const strUpperIdx = this.builder.addImport('env', '__str_toUpper', [ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.strUpper = strUpperIdx;
+
+    const strLowerIdx = this.builder.addImport('env', '__str_toLower', [ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.strLower = strLowerIdx;
+
+    const strSubstringIdx = this.builder.addImport('env', '__str_substring', [ValType.i32, ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.strSubstring = strSubstringIdx;
+
     // Import __add: runtime-dispatched addition (int + int or string concat)
     const addIdx = this.builder.addImport('env', '__add', [ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.add = addIdx;
@@ -1459,6 +1487,65 @@ export class WasmCompiler {
         // Import rest from JS host
         this.compileNode(node.arguments[0]);
         this.currentBody.call(this._runtimeFuncs.rest);
+        return;
+      }
+
+      // String methods
+      if (name === 'split' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        this.currentBody.call(this._runtimeFuncs.strSplit);
+        return;
+      }
+      if (name === 'trim' && node.arguments.length === 1) {
+        this.compileNode(node.arguments[0]);
+        this.currentBody.call(this._runtimeFuncs.strTrim);
+        return;
+      }
+      if (name === 'replace' && node.arguments.length === 3) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        this.compileNode(node.arguments[2]);
+        this.currentBody.call(this._runtimeFuncs.strReplace);
+        return;
+      }
+      if (name === 'indexOf' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        this.currentBody.call(this._runtimeFuncs.strIndexOf);
+        return;
+      }
+      if (name === 'startsWith' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        this.currentBody.call(this._runtimeFuncs.strStartsWith);
+        return;
+      }
+      if (name === 'endsWith' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        this.currentBody.call(this._runtimeFuncs.strEndsWith);
+        return;
+      }
+      if (name === 'toUpper' && node.arguments.length === 1) {
+        this.compileNode(node.arguments[0]);
+        this.currentBody.call(this._runtimeFuncs.strUpper);
+        return;
+      }
+      if (name === 'toLower' && node.arguments.length === 1) {
+        this.compileNode(node.arguments[0]);
+        this.currentBody.call(this._runtimeFuncs.strLower);
+        return;
+      }
+      if (name === 'substring' && (node.arguments.length === 2 || node.arguments.length === 3)) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        if (node.arguments.length === 3) {
+          this.compileNode(node.arguments[2]);
+        } else {
+          this.currentBody.i32Const(-1); // sentinel for "to end"
+        }
+        this.currentBody.call(this._runtimeFuncs.strSubstring);
         return;
       }
     }
@@ -2981,6 +3068,24 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
     return ptr;
   }
 
+  function writeArray(elements) {
+    const mem = memoryRef.memory;
+    if (!mem) return 0;
+    const view = new DataView(mem.buffer);
+    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 100000;
+    const ptr = memoryRef.jsHeapPtr;
+    const size = 8 + elements.length * 4; // [TAG_ARRAY:i32][length:i32][elem0:i32][elem1:i32]...
+    memoryRef.jsHeapPtr += size;
+    memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
+
+    view.setInt32(ptr, TAG_ARRAY, true);
+    view.setInt32(ptr + 4, elements.length, true);
+    for (let i = 0; i < elements.length; i++) {
+      view.setInt32(ptr + 8 + i * 4, elements[i], true);
+    }
+    return ptr;
+  }
+
   return {
     env: {
       puts(value) {
@@ -3020,6 +3125,51 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const s = readString(ptr);
         if (index < 0 || index >= s.length) return 0;
         return writeString(s[index]);
+      },
+      __str_split(strPtr, sepPtr) {
+        const s = readString(strPtr);
+        const sep = readString(sepPtr);
+        const parts = s.split(sep);
+        // Build an array of string pointers
+        return writeArray(parts.map(p => writeString(p)));
+      },
+      __str_trim(ptr) {
+        const s = readString(ptr);
+        return writeString(s.trim());
+      },
+      __str_replace(strPtr, oldPtr, newPtr) {
+        const s = readString(strPtr);
+        const old = readString(oldPtr);
+        const newStr = readString(newPtr);
+        return writeString(s.split(old).join(newStr));
+      },
+      __str_indexOf(strPtr, searchPtr) {
+        const s = readString(strPtr);
+        const search = readString(searchPtr);
+        return s.indexOf(search);
+      },
+      __str_startsWith(strPtr, prefixPtr) {
+        const s = readString(strPtr);
+        const prefix = readString(prefixPtr);
+        return s.startsWith(prefix) ? 1 : 0;
+      },
+      __str_endsWith(strPtr, suffixPtr) {
+        const s = readString(strPtr);
+        const suffix = readString(suffixPtr);
+        return s.endsWith(suffix) ? 1 : 0;
+      },
+      __str_toUpper(ptr) {
+        const s = readString(ptr);
+        return writeString(s.toUpperCase());
+      },
+      __str_toLower(ptr) {
+        const s = readString(ptr);
+        return writeString(s.toLowerCase());
+      },
+      __str_substring(ptr, start, end) {
+        const s = readString(ptr);
+        if (end === -1) return writeString(s.substring(start));
+        return writeString(s.substring(start, end));
       },
       __add(a, b) {
         const mem = memoryRef.memory;

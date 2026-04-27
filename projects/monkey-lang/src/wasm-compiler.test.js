@@ -2051,3 +2051,65 @@ describe('Edge Cases (Stress Tests)', () => {
     });
   });
 });
+
+describe('String Methods', () => {
+  it('split', async () => {
+    const outputLines = [];
+    await compileAndRun('let parts = split("hello world", " "); puts(parts[0]); puts(parts[1])', { outputLines });
+    assert.deepStrictEqual(outputLines, ['hello', 'world']);
+  });
+
+  it('trim', async () => {
+    const outputLines = [];
+    await compileAndRun('puts(trim("  hello  "))', { outputLines });
+    assert.strictEqual(outputLines[0], 'hello');
+  });
+
+  it('replace', async () => {
+    const outputLines = [];
+    await compileAndRun('puts(replace("hello world", "world", "earth"))', { outputLines });
+    assert.strictEqual(outputLines[0], 'hello earth');
+  });
+
+  it('indexOf', async () => {
+    assert.strictEqual(await compileAndRun('indexOf("hello world", "world")'), 6);
+  });
+
+  it('indexOf not found', async () => {
+    assert.strictEqual(await compileAndRun('indexOf("hello", "xyz")'), -1);
+  });
+
+  it('startsWith', async () => {
+    assert.strictEqual(await compileAndRun('startsWith("hello world", "hello")'), 1);
+    assert.strictEqual(await compileAndRun('startsWith("hello world", "world")'), 0);
+  });
+
+  it('endsWith', async () => {
+    assert.strictEqual(await compileAndRun('endsWith("hello world", "world")'), 1);
+    assert.strictEqual(await compileAndRun('endsWith("hello world", "hello")'), 0);
+  });
+
+  it('toUpper', async () => {
+    const outputLines = [];
+    await compileAndRun('puts(toUpper("hello"))', { outputLines });
+    assert.strictEqual(outputLines[0], 'HELLO');
+  });
+
+  it('toLower', async () => {
+    const outputLines = [];
+    await compileAndRun('puts(toLower("HELLO"))', { outputLines });
+    assert.strictEqual(outputLines[0], 'hello');
+  });
+
+  it('substring', async () => {
+    const outputLines = [];
+    await compileAndRun('puts(substring("hello world", 6))', { outputLines });
+    assert.strictEqual(outputLines[0], 'world');
+  });
+
+  it('substring with end', async () => {
+    const outputLines = [];
+    await compileAndRun('puts(substring("hello world", 0, 5))', { outputLines });
+    assert.strictEqual(outputLines[0], 'hello');
+  });
+});
