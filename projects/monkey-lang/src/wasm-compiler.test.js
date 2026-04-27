@@ -2338,6 +2338,29 @@ describe('Higher-Order Function Builtins', () => {
     });
   });
 
+  describe('large arrays (stress)', () => {
+    it('reduce 10000 elements (heap boundary test)', async () => {
+      assert.strictEqual(
+        await compileAndRun('reduce(range(1, 10001), fn(a, b) { a + b }, 0)'),
+        50005000 // n*(n+1)/2 for n=10000
+      );
+    });
+
+    it('filter 10000 elements', async () => {
+      assert.strictEqual(
+        await compileAndRun('len(filter(range(0, 10000), fn(x) { x % 7 == 0 }))'),
+        1429
+      );
+    });
+
+    it('map + reduce chain on 5000 elements', async () => {
+      assert.strictEqual(
+        await compileAndRun('reduce(map(range(1, 5001), fn(x) { x * 2 }), fn(a, b) { a + b }, 0)'),
+        25005000
+      );
+    });
+  });
+
   describe('forEach', () => {
     it('calls function for each element', async () => {
       const outputLines = [];
