@@ -382,6 +382,18 @@ export class WasmCompiler {
     const forEachIdx = this.builder.addImport('env', '__forEach', [ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.forEach = forEachIdx;
 
+    // flatMap(arr, fn) — map + flatten one level
+    const flatMapIdx = this.builder.addImport('env', '__flatMap', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.flatMap = flatMapIdx;
+
+    // zip(arr1, arr2) — pair elements from two arrays
+    const zipIdx = this.builder.addImport('env', '__zip', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.zip = zipIdx;
+
+    // enumerate(arr) — pair each element with its index
+    const enumerateIdx = this.builder.addImport('env', '__enumerate', [ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.enumerate = enumerateIdx;
+
     // Import __slice from JS host: env.__slice(arr: i32, start: i32, end: i32) → i32
     const sliceIdx = this.builder.addImport('env', '__slice', [ValType.i32, ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.slice = sliceIdx;
@@ -1597,6 +1609,29 @@ export class WasmCompiler {
         this.compileNode(node.arguments[0]); // array
         this.compileNode(node.arguments[1]); // closure
         this.currentBody.call(this._runtimeFuncs.forEach);
+        return;
+      }
+
+      // flatMap(arr, fn)
+      if (!isLocallyDefined && name === 'flatMap' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        this.currentBody.call(this._runtimeFuncs.flatMap);
+        return;
+      }
+
+      // zip(arr1, arr2)
+      if (!isLocallyDefined && name === 'zip' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        this.currentBody.call(this._runtimeFuncs.zip);
+        return;
+      }
+
+      // enumerate(arr)
+      if (!isLocallyDefined && name === 'enumerate' && node.arguments.length === 1) {
+        this.compileNode(node.arguments[0]);
+        this.currentBody.call(this._runtimeFuncs.enumerate);
         return;
       }
 
@@ -3610,6 +3645,68 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
           fn(envPtr, view.getInt32(arrPtr + 8 + i * 4, true));
         }
         return 0; // null
+      },
+
+      __flatMap(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        let view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        const results = [];
+        for (let i = 0; i < len; i++) {
+          view = new DataView(mem.buffer);
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          const subResult = fn(envPtr, elem);
+          view = new DataView(mem.buffer);
+          // If subResult is an array, flatten it
+          if (subResult > 0 && view.getInt32(subResult, true) === TAG_ARRAY) {
+            const subLen = view.getInt32(subResult + 4, true);
+            for (let j = 0; j < subLen; j++) {
+              results.push(view.getInt32(subResult + 8 + j * 4, true));
+            }
+          } else {
+            results.push(subResult);
+          }
+        }
+        return writeArray(results);
+      },
+
+      __zip(arrAPtr, arrBPtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrAPtr < 16 || view.getInt32(arrAPtr, true) !== TAG_ARRAY) return 0;
+        if (arrBPtr < 16 || view.getInt32(arrBPtr, true) !== TAG_ARRAY) return 0;
+        const lenA = view.getInt32(arrAPtr + 4, true);
+        const lenB = view.getInt32(arrBPtr + 4, true);
+        const len = Math.min(lenA, lenB);
+        const pairs = [];
+        for (let i = 0; i < len; i++) {
+          const a = view.getInt32(arrAPtr + 8 + i * 4, true);
+          const b = view.getInt32(arrBPtr + 8 + i * 4, true);
+          pairs.push(writeArray([a, b]));
+        }
+        return writeArray(pairs);
+      },
+
+      __enumerate(arrPtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const pairs = [];
+        for (let i = 0; i < len; i++) {
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          pairs.push(writeArray([i, elem]));
+        }
+        return writeArray(pairs);
       },
 
       __add(a, b) {

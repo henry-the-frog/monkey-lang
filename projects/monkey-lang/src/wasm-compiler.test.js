@@ -2378,4 +2378,50 @@ describe('Higher-Order Function Builtins', () => {
       assert.strictEqual(await compileAndRun('forEach([1, 2, 3], fn(x) { x })'), 0);
     });
   });
+
+  describe('flatMap', () => {
+    it('maps and flattens one level', async () => {
+      assert.strictEqual(await run('flatMap([1, 2, 3], fn(x) { [x, x * 10] })'), '[1, 10, 2, 20, 3, 30]');
+    });
+
+    it('flattens nested arrays', async () => {
+      assert.strictEqual(await run('flatMap([[1, 2], [3, 4], [5, 6]], fn(x) { x })'), '[1, 2, 3, 4, 5, 6]');
+    });
+
+    it('empty array', async () => {
+      assert.strictEqual(await run('flatMap([], fn(x) { [x] })'), '[]');
+    });
+
+    it('non-array return is kept as-is', async () => {
+      assert.strictEqual(await run('flatMap([1, 2, 3], fn(x) { x * 2 })'), '[2, 4, 6]');
+    });
+  });
+
+  describe('zip', () => {
+    it('pairs elements from two arrays', async () => {
+      assert.strictEqual(await run('zip([1, 2, 3], [10, 20, 30])'), '[[1, 10], [2, 20], [3, 30]]');
+    });
+
+    it('truncates to shorter array', async () => {
+      assert.strictEqual(await run('zip([1, 2, 3], [10, 20])'), '[[1, 10], [2, 20]]');
+    });
+
+    it('empty arrays', async () => {
+      assert.strictEqual(await run('zip([], [])'), '[]');
+    });
+  });
+
+  describe('enumerate', () => {
+    it('pairs each element with its index', async () => {
+      assert.strictEqual(await run('enumerate([10, 20, 30])'), '[[0, 10], [1, 20], [2, 30]]');
+    });
+
+    it('empty array', async () => {
+      assert.strictEqual(await run('enumerate([])'), '[]');
+    });
+
+    it('single element', async () => {
+      assert.strictEqual(await run('enumerate([42])'), '[[0, 42]]');
+    });
+  });
 });
