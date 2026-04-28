@@ -3639,7 +3639,7 @@ var WasmCompiler = class {
     }
     if (expr instanceof ArrayLiteral) {
       const len = expr.elements.length;
-      const cap = Math.max(len, 4);
+      const cap = Math.max(len, len === 0 ? 256 : len * 2);
       const headerSize = 8;
       const totalSize = headerSize + cap * 4;
       const allocIdx = this._getAllocFunc();

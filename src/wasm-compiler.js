@@ -1262,7 +1262,7 @@ class WasmCompiler {
     // Returns pointer to the array header
     if (expr instanceof ast.ArrayLiteral) {
       const len = expr.elements.length;
-      const cap = Math.max(len, 4); // minimum capacity of 4
+      const cap = Math.max(len, len === 0 ? 256 : len * 2); // empty arrays get large capacity for push()
       const headerSize = 8; // len (4) + cap (4)
       const totalSize = headerSize + cap * 4;
       
