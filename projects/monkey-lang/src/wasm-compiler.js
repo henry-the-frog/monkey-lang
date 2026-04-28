@@ -161,6 +161,10 @@ export class WasmCompiler {
     this.nextParamIndex = 0;
     this.nextLocalIndex = 0;
 
+    // Infer return types BEFORE compiling main body,
+    // so returnsInt/returnsIntClosure are available during main body compilation
+    this._inferReturnTypes();
+
     let lastIsExpr = false;
     for (let i = 0; i < program.statements.length; i++) {
       const stmt = program.statements[i];
@@ -205,9 +209,7 @@ export class WasmCompiler {
     }
 
     // Now compile all collected functions
-    // Infer return types for direct functions (enables i32_add for result arithmetic)
-    this._inferReturnTypes();
-    
+    // (Return types already inferred before main body compilation)
     this._compileFunctions();
 
     // Add string constant data segments
@@ -779,11 +781,11 @@ export class WasmCompiler {
     this.globalScope.define('__push', pushIdx, 'func');
   }
   // Infer return types: if all return paths of a function return integers, mark it
+  // Also detect functions that return integer-returning closures
   _inferReturnTypes() {
     const funcNames = new Set(this.functions.map(f => f.name));
     
     // Fixed-point iteration for recursive functions
-    // Start by assuming all functions return int, then refine
     for (const func of this.functions) {
       func.returnsInt = true; // optimistic assumption
     }
@@ -795,6 +797,27 @@ export class WasmCompiler {
       
       for (const func of this.functions) {
         func.returnsInt = this._allReturnPathsInt(func.funcLit.body, func.funcLit.parameters, returnIntFuncs);
+      }
+    }
+    
+    // Detect functions that return integer-returning closures
+    // e.g., let adder = fn(x) { fn(y) { x + y } } → adder.returnsIntClosure = true
+    for (const func of this.functions) {
+      if (!func.returnsInt) {
+        // Check if the function returns a FunctionLiteral whose body returns int
+        const returnedClosure = this._getReturnedClosure(func.funcLit.body);
+        if (returnedClosure) {
+          // Include both the closure's own params and the outer function's params
+          // (outer params are captured variables that are also integers)
+          const outerParams = func.funcLit.parameters || [];
+          const closureParams = returnedClosure.parameters || [];
+          const allParams = [...closureParams, ...outerParams];
+          const closureReturnsInt = this._allReturnPathsInt(
+            returnedClosure.body, allParams,
+            new Set(this.functions.filter(f => f.returnsInt).map(f => f.name))
+          );
+          func.returnsIntClosure = closureReturnsInt;
+        }
       }
     }
   }
@@ -1055,6 +1078,19 @@ export class WasmCompiler {
     if (stmt.isConst) {
       if (!this._constVars) this._constVars = new Set();
       this._constVars.add(name);
+    }
+
+    // Track if the bound value is a call to a named function (for return type tracking)
+    if (stmt.value instanceof ast.CallExpression && stmt.value.function instanceof ast.Identifier) {
+      const binding = this.currentScope.resolve(name);
+      if (binding) {
+        binding._initCall = stmt.value.function.value;
+        // Check returnsIntClosure if already analyzed
+        const calledFunc = this.functions.find(f => f.name === stmt.value.function.value);
+        if (calledFunc?.returnsIntClosure) {
+          binding.callReturnsInt = true;
+        }
+      }
     }
 
     if (stmt.value) {
@@ -3186,6 +3222,21 @@ export class WasmCompiler {
     return intParams;
   }
 
+  // Get the FunctionLiteral returned by a function body (if it directly returns a closure)
+  _getReturnedClosure(body) {
+    if (!body || !body.statements || body.statements.length === 0) return null;
+    const last = body.statements[body.statements.length - 1];
+    const expr = last instanceof ast.ExpressionStatement ? last.expression :
+                 last instanceof ast.ReturnStatement ? last.returnValue : null;
+    if (expr instanceof ast.FunctionLiteral) return expr;
+    // Check if the return is from an if/else where both branches return closures
+    if (expr instanceof ast.IfExpression) {
+      const thenClosure = this._getReturnedClosure(expr.consequence);
+      if (thenClosure) return thenClosure; // use first found
+    }
+    return null;
+  }
+
   // Infer which parameters of a function are definitely integers.
   // A parameter is definitely integer if it's only used in integer contexts:
   // - Arithmetic operations (+, -, *, /, %)
@@ -3456,13 +3507,27 @@ export class WasmCompiler {
       if (node.function instanceof ast.Identifier) {
         const func = this.functions?.find(f => f.name === node.function.value);
         if (func && func.returnsInt) return true;
+        // Check if the variable is bound to a function that returns int (e.g., closures)
+        const binding = this.currentScope?.resolve(node.function.value);
+        if (binding && binding.callReturnsInt) return true;
+        // Check if the variable was assigned from calling a returnsIntClosure function
+        // This handles: let f = adder(10); f(5) — f returns int because adder returns int-closure
+        if (binding && binding._initCall) {
+          const initFunc = this.functions?.find(f => f.name === binding._initCall);
+          if (initFunc?.returnsIntClosure) return true;
+        }
       }
       return false;
     }
     if (node instanceof ast.InfixExpression) {
       const op = node.operator;
-      if (['-', '*', '/', '%', '==', '!=', '<', '>', '<=', '>='].includes(op)) return true;
-      if (op === '+' && this._isDefinitelyInteger(node.left) && this._isDefinitelyInteger(node.right)) return true;
+      // Comparison operators always return boolean (int)
+      if (['==', '!=', '<', '>', '<=', '>='].includes(op)) return true;
+      // Arithmetic operators return int only if both operands are int
+      if (['-', '*', '/', '%'].includes(op)) {
+        return this._isDefinitelyInteger(node.left) && this._isDefinitelyInteger(node.right);
+      }
+      if (op === '+') return this._isDefinitelyInteger(node.left) && this._isDefinitelyInteger(node.right);
     }
     if (node instanceof ast.PrefixExpression) return true;
     return false;
