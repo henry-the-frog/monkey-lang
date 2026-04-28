@@ -13,6 +13,7 @@
 
 const TAG_STRING = 1;
 const TAG_ARRAY = 2;
+const ARRAY_HEADER = 12; // TAG(4) + length(4) + capacity(4)
 const TAG_CLOSURE = 3;
 const MARK_BIT = 0x80000000;
 const TAG_MASK = 0x7FFFFFFF;
@@ -139,7 +140,7 @@ export class WasmGC {
       if (rawTag === TAG_ARRAY) {
         const len = view.getInt32(ptr + 4, true);
         for (let i = 0; i < len; i++) {
-          const elem = view.getInt32(ptr + 8 + i * 4, true);
+          const elem = view.getInt32(ptr + ARRAY_HEADER + i * 4, true);
           if (elem > 0 && this.allocations.has(elem)) {
             worklist.push(elem);
           }
@@ -282,7 +283,7 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
             const len = view.getInt32(value + 4, true);
             const elems = [];
             for (let i = 0; i < len; i++) {
-              const elem = view.getInt32(value + 8 + i * 4, true);
+              const elem = view.getInt32(value + ARRAY_HEADER + i * 4, true);
               elems.push(String(elem));
             }
             outputLines.push('[' + elems.join(', ') + ']');
@@ -388,12 +389,13 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         const mem = memoryRef.memory;
         if (!mem) return 0;
         const len = Math.max(0, end - start);
-        const size = (8 + len * 4 + 3) & ~3;
+        const size = (ARRAY_HEADER + len * 4 + 3) & ~3;
         const ptr = gc.alloc(size);
         const view = new DataView(mem.buffer);
         view.setInt32(ptr, TAG_ARRAY, true);
         view.setInt32(ptr + 4, len, true);
-        for (let i = 0; i < len; i++) view.setInt32(ptr + 8 + i * 4, start + i, true);
+        view.setInt32(ptr + 8, len, true);
+        for (let i = 0; i < len; i++) view.setInt32(ptr + ARRAY_HEADER + i * 4, start + i, true);
         return ptr;
       },
       __join(arrPtr, sepPtr) {
@@ -405,7 +407,7 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         const len = view.getInt32(arrPtr + 4, true);
         const sep = sepPtr > 0 ? readString(sepPtr) : ',';
         const parts = [];
-        for (let i = 0; i < len; i++) parts.push(String(view.getInt32(arrPtr + 8 + i * 4, true)));
+        for (let i = 0; i < len; i++) parts.push(String(view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true)));
         return writeString(parts.join(sep));
       },
       __keys(hashId) { return 0; }, // stub
@@ -417,7 +419,7 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         if ((view.getInt32(arrPtr, true) & TAG_MASK) !== TAG_ARRAY) return 0;
         const len = view.getInt32(arrPtr + 4, true);
         for (let i = 0; i < len; i++) {
-          if (view.getInt32(arrPtr + 8 + i * 4, true) === elem) return 1;
+          if (view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true) === elem) return 1;
         }
         return 0;
       },
@@ -427,12 +429,13 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         const view = new DataView(mem.buffer);
         if ((view.getInt32(arrPtr, true) & TAG_MASK) !== TAG_ARRAY) return 0;
         const len = view.getInt32(arrPtr + 4, true);
-        const size = (8 + len * 4 + 3) & ~3;
+        const size = (ARRAY_HEADER + len * 4 + 3) & ~3;
         const ptr = gc.alloc(size);
         view.setInt32(ptr, TAG_ARRAY, true);
         view.setInt32(ptr + 4, len, true);
+        view.setInt32(ptr + 8, len, true);
         for (let i = 0; i < len; i++) {
-          view.setInt32(ptr + 8 + i * 4, view.getInt32(arrPtr + 8 + (len - 1 - i) * 4, true), true);
+          view.setInt32(ptr + ARRAY_HEADER + i * 4, view.getInt32(arrPtr + ARRAY_HEADER + (len - 1 - i) * 4, true), true);
         }
         return ptr;
       },
@@ -462,15 +465,16 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         const results = [];
         for (let i = 0; i < len; i++) {
           view = new DataView(mem.buffer);
-          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          const elem = view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true);
           results.push(fn(envPtr, elem));
         }
-        const size = (8 + results.length * 4 + 3) & ~3;
+        const size = (ARRAY_HEADER + results.length * 4 + 3) & ~3;
         const ptr = gc.alloc(size);
         view = new DataView(mem.buffer);
         view.setInt32(ptr, TAG_ARRAY, true);
         view.setInt32(ptr + 4, results.length, true);
-        for (let i = 0; i < results.length; i++) view.setInt32(ptr + 8 + i * 4, results[i], true);
+        view.setInt32(ptr + 8, results.length, true);
+        for (let i = 0; i < results.length; i++) view.setInt32(ptr + ARRAY_HEADER + i * 4, results[i], true);
         return ptr;
       },
       __filter(arrPtr, closurePtr) {
@@ -486,14 +490,15 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         const fn = table.get(tableIdx);
         const results = [];
         for (let i = 0; i < len; i++) {
-          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          const elem = view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true);
           if (fn(envPtr, elem)) results.push(elem);
         }
-        const size = (8 + results.length * 4 + 3) & ~3;
+        const size = (ARRAY_HEADER + results.length * 4 + 3) & ~3;
         const ptr = gc.alloc(size);
         view.setInt32(ptr, TAG_ARRAY, true);
         view.setInt32(ptr + 4, results.length, true);
-        for (let i = 0; i < results.length; i++) view.setInt32(ptr + 8 + i * 4, results[i], true);
+        view.setInt32(ptr + 8, results.length, true);
+        for (let i = 0; i < results.length; i++) view.setInt32(ptr + ARRAY_HEADER + i * 4, results[i], true);
         return ptr;
       },
       __reduce(arrPtr, closurePtr, initValue) {
@@ -508,11 +513,11 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         const envPtr = view.getInt32(closurePtr + 8, true);
         const fn = table.get(tableIdx);
         const sentinel = -2147483648;
-        let acc = initValue !== sentinel ? initValue : (len > 0 ? view.getInt32(arrPtr + 8, true) : 0);
+        let acc = initValue !== sentinel ? initValue : (len > 0 ? view.getInt32(arrPtr + ARRAY_HEADER, true) : 0);
         const startIdx = initValue !== sentinel ? 0 : 1;
         for (let i = startIdx; i < len; i++) {
           view = new DataView(mem.buffer);
-          acc = fn(envPtr, acc, view.getInt32(arrPtr + 8 + i * 4, true));
+          acc = fn(envPtr, acc, view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true));
         }
         return acc;
       },
@@ -528,7 +533,7 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         const envPtr = view.getInt32(closurePtr + 8, true);
         const fn = table.get(tableIdx);
         for (let i = 0; i < len; i++) {
-          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          const elem = view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true);
           if (fn(envPtr, elem)) return elem;
         }
         return 0;
@@ -545,7 +550,7 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         const envPtr = view.getInt32(closurePtr + 8, true);
         const fn = table.get(tableIdx);
         for (let i = 0; i < len; i++) {
-          if (fn(envPtr, view.getInt32(arrPtr + 8 + i * 4, true))) return 1;
+          if (fn(envPtr, view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true))) return 1;
         }
         return 0;
       },
@@ -561,7 +566,7 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         const envPtr = view.getInt32(closurePtr + 8, true);
         const fn = table.get(tableIdx);
         for (let i = 0; i < len; i++) {
-          if (!fn(envPtr, view.getInt32(arrPtr + 8 + i * 4, true))) return 0;
+          if (!fn(envPtr, view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true))) return 0;
         }
         return 1;
       },
@@ -572,15 +577,16 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         const lenA = (arrA > 0 && (view.getInt32(arrA, true) & TAG_MASK) === TAG_ARRAY) ? view.getInt32(arrA + 4, true) : 0;
         const lenB = (arrB > 0 && (view.getInt32(arrB, true) & TAG_MASK) === TAG_ARRAY) ? view.getInt32(arrB + 4, true) : 0;
         const newLen = lenA + lenB;
-        const size = (8 + newLen * 4 + 3) & ~3;
+        const size = (ARRAY_HEADER + newLen * 4 + 3) & ~3;
         const newPtr = gc.alloc(size);
         view.setInt32(newPtr, TAG_ARRAY, true);
         view.setInt32(newPtr + 4, newLen, true);
+        view.setInt32(newPtr + 8, newLen, true);
         for (let i = 0; i < lenA; i++) {
-          view.setInt32(newPtr + 8 + i * 4, view.getInt32(arrA + 8 + i * 4, true), true);
+          view.setInt32(newPtr + ARRAY_HEADER + i * 4, view.getInt32(arrA + ARRAY_HEADER + i * 4, true), true);
         }
         for (let i = 0; i < lenB; i++) {
-          view.setInt32(newPtr + 8 + (lenA + i) * 4, view.getInt32(arrB + 8 + i * 4, true), true);
+          view.setInt32(newPtr + ARRAY_HEADER + (lenA + i) * 4, view.getInt32(arrB + ARRAY_HEADER + i * 4, true), true);
         }
         return newPtr;
       },
@@ -592,12 +598,13 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         const len = view.getInt32(arrPtr + 4, true);
         if (len <= 0) return 0;
         const newLen = len - 1;
-        const size = (8 + newLen * 4 + 3) & ~3;
+        const size = (ARRAY_HEADER + newLen * 4 + 3) & ~3;
         const newPtr = gc.alloc(size);
         view.setInt32(newPtr, TAG_ARRAY, true);
         view.setInt32(newPtr + 4, newLen, true);
+        view.setInt32(newPtr + 8, newLen, true);
         for (let i = 0; i < newLen; i++) {
-          view.setInt32(newPtr + 8 + i * 4, view.getInt32(arrPtr + 8 + (i + 1) * 4, true), true);
+          view.setInt32(newPtr + ARRAY_HEADER + i * 4, view.getInt32(arrPtr + ARRAY_HEADER + (i + 1) * 4, true), true);
         }
         return newPtr;
       },
@@ -639,12 +646,13 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         if (start < 0) start = 0;
         if (end > len) end = len;
         const newLen = Math.max(0, end - start);
-        const size = (8 + newLen * 4 + 3) & ~3;
+        const size = (ARRAY_HEADER + newLen * 4 + 3) & ~3;
         const newPtr = gc.alloc(size);
         view.setInt32(newPtr, TAG_ARRAY, true);
         view.setInt32(newPtr + 4, newLen, true);
+        view.setInt32(newPtr + 8, newLen, true);
         for (let i = 0; i < newLen; i++) {
-          view.setInt32(newPtr + 8 + i * 4, view.getInt32(arrPtr + 8 + (start + i) * 4, true), true);
+          view.setInt32(newPtr + ARRAY_HEADER + i * 4, view.getInt32(arrPtr + ARRAY_HEADER + (start + i) * 4, true), true);
         }
         return newPtr;
       },
@@ -711,7 +719,7 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         if (tag !== TAG_ARRAY) return 0;
         const len = view.getInt32(obj + 4, true);
         if (key < 0 || key >= len) return 0;
-        return view.getInt32(obj + 8 + key * 4, true);
+        return view.getInt32(obj + ARRAY_HEADER + key * 4, true);
       },
       __index_set(obj, key, value) {
         if (hashMaps.has(obj)) {
@@ -735,7 +743,7 @@ export function createGCImports(gc, outputLines = [], memoryRef = { memory: null
         if ((view.getInt32(obj, true) & TAG_MASK) !== TAG_ARRAY) return;
         const len = view.getInt32(obj + 4, true);
         if (key < 0 || key >= len) return;
-        view.setInt32(obj + 8 + key * 4, value, true);
+        view.setInt32(obj + ARRAY_HEADER + key * 4, value, true);
       },
       // GC control
       __gc_collect() {

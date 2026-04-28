@@ -55,10 +55,11 @@ describe('WASM Garbage Collector', () => {
       view.setInt32(strPtr + 4, 4, true);
       
       // Create array that references the string
-      const arrPtr = gc.alloc(12); // tag + length + 1 element
+      const arrPtr = gc.alloc(16); // tag + length + capacity + 1 element
       view.setInt32(arrPtr, 2, true); // TAG_ARRAY
       view.setInt32(arrPtr + 4, 1, true); // length 1
-      view.setInt32(arrPtr + 8, strPtr, true); // element = strPtr
+      view.setInt32(arrPtr + 8, 1, true); // capacity 1
+      view.setInt32(arrPtr + 12, strPtr, true); // element = strPtr
       
       // Create an unreachable string
       const deadPtr = gc.alloc(16);

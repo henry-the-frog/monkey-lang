@@ -10,12 +10,13 @@
 // Value representation (all i32):
 //   Integers/booleans: raw i32 values
 //   Strings: pointer to heap object [TAG_STRING:i32][length:i32][bytes...]
-//   Arrays: pointer to heap object [TAG_ARRAY:i32][length:i32][elem0:i32][elem1:i32]...
+//   Arrays: pointer to heap object [TAG_ARRAY:i32][length:i32][capacity:i32][elem0:i32][elem1:i32]...
 //   Null: 0
 //
 // Heap object tags:
 const TAG_STRING = 1;
 const TAG_ARRAY = 2;
+const ARRAY_HEADER = 12; // TAG(4) + length(4) + capacity(4)
 const TAG_CLOSURE = 3;
 const TAG_HASH = 4;
 const TAG_FLOAT = 5;
@@ -547,12 +548,12 @@ export class WasmCompiler {
     );
     arrGetBody
       .localGet(0)           // arr_ptr
-      .i32Const(8)
-      .emit(Op.i32_add)      // skip tag + length
+      .i32Const(ARRAY_HEADER)
+      .emit(Op.i32_add)      // skip tag + length + capacity
       .localGet(1)           // index
       .i32Const(4)
       .emit(Op.i32_mul)      // index * 4
-      .emit(Op.i32_add)      // arr_ptr + 8 + index*4
+      .emit(Op.i32_add)      // arr_ptr + ARRAY_HEADER + index*4
       .i32Load();            // load element
     this._runtimeFuncs.arrayGet = arrGetIdx;
 
@@ -562,24 +563,31 @@ export class WasmCompiler {
     );
     arrSetBody
       .localGet(0)           // arr_ptr
-      .i32Const(8)
+      .i32Const(ARRAY_HEADER)
       .emit(Op.i32_add)
       .localGet(1)           // index
       .i32Const(4)
       .emit(Op.i32_mul)
-      .emit(Op.i32_add)      // addr = arr_ptr + 8 + index*4
+      .emit(Op.i32_add)      // addr = arr_ptr + ARRAY_HEADER + index*4
       .localGet(2)           // value
       .i32Store();           // store value
     this._runtimeFuncs.arraySet = arrSetIdx;
 
-    // __make_array(length) → ptr — allocate an array with given length, zero-initialized
+    // __make_array(length) → ptr — allocate an array with given length, capacity = max(length, 4)
     const { index: makeArrIdx, body: makeArrBody } = this.builder.addFunction(
       [ValType.i32], [ValType.i32]
     );
     makeArrBody.addLocal(ValType.i32); // local[1] = ptr
+    makeArrBody.addLocal(ValType.i32); // local[2] = capacity
     makeArrBody
-      // Allocate: 8 + length*4 bytes
-      .localGet(0).i32Const(4).emit(Op.i32_mul).i32Const(8).emit(Op.i32_add)
+      // capacity = max(length, 4)
+      .localGet(0).localSet(2) // capacity = length
+      .localGet(2).i32Const(4).emit(Op.i32_lt_s)
+      .if_(ValType.void)
+        .i32Const(4).localSet(2) // capacity = 4 if length < 4
+      .end()
+      // Allocate: ARRAY_HEADER + capacity*4 bytes
+      .localGet(2).i32Const(4).emit(Op.i32_mul).i32Const(ARRAY_HEADER).emit(Op.i32_add)
       .call(allocIdx)
       .localTee(1)
       // Store tag
@@ -588,35 +596,62 @@ export class WasmCompiler {
       // Store length
       .localGet(1).i32Const(4).emit(Op.i32_add)
       .localGet(0)
+      .i32Store()
+      // Store capacity
+      .localGet(1).i32Const(8).emit(Op.i32_add)
+      .localGet(2)
       .i32Store();
     makeArrBody.localGet(1); // return ptr
     this._runtimeFuncs.makeArray = makeArrIdx;
 
-    // __push(arr_ptr, value) → new_arr_ptr — append element to array (creates new array)
+    // __push(arr_ptr, value) → arr_ptr — append element to array
+    // If capacity > length: in-place O(1) append (returns same pointer)
+    // If capacity == length: allocate new array with 2x capacity, copy, append
     const { index: pushIdx, body: pushBody } = this.builder.addFunction(
       [ValType.i32, ValType.i32], [ValType.i32]
     );
     pushBody.addLocal(ValType.i32); // local[2] = old_len
-    pushBody.addLocal(ValType.i32); // local[3] = new_arr
-    pushBody.addLocal(ValType.i32); // local[4] = i
+    pushBody.addLocal(ValType.i32); // local[3] = capacity
+    pushBody.addLocal(ValType.i32); // local[4] = new_arr (or reused arr)
+    pushBody.addLocal(ValType.i32); // local[5] = i
     pushBody
-      // old_len = len(arr)
-      .localGet(0).call(lenIdx).localSet(2)
-      // new_arr = make_array(old_len + 1)
-      .localGet(2).i32Const(1).emit(Op.i32_add).call(makeArrIdx).localSet(3)
-      // Copy elements
-      .i32Const(0).localSet(4)
-      .block().loop()
-        .localGet(4).localGet(2).emit(Op.i32_ge_s).brIf(1)
-        .localGet(3).localGet(4)
-        .localGet(0).localGet(4).call(arrGetIdx)
-        .call(arrSetIdx)
-        .localGet(4).i32Const(1).emit(Op.i32_add).localSet(4)
-        .br(0)
-      .end().end()
-      // Set new element
-      .localGet(3).localGet(2).localGet(1).call(arrSetIdx);
-    pushBody.localGet(3); // return new array
+      // old_len = i32.load(arr + 4)
+      .localGet(0).i32Const(4).emit(Op.i32_add).i32Load().localSet(2)
+      // capacity = i32.load(arr + 8)
+      .localGet(0).i32Const(8).emit(Op.i32_add).i32Load().localSet(3)
+      // if (old_len < capacity) → in-place append
+      .localGet(2).localGet(3).emit(Op.i32_lt_s)
+      .if_(ValType.void)
+        // In-place: arr[old_len] = value
+        .localGet(0).localGet(2).localGet(1).call(arrSetIdx)
+        // length++
+        .localGet(0).i32Const(4).emit(Op.i32_add)
+        .localGet(2).i32Const(1).emit(Op.i32_add)
+        .i32Store()
+        // return same arr
+        .localGet(0).localSet(4)
+      .else_()
+        // Need to grow: new_capacity = capacity * 2
+        // new_arr = make_array(capacity * 2) — this sets length = capacity*2
+        .localGet(3).i32Const(2).emit(Op.i32_mul).call(makeArrIdx).localSet(4)
+        // Fix length to old_len + 1 (make_array sets it to capacity*2)
+        .localGet(4).i32Const(4).emit(Op.i32_add)
+        .localGet(2).i32Const(1).emit(Op.i32_add)
+        .i32Store()
+        // Copy elements
+        .i32Const(0).localSet(5)
+        .block().loop()
+          .localGet(5).localGet(2).emit(Op.i32_ge_s).brIf(1)
+          .localGet(4).localGet(5)
+          .localGet(0).localGet(5).call(arrGetIdx)
+          .call(arrSetIdx)
+          .localGet(5).i32Const(1).emit(Op.i32_add).localSet(5)
+          .br(0)
+        .end().end()
+        // Set new element at old_len
+        .localGet(4).localGet(2).localGet(1).call(arrSetIdx)
+      .end();
+    pushBody.localGet(4); // return array pointer (same or new)
     this._runtimeFuncs.push = pushIdx;
 
     // === Native Hash Map Functions ===
@@ -4083,14 +4118,16 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
   function writeArray(elements) {
     const mem = memoryRef.memory;
     if (!mem) return 0;
-    const size = 8 + elements.length * 4; // [TAG_ARRAY:i32][length:i32][elem0:i32]...
+    const capacity = Math.max(elements.length, 4);
+    const size = ARRAY_HEADER + capacity * 4; // [TAG_ARRAY:i32][length:i32][capacity:i32][elems...]
     const ptr = hostAlloc(size);
     const view = new DataView(mem.buffer);
 
     view.setInt32(ptr, TAG_ARRAY, true);
     view.setInt32(ptr + 4, elements.length, true);
+    view.setInt32(ptr + 8, capacity, true);
     for (let i = 0; i < elements.length; i++) {
-      view.setInt32(ptr + 8 + i * 4, elements[i], true);
+      view.setInt32(ptr + ARRAY_HEADER + i * 4, elements[i], true);
     }
     return ptr;
   }
@@ -4207,7 +4244,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const sep = readString(sepPtr);
         const parts = [];
         for (let i = 0; i < len; i++) {
-          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          const elem = view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true);
           parts.push(readString(elem));
         }
         return writeString(parts.join(sep));
@@ -4267,7 +4304,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         if (tag !== TAG_ARRAY) return 0;
         const len = view.getInt32(arrPtr + 4, true);
         for (let i = 0; i < len; i++) {
-          if (view.getInt32(arrPtr + 8 + i * 4, true) === elem) return 1;
+          if (view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true) === elem) return 1;
         }
         return 0;
       },
@@ -4284,7 +4321,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const len = view.getInt32(arrPtr + 4, true);
         const elems = [];
         for (let i = len - 1; i >= 0; i--) {
-          elems.push(view.getInt32(arrPtr + 8 + i * 4, true));
+          elems.push(view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true));
         }
         return writeArray(elems);
       },
@@ -4306,7 +4343,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const results = [];
         for (let i = 0; i < len; i++) {
           view = new DataView(mem.buffer); // refresh after potential growth
-          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          const elem = view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true);
           results.push(fn(envPtr, elem));
         }
         return writeArray(results);
@@ -4326,7 +4363,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const results = [];
         for (let i = 0; i < len; i++) {
           view = new DataView(mem.buffer);
-          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          const elem = view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true);
           if (fn(envPtr, elem)) results.push(elem);
         }
         return writeArray(results);
@@ -4351,12 +4388,12 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
           startIdx = 0;
         } else {
           if (len === 0) return 0;
-          acc = view.getInt32(arrPtr + 8, true);
+          acc = view.getInt32(arrPtr + ARRAY_HEADER, true);
           startIdx = 1;
         }
         for (let i = startIdx; i < len; i++) {
           view = new DataView(mem.buffer);
-          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          const elem = view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true);
           acc = fn(envPtr, acc, elem);
         }
         return acc;
@@ -4375,7 +4412,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const fn = table.get(tableIdx);
         for (let i = 0; i < len; i++) {
           view = new DataView(mem.buffer);
-          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          const elem = view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true);
           if (fn(envPtr, elem)) return elem;
         }
         return 0; // null
@@ -4394,7 +4431,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const fn = table.get(tableIdx);
         for (let i = 0; i < len; i++) {
           view = new DataView(mem.buffer);
-          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          const elem = view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true);
           if (fn(envPtr, elem)) return 1;
         }
         return 0;
@@ -4413,7 +4450,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const fn = table.get(tableIdx);
         for (let i = 0; i < len; i++) {
           view = new DataView(mem.buffer);
-          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          const elem = view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true);
           if (!fn(envPtr, elem)) return 0;
         }
         return 1;
@@ -4428,7 +4465,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         // Read elements
         const elems = [];
         for (let i = 0; i < len; i++) {
-          elems.push(view.getInt32(arrPtr + 8 + i * 4, true));
+          elems.push(view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true));
         }
         if (closurePtr > 0 && view.getInt32(closurePtr, true) === TAG_CLOSURE) {
           // Custom comparator
@@ -4459,7 +4496,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const fn = table.get(tableIdx);
         for (let i = 0; i < len; i++) {
           view = new DataView(mem.buffer);
-          fn(envPtr, view.getInt32(arrPtr + 8 + i * 4, true));
+          fn(envPtr, view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true));
         }
         return 0; // null
       },
@@ -4478,14 +4515,14 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const results = [];
         for (let i = 0; i < len; i++) {
           view = new DataView(mem.buffer);
-          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          const elem = view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true);
           const subResult = fn(envPtr, elem);
           view = new DataView(mem.buffer);
           // If subResult is an array, flatten it
           if (subResult > 0 && view.getInt32(subResult, true) === TAG_ARRAY) {
             const subLen = view.getInt32(subResult + 4, true);
             for (let j = 0; j < subLen; j++) {
-              results.push(view.getInt32(subResult + 8 + j * 4, true));
+              results.push(view.getInt32(subResult + ARRAY_HEADER + j * 4, true));
             }
           } else {
             results.push(subResult);
@@ -4505,8 +4542,8 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const len = Math.min(lenA, lenB);
         const pairs = [];
         for (let i = 0; i < len; i++) {
-          const a = view.getInt32(arrAPtr + 8 + i * 4, true);
-          const b = view.getInt32(arrBPtr + 8 + i * 4, true);
+          const a = view.getInt32(arrAPtr + ARRAY_HEADER + i * 4, true);
+          const b = view.getInt32(arrBPtr + ARRAY_HEADER + i * 4, true);
           pairs.push(writeArray([a, b]));
         }
         return writeArray(pairs);
@@ -4520,7 +4557,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const len = view.getInt32(arrPtr + 4, true);
         const pairs = [];
         for (let i = 0; i < len; i++) {
-          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          const elem = view.getInt32(arrPtr + ARRAY_HEADER + i * 4, true);
           pairs.push(writeArray([i, elem]));
         }
         return writeArray(pairs);
@@ -4665,19 +4702,21 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const lenA = (arrA > 0 && view.getInt32(arrA, true) === TAG_ARRAY) ? view.getInt32(arrA + 4, true) : 0;
         const lenB = (arrB > 0 && view.getInt32(arrB, true) === TAG_ARRAY) ? view.getInt32(arrB + 4, true) : 0;
         const newLen = lenA + lenB;
+        const newCap = Math.max(newLen, 4);
         
         if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
         const newPtr = memoryRef.jsHeapPtr;
-        memoryRef.jsHeapPtr += 8 + newLen * 4;
+        memoryRef.jsHeapPtr += ARRAY_HEADER + newCap * 4;
         memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
         
         view.setInt32(newPtr, TAG_ARRAY, true);
         view.setInt32(newPtr + 4, newLen, true);
+        view.setInt32(newPtr + 8, newCap, true);
         for (let i = 0; i < lenA; i++) {
-          view.setInt32(newPtr + 8 + i * 4, view.getInt32(arrA + 8 + i * 4, true), true);
+          view.setInt32(newPtr + ARRAY_HEADER + i * 4, view.getInt32(arrA + ARRAY_HEADER + i * 4, true), true);
         }
         for (let i = 0; i < lenB; i++) {
-          view.setInt32(newPtr + 8 + (lenA + i) * 4, view.getInt32(arrB + 8 + i * 4, true), true);
+          view.setInt32(newPtr + ARRAY_HEADER + (lenA + i) * 4, view.getInt32(arrB + ARRAY_HEADER + i * 4, true), true);
         }
         return newPtr;
       },
@@ -4692,17 +4731,19 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
 
         // Allocate new array with len-1 elements
         const newLen = len - 1;
+        const newCap = Math.max(newLen, 4);
         if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
         const newPtr = memoryRef.jsHeapPtr;
-        const newSize = 8 + newLen * 4;
+        const newSize = ARRAY_HEADER + newCap * 4;
         memoryRef.jsHeapPtr += newSize;
         memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
 
         view.setInt32(newPtr, TAG_ARRAY, true);
         view.setInt32(newPtr + 4, newLen, true);
+        view.setInt32(newPtr + 8, newCap, true);
         for (let i = 0; i < newLen; i++) {
-          const elem = view.getInt32(arrPtr + 8 + (i + 1) * 4, true);
-          view.setInt32(newPtr + 8 + i * 4, elem, true);
+          const elem = view.getInt32(arrPtr + ARRAY_HEADER + (i + 1) * 4, true);
+          view.setInt32(newPtr + ARRAY_HEADER + i * 4, elem, true);
         }
         return newPtr;
       },
@@ -4747,17 +4788,19 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         if (start < 0) start = 0;
         if (end > len) end = len;
         const newLen = Math.max(0, end - start);
+        const newCap = Math.max(newLen, 4);
 
         if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
         const newPtr = memoryRef.jsHeapPtr;
-        memoryRef.jsHeapPtr += 8 + newLen * 4;
+        memoryRef.jsHeapPtr += ARRAY_HEADER + newCap * 4;
         memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
 
         view.setInt32(newPtr, TAG_ARRAY, true);
         view.setInt32(newPtr + 4, newLen, true);
+        view.setInt32(newPtr + 8, newCap, true);
         for (let i = 0; i < newLen; i++) {
-          const elem = view.getInt32(arrPtr + 8 + (start + i) * 4, true);
-          view.setInt32(newPtr + 8 + i * 4, elem, true);
+          const elem = view.getInt32(arrPtr + ARRAY_HEADER + (start + i) * 4, true);
+          view.setInt32(newPtr + ARRAY_HEADER + i * 4, elem, true);
         }
         return newPtr;
       },
@@ -4851,7 +4894,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         if (tag !== TAG_ARRAY) return 0;
         const len = view.getInt32(obj + 4, true);
         if (key < 0 || key >= len) return 0;
-        return view.getInt32(obj + 8 + key * 4, true);
+        return view.getInt32(obj + ARRAY_HEADER + key * 4, true);
       },
       __index_set(obj, key, value) {
         // Dispatch based on object type
@@ -4911,7 +4954,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         if (tag !== TAG_ARRAY) return;
         const len = view.getInt32(obj + 4, true);
         if (key < 0 || key >= len) return;
-        view.setInt32(obj + 8 + key * 4, value, true);
+        view.setInt32(obj + ARRAY_HEADER + key * 4, value, true);
       },
       // GC stubs (no-op in non-GC mode)
       __gc_alloc(size) { return 0; },
@@ -4946,7 +4989,7 @@ export function formatWasmValue(value, dataView) {
         if (len >= 0 && len < 100000) {
           const elems = [];
           for (let i = 0; i < len; i++) {
-            const elem = dataView.getInt32(value + 8 + i * 4, true);
+            const elem = dataView.getInt32(value + ARRAY_HEADER + i * 4, true);
             elems.push(formatWasmValue(elem, dataView));
           }
           return '[' + elems.join(', ') + ']';
