@@ -264,3 +264,83 @@ describe('WASM strings — function parameter type inference', () => {
     `), 11 + 6);
   });
 });
+
+describe('WASM strings — charAt', () => {
+  it('first character', async () => {
+    assert.equal(await runStr('charAt("hello", 0)'), 'h');
+  });
+
+  it('last character', async () => {
+    assert.equal(await runStr('charAt("hello", 4)'), 'o');
+  });
+
+  it('middle character', async () => {
+    assert.equal(await runStr('charAt("hello", 2)'), 'l');
+  });
+
+  it('charAt equals literal', async () => {
+    assert.equal(await run('charAt("abc", 1) == "b"'), 1);
+  });
+
+  it('charAt on variable', async () => {
+    assert.equal(await runStr(`
+      let s = "world";
+      charAt(s, 0)
+    `), 'w');
+  });
+
+  it('charAt in loop', async () => {
+    assert.equal(await run(`
+      let s = "hello";
+      let count = 0;
+      let i = 0;
+      while (i < len(s)) {
+        if (charAt(s, i) == "l") {
+          set count = count + 1
+        };
+        set i = i + 1
+      };
+      count
+    `), 2);
+  });
+});
+
+describe('WASM strings — substring', () => {
+  it('first half', async () => {
+    assert.equal(await runStr('substring("hello world", 0, 5)'), 'hello');
+  });
+
+  it('second half', async () => {
+    assert.equal(await runStr('substring("hello world", 6, 11)'), 'world');
+  });
+
+  it('middle', async () => {
+    assert.equal(await runStr('substring("abcdef", 2, 4)'), 'cd');
+  });
+
+  it('single char', async () => {
+    assert.equal(await runStr('substring("hello", 0, 1)'), 'h');
+  });
+
+  it('full string', async () => {
+    assert.equal(await runStr(`
+      let s = "hello";
+      substring(s, 0, len(s))
+    `), 'hello');
+  });
+
+  it('empty substring', async () => {
+    assert.equal(await run('len(substring("hello", 2, 2))'), 0);
+  });
+
+  it('substring equals literal', async () => {
+    assert.equal(await run('substring("hello world", 0, 5) == "hello"'), 1);
+  });
+
+  it('substring of concat', async () => {
+    assert.equal(await runStr(`
+      let s = "hello" + " world";
+      substring(s, 6, 11)
+    `), 'world');
+  });
+});
