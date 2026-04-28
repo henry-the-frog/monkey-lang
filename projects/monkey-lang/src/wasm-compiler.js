@@ -5130,7 +5130,7 @@ export async function compileAndRun(input, options = {}) {
   timings.instantiate = performance.now() - t3;
 
   const t4 = performance.now();
-  const result = instance.exports.main();
+  const rawResult = instance.exports.main();
   timings.execute = performance.now() - t4;
   timings.total = performance.now() - t0;
 
@@ -5138,7 +5138,23 @@ export async function compileAndRun(input, options = {}) {
   if (options.instance) options.instance.ref = instance;
   if (options.gcStats && gc) options.gcStats.ref = gc.getStats();
 
-  return result;
+  // Format result: if it's a heap pointer (tagged object), return formatted string
+  // If raw=true or the result is a small integer/boolean, return the raw i32
+  if (options.raw) return rawResult;
+  
+  if (memoryRef.memory && rawResult > 0 && rawResult < memoryRef.memory.buffer.byteLength) {
+    const dataView = new DataView(memoryRef.memory.buffer);
+    try {
+      const tag = dataView.getInt32(rawResult, true);
+      if (tag === TAG_ARRAY || tag === TAG_STRING || tag === TAG_HASH || tag === TAG_FLOAT) {
+        return formatWasmValue(rawResult, dataView);
+      }
+    } catch (e) {
+      // Not a valid heap pointer — return raw value
+    }
+  }
+  
+  return rawResult;
 }
 
 export async function compileToInstance(input, options = {}) {

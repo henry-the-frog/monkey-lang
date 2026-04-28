@@ -453,10 +453,9 @@ describe('WASM Compiler', () => {
   });
 
   describe('Strings', () => {
-    it('string literal returns pointer', async () => {
-      // String literal returns a non-zero pointer
+    it('string literal returns formatted string', async () => {
       const result = await compileAndRun('"hello"');
-      assert.ok(result > 0, `expected positive pointer, got ${result}`);
+      assert.strictEqual(result, 'hello');
     });
 
     it('string length', async () => {
