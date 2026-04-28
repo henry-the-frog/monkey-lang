@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Monkey-Lang Playground</title>
+<style>
+  :root {
+    --bg: #1e1e2e;
+    --surface: #181825;
+    --surface2: #313244;
+    --text: #cdd6f4;
+    --subtext: #a6adc8;
+    --green: #a6e3a1;
+    --red: #f38ba8;
+    --blue: #89b4fa;
+    --mauve: #cba6f7;
+    --peach: #fab387;
+    --yellow: #f9e2af;
+    --teal: #94e2d5;
+    --border: #45475a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', monospace;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--mauve);
+  }
+  header h1 span { color: var(--peach); }
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .header-right a {
+    color: var(--subtext);
+    text-decoration: none;
+    font-size: 13px;
+  }
+  .header-right a:hover { color: var(--blue); }
+  .main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+  .panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    color: var(--subtext);
+    flex-shrink: 0;
+  }
+  .divider {
+    width: 4px;
+    background: var(--border);
+    cursor: col-resize;
+    flex-shrink: 0;
+  }
+  .divider:hover { background: var(--blue); }
+  textarea {
+    flex: 1;
+    background: var(--surface);
+    color: var(--text);
+    border: none;
+    padding: 16px;
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.6;
+    resize: none;
+    outline: none;
+    tab-size: 2;
+  }
+  textarea::placeholder { color: var(--surface2); }
+  #output {
+    flex: 1;
+    background: var(--surface);
+    padding: 16px;
+    font-size: 14px;
+    line-height: 1.6;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .output-result { color: var(--green); }
+  .output-error { color: var(--red); }
+  .output-info { color: var(--subtext); font-style: italic; }
+  .output-wasm { color: var(--teal); font-size: 12px; }
+  .btn {
+    background: var(--mauve);
+    color: var(--bg);
+    border: none;
+    padding: 6px 16px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  .btn:hover { opacity: 0.85; }
+  .btn:active { opacity: 0.7; }
+  .btn-run { background: var(--green); }
+  .btn-sm {
+    background: var(--surface2);
+    color: var(--subtext);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .btn-sm:hover { color: var(--text); }
+  .btn-sm.active { background: var(--mauve); color: var(--bg); }
+  .examples-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    overflow-x: auto;
+  }
+  .examples-bar span { color: var(--subtext); font-size: 12px; white-space: nowrap; }
+  .status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    margin-right: 6px;
+  }
+  .status-dot.error { background: var(--red); }
+  kbd {
+    background: var(--surface2);
+    color: var(--subtext);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-family: inherit;
+  }
+  @media (max-width: 768px) {
+    .main { flex-direction: column; }
+    .divider { width: 100%; height: 4px; cursor: row-resize; }
+    .panel { min-height: 0; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🐒 monkey<span>-lang</span> playground</h1>
+  <div class="header-right">
+    <span style="font-size: 12px; color: var(--subtext)">
+      <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to run
+    </span>
+    <button class="btn btn-run" id="runBtn" onclick="run()">▶ Run</button>
+    <button class="btn btn-sm" id="shareBtn" onclick="share()">🔗 Share</button>
+  </div>
+</header>
+
+<div class="examples-bar">
+  <span>Examples:</span>
+</div>
+
+<div class="main">
+  <div class="panel" id="editorPanel">
+    <div class="panel-header">
+      <span>Editor</span>
+      <span id="charCount">0 chars</span>
+    </div>
+    <textarea id="editor" spellcheck="false" placeholder="Write monkey-lang code here..."></textarea>
+  </div>
+  <div class="divider" id="divider"></div>
+  <div class="panel" id="outputPanel">
+    <div class="panel-header">
+      <span><span class="status-dot" id="statusDot"></span>Output</span>
+      <span id="timing"></span>
+    </div>
+    <div id="output">
+      <span class="output-info">Click ▶ Run or press Ctrl+Enter to compile and execute.</span>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { compileToWasm } from './monkey-compiler.js';
+
+const editor = document.getElementById('editor');
+const output = document.getElementById('output');
+const timing = document.getElementById('timing');
+const statusDot = document.getElementById('statusDot');
+const charCount = document.getElementById('charCount');
+const runBtn = document.getElementById('runBtn');
+const examplesBar = document.querySelector('.examples-bar');
+
+// --- Examples ---
+const examples = [
+  {
+    name: 'Fibonacci',
+    code: `// Compute fib(35) — compiled to native WASM
+// 1.8x faster than equivalent JavaScript!
+let fib = fn(n) {
+  if (n < 2) { n }
+  else { fib(n - 1) + fib(n - 2) }
+};
+fib(35)`
+  },
+  {
+    name: 'Closures',
+    code: `// Closures with shared mutable state
+let x = 0;
+let inc = fn() { set x = x + 1; x };
+let dec = fn() { set x = x - 1; x };
+inc(); inc(); inc(); // x = 3
+dec();               // x = 2
+inc(); inc();        // x = 4
+x`
+  },
+  {
+    name: 'Higher-Order',
+    code: `// Functions as arguments
+let apply = fn(f, x) { f(x) };
+let applyTwice = fn(f, x) { f(f(x)) };
+
+let double = fn(x) { x * 2 };
+let addThree = fn(x) { x + 3 };
+
+// apply(double, 21) = 42
+// applyTwice(double, 5) = 20
+// applyTwice(addThree, 10) = 16
+applyTwice(double, 5) + apply(addThree, 100)`
+  },
+  {
+    name: 'Ackermann',
+    code: `// Ackermann function — extreme recursion
+let ack = fn(m, n) {
+  if (m == 0) { n + 1 }
+  else {
+    if (n == 0) { ack(m - 1, 1) }
+    else { ack(m - 1, ack(m, n - 1)) }
+  }
+};
+ack(3, 7)  // 1021`
+  },
+  {
+    name: 'Mandelbrot',
+    code: `// Mandelbrot escape iteration
+let mandelbrot = fn(cx, cy, maxIter) {
+  let x = 0;
+  let y = 0;
+  let i = 0;
+  let escaped = 0;
+  while (i < maxIter) {
+    let x2 = x * x;
+    let y2 = y * y;
+    if (x2 + y2 > 4) {
+      if (escaped == 0) { set escaped = i }
+    };
+    let xNew = x2 - y2 + cx;
+    set y = 2 * x * y + cy;
+    set x = xNew;
+    set i = i + 1;
+  };
+  if (escaped > 0) { escaped } else { maxIter }
+};
+mandelbrot(0, 0, 1000)`
+  },
+  {
+    name: 'For Loops',
+    code: `// Sum 1 to 10,000 with a for loop
+let total = 0;
+for (let i = 1; i <= 10000; set i = i + 1) {
+  set total = total + i;
+};
+total  // 50005000`
+  },
+  {
+    name: 'Mutual Recursion',
+    code: `// isEven/isOdd via mutual recursion
+let isEven = fn(n) {
+  if (n == 0) { 1 }
+  else { isOdd(n - 1) }
+};
+let isOdd = fn(n) {
+  if (n == 0) { 0 }
+  else { isEven(n - 1) }
+};
+isEven(100)  // 1`
+  },
+  {
+    name: 'Nested Loops',
+    code: `// 1000×1000 nested loop — pure WASM speed
+let nested = fn(n) {
+  let total = 0;
+  let i = 0;
+  while (i < n) {
+    let j = 0;
+    while (j < n) {
+      set total = total + 1;
+      set j = j + 1;
+    };
+    set i = i + 1;
+  };
+  total
+};
+nested(1000)  // 1,000,000`
+  },
+];
+
+// Populate examples bar
+examples.forEach(ex => {
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-sm';
+  btn.textContent = ex.name;
+  btn.onclick = () => {
+    editor.value = ex.code;
+    updateCharCount();
+    run();
+  };
+  examplesBar.appendChild(btn);
+});
+
+// Load default example
+editor.value = examples[0].code;
+updateCharCount();
+
+// Auto-run the default example
+setTimeout(() => run(), 100);
+
+// --- String runtime for WASM ---
+function createStringRuntime() {
+  let memory = null;  // Set after instantiation
+  let heapPtr = 0;
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+
+  function readString(ptr) {
+    const mem = new Uint8Array(memory.buffer);
+    const len = mem[ptr] | (mem[ptr+1] << 8) | (mem[ptr+2] << 16) | (mem[ptr+3] << 24);
+    return decoder.decode(mem.slice(ptr + 4, ptr + 4 + len));
+  }
+
+  function allocString(str) {
+    const encoded = encoder.encode(str);
+    const totalLen = 4 + encoded.length;
+    const ptr = heapPtr;
+    const mem = new Uint8Array(memory.buffer);
+    mem[ptr] = encoded.length & 0xFF;
+    mem[ptr+1] = (encoded.length >> 8) & 0xFF;
+    mem[ptr+2] = (encoded.length >> 16) & 0xFF;
+    mem[ptr+3] = (encoded.length >> 24) & 0xFF;
+    mem.set(encoded, ptr + 4);
+    heapPtr = (ptr + totalLen + 3) & ~3;
+    return ptr;
+  }
+
+  return {
+    readString,
+    setMemory(mem, dataEndOffset) {
+      memory = mem;
+      // Start heap after data segments with padding
+      heapPtr = (dataEndOffset + 255) & ~255;
+    },
+    env: {
+      __str_concat(a, b) {
+        const sa = readString(a);
+        const sb = readString(b);
+        return allocString(sa + sb);
+      }
+    }
+  };
+}
+
+// --- Compile & Run ---
+async function compileAndRun(source) {
+  const t0 = performance.now();
+  const binary = compileToWasm(source);
+  const compileTime = performance.now() - t0;
+
+  const module = await WebAssembly.compile(binary);
+  
+  // Check if module needs string imports
+  const imports = WebAssembly.Module.imports(module);
+  const needsStringRuntime = imports.some(i => i.name === '__str_concat');
+  
+  let importObject = {};
+  let stringRuntime = null;
+  
+  if (needsStringRuntime) {
+    stringRuntime = createStringRuntime();
+    importObject = { env: stringRuntime.env };
+  }
+  
+  const t1 = performance.now();
+  const instance = await WebAssembly.instantiate(module, importObject);
+  
+  // Bind exported memory to string runtime BEFORE calling main()
+  if (stringRuntime && instance.exports.memory) {
+    stringRuntime.setMemory(instance.exports.memory, 4096);
+  }
+  
+  let result;
+  if (instance.exports.main) {
+    const t2 = performance.now();
+    result = instance.exports.main();
+    const actualExec = performance.now() - t2;
+    // Use actual execution time
+    var realExecTime = actualExec;
+  } else {
+    const exports = Object.keys(instance.exports).filter(k => typeof instance.exports[k] === 'function');
+    if (exports.length > 0) {
+      result = instance.exports[exports[0]]();
+    } else {
+      result = '(no exported function)';
+    }
+    var realExecTime = execTime;
+  }
+
+  // If the result is a string pointer, try to read it
+  let displayResult = result;
+  if (instance.exports.memory && typeof result === 'number' && result >= 4) {
+    try {
+      const rt = createStringRuntime();
+      rt.setMemory(instance.exports.memory, 0);
+      const str = rt.readString(result);
+      if (str && str.length > 0 && str.length < 10000 && !/[\x00-\x08\x0e-\x1f]/.test(str)) {
+        displayResult = `"${str}"`;
+      }
+    } catch (e) {
+      // Not a string pointer
+    }
+  }
+  
+  return {
+    result: displayResult,
+    compileTime,
+    execTime: realExecTime,
+    wasmSize: binary.length,
+  };
+}
+
+// --- UI ---
+function updateCharCount() {
+  charCount.textContent = `${editor.value.length} chars`;
+}
+
+editor.addEventListener('input', updateCharCount);
+
+// Tab key inserts spaces
+editor.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+    editor.value = editor.value.substring(0, start) + '  ' + editor.value.substring(end);
+    editor.selectionStart = editor.selectionEnd = start + 2;
+  }
+});
+
+// Ctrl+Enter to run
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    run();
+  }
+});
+
+window.run = async function run() {
+  const source = editor.value.trim();
+  if (!source) {
+    output.innerHTML = '<span class="output-info">Nothing to run.</span>';
+    return;
+  }
+
+  output.innerHTML = '<span class="output-info">Compiling...</span>';
+  statusDot.className = 'status-dot';
+  runBtn.disabled = true;
+  
+  try {
+    const res = await compileAndRun(source);
+    statusDot.className = 'status-dot';
+    timing.textContent = `compile: ${res.compileTime.toFixed(1)}ms · exec: ${res.execTime.toFixed(1)}ms · ${res.wasmSize} bytes`;
+    
+    output.innerHTML = '';
+    const resultEl = document.createElement('div');
+    resultEl.className = 'output-result';
+    resultEl.textContent = `→ ${res.result}`;
+    output.appendChild(resultEl);
+    
+    const infoEl = document.createElement('div');
+    infoEl.className = 'output-wasm';
+    infoEl.textContent = `\nWASM binary: ${res.wasmSize} bytes`;
+    output.appendChild(infoEl);
+  } catch (e) {
+    statusDot.className = 'status-dot error';
+    timing.textContent = '';
+    output.innerHTML = '';
+    const errEl = document.createElement('div');
+    errEl.className = 'output-error';
+    errEl.textContent = `Error: ${e.message}`;
+    output.appendChild(errEl);
+  } finally {
+    runBtn.disabled = false;
+  }
+};
+
+// --- Resizable divider ---
+const divider = document.getElementById('divider');
+let isDragging = false;
+
+divider.addEventListener('mousedown', (e) => {
+  isDragging = true;
+  e.preventDefault();
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  const container = document.querySelector('.main');
+  const rect = container.getBoundingClientRect();
+  const isMobile = window.innerWidth <= 768;
+  
+  if (isMobile) {
+    const pct = ((e.clientY - rect.top) / rect.height) * 100;
+    document.getElementById('editorPanel').style.flex = `0 0 ${pct}%`;
+    document.getElementById('outputPanel').style.flex = `0 0 ${100 - pct}%`;
+  } else {
+    const pct = ((e.clientX - rect.left) / rect.width) * 100;
+    document.getElementById('editorPanel').style.flex = `0 0 ${pct}%`;
+    document.getElementById('outputPanel').style.flex = `0 0 ${100 - pct}%`;
+  }
+});
+
+document.addEventListener('mouseup', () => { isDragging = false; });
+
+// --- URL sharing ---
+function loadFromURL() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  if (code) {
+    editor.value = code;
+    updateCharCount();
+    run();
+  }
+}
+
+loadFromURL();
+
+// Share via URL
+window.share = function share() {
+  const code = editor.value;
+  const url = new URL(window.location);
+  url.searchParams.set('code', code);
+  navigator.clipboard.writeText(url.toString()).then(() => {
+    const btn = document.getElementById('shareBtn');
+    btn.textContent = '✓ Copied!';
+    setTimeout(() => { btn.textContent = '🔗 Share'; }, 2000);
+  }).catch(() => {
+    // Fallback: just update URL
+    window.history.replaceState(null, '', url.toString());
+  });
+};
+</script>
+</body>
+</html>
