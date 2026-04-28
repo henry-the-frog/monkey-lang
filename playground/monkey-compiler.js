@@ -2646,6 +2646,7 @@ var WasmCompiler = class {
     this._ensureCapFuncIdx = null;
     this._strConcatFuncIdx = null;
     this._strEqFuncIdx = null;
+    this._indexOfFuncIdx = null;
     this._needsMemory = false;
     this._anonCounter = 0;
     this._anonMap = /* @__PURE__ */ new Map();
@@ -2689,6 +2690,7 @@ var WasmCompiler = class {
       this._getArrayEnsureCapFunc();
       this._getStrConcatFunc();
       this._getStrEqFunc();
+      this._getIndexOfFunc();
     }
     this._processGlobals(program.statements);
     this._collectFunctions(program.statements);
@@ -3038,6 +3040,214 @@ var WasmCompiler = class {
     this._strEqFuncIdx = funcIdx;
     return funcIdx;
   }
+  // __str_indexOf(haystack: i32, needle: i32) -> i32 (index or -1)
+  _getIndexOfFunc() {
+    if (this._indexOfFuncIdx !== null) return this._indexOfFuncIdx;
+    const typeIdx = this.module.addType([WASM_TYPE.I32, WASM_TYPE.I32], [WASM_TYPE.I32]);
+    const body = [
+      // hLen = load(haystack)
+      WasmOp.local_get,
+      0,
+      WasmOp.i32_load,
+      2,
+      0,
+      WasmOp.local_set,
+      2,
+      // nLen = load(needle)
+      WasmOp.local_get,
+      1,
+      WasmOp.i32_load,
+      2,
+      0,
+      WasmOp.local_set,
+      3,
+      // if nLen == 0, return 0
+      WasmOp.local_get,
+      3,
+      WasmOp.i32_eqz,
+      WasmOp.if_,
+      64,
+      WasmOp.i32_const,
+      0,
+      WasmOp.return_,
+      WasmOp.end,
+      // if nLen > hLen, return -1
+      WasmOp.local_get,
+      3,
+      WasmOp.local_get,
+      2,
+      WasmOp.i32_gt_u,
+      WasmOp.if_,
+      64,
+      ...encodeSLEB128(-1).flatMap((b) => [WasmOp.i32_const, ...encodeSLEB128(-1)]),
+      WasmOp.end
+    ];
+    const body2 = [
+      // hLen = load(haystack)
+      WasmOp.local_get,
+      0,
+      WasmOp.i32_load,
+      2,
+      0,
+      WasmOp.local_set,
+      2,
+      // nLen = load(needle)
+      WasmOp.local_get,
+      1,
+      WasmOp.i32_load,
+      2,
+      0,
+      WasmOp.local_set,
+      3,
+      // if nLen == 0, return 0
+      WasmOp.local_get,
+      3,
+      WasmOp.i32_eqz,
+      WasmOp.if_,
+      64,
+      WasmOp.i32_const,
+      0,
+      WasmOp.return_,
+      WasmOp.end,
+      // Outer loop: i = 0; while (i <= hLen - nLen)
+      WasmOp.i32_const,
+      0,
+      WasmOp.local_set,
+      4,
+      // i = 0
+      WasmOp.block,
+      64,
+      // outer_break
+      WasmOp.loop,
+      64,
+      // outer_continue
+      // if i > hLen - nLen, break
+      WasmOp.local_get,
+      4,
+      WasmOp.local_get,
+      2,
+      WasmOp.local_get,
+      3,
+      WasmOp.i32_sub,
+      WasmOp.i32_gt_s,
+      WasmOp.br_if,
+      1,
+      // Inner loop: compare needle bytes
+      WasmOp.i32_const,
+      0,
+      WasmOp.local_set,
+      5,
+      // j = 0
+      WasmOp.i32_const,
+      1,
+      WasmOp.local_set,
+      6,
+      // matched = 1
+      WasmOp.block,
+      64,
+      // inner_break
+      WasmOp.loop,
+      64,
+      // inner_continue
+      WasmOp.local_get,
+      5,
+      WasmOp.local_get,
+      3,
+      WasmOp.i32_ge_u,
+      WasmOp.br_if,
+      1,
+      // j >= nLen → break
+      // Compare haystack[4+i+j] vs needle[4+j]
+      WasmOp.local_get,
+      0,
+      // haystack
+      WasmOp.i32_const,
+      4,
+      WasmOp.i32_add,
+      WasmOp.local_get,
+      4,
+      // i
+      WasmOp.i32_add,
+      WasmOp.local_get,
+      5,
+      // j
+      WasmOp.i32_add,
+      WasmOp.i32_load8_u,
+      0,
+      0,
+      WasmOp.local_get,
+      1,
+      // needle
+      WasmOp.i32_const,
+      4,
+      WasmOp.i32_add,
+      WasmOp.local_get,
+      5,
+      // j
+      WasmOp.i32_add,
+      WasmOp.i32_load8_u,
+      0,
+      0,
+      WasmOp.i32_ne,
+      WasmOp.if_,
+      64,
+      WasmOp.i32_const,
+      0,
+      WasmOp.local_set,
+      6,
+      // matched = 0
+      WasmOp.br,
+      2,
+      // break inner
+      WasmOp.end,
+      // j++
+      WasmOp.local_get,
+      5,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_add,
+      WasmOp.local_set,
+      5,
+      WasmOp.br,
+      0,
+      // continue inner
+      WasmOp.end,
+      WasmOp.end,
+      // if matched, return i
+      WasmOp.local_get,
+      6,
+      WasmOp.if_,
+      64,
+      WasmOp.local_get,
+      4,
+      WasmOp.return_,
+      WasmOp.end,
+      // i++
+      WasmOp.local_get,
+      4,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_add,
+      WasmOp.local_set,
+      4,
+      WasmOp.br,
+      0,
+      // continue outer
+      WasmOp.end,
+      WasmOp.end,
+      // Not found: return -1
+      ...encodeSLEB128(-1).reduce((acc, _) => acc, []),
+      WasmOp.i32_const,
+      ...encodeSLEB128(-1)
+    ];
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [
+      { count: 5, type: WASM_TYPE.I32 }
+      // hLen, nLen, i, j, matched
+    ], body2);
+    this._indexOfFuncIdx = funcIdx;
+    return funcIdx;
+  }
   // Ensure memory exists and heap pointer global is initialized
   _ensureMemory() {
     if (this._needsMemory) return;
@@ -3324,7 +3534,9 @@ var WasmCompiler = class {
         const name = expr.function.value;
         if (name === "len") return "int";
         if (name === "push") return "int";
+        if (name === "indexOf") return "int";
         if (name === "map" || name === "filter") return "array";
+        if (name === "charAt" || name === "substring") return "string";
       }
       return "unknown";
     }
@@ -3687,6 +3899,119 @@ var WasmCompiler = class {
     body.push(WasmOp.br, 0);
     body.push(WasmOp.end);
     body.push(WasmOp.end);
+  }
+  // indexOf(haystack, needle) → returns first index of needle in haystack, or -1
+  // Uses a naive O(n*m) algorithm — sufficient for reasonable string sizes
+  _compileIndexOf(haystackExpr, needleExpr, body) {
+    const indexOfIdx = this._getIndexOfFunc();
+    this._compileExpr(haystackExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    this._compileExpr(needleExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.call, ...encodeULEB128(indexOfIdx));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+  }
+  // charAt(str, idx) → returns a new 1-character string
+  _compileCharAt(strExpr, idxExpr, body) {
+    const allocIdx = this._getAllocFunc();
+    const strPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const idxLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const newPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    this._compileExpr(strExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(strPtrLocal));
+    this._compileExpr(idxExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(idxLocal));
+    body.push(WasmOp.i32_const, 5);
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_store, 2, 0);
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(strPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(idxLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.i32_store8, 0, 0);
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+  }
+  // substring(str, start, end) → returns new string from start to end (exclusive)
+  _compileSubstring(strExpr, startExpr, endExpr, body) {
+    const allocIdx = this._getAllocFunc();
+    const strPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const startLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const endLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const newPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const newLenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const iLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    this._compileExpr(strExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(strPtrLocal));
+    this._compileExpr(startExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(startLocal));
+    this._compileExpr(endExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(endLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(endLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_sub);
+    body.push(WasmOp.local_set, ...encodeULEB128(newLenLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.local_get, ...encodeULEB128(newLenLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(newLenLocal));
+    body.push(WasmOp.i32_store, 2, 0);
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(iLocal));
+    body.push(WasmOp.block, 64);
+    body.push(WasmOp.loop, 64);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(newLenLocal));
+    body.push(WasmOp.i32_ge_u);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(strPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.i32_store8, 0, 0);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(iLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
   }
   // Compile push(array, value) — with reallocation support
   // Calls __array_ensure_cap to grow array if needed, then stores the value.
@@ -4227,6 +4552,18 @@ var WasmCompiler = class {
       }
       if (funcName === "reduce" && expr.arguments.length === 3) {
         this._compileArrayReduce(expr.arguments[0], expr.arguments[1], expr.arguments[2], body);
+        return;
+      }
+      if (funcName === "charAt" && expr.arguments.length === 2) {
+        this._compileCharAt(expr.arguments[0], expr.arguments[1], body);
+        return;
+      }
+      if (funcName === "substring" && expr.arguments.length === 3) {
+        this._compileSubstring(expr.arguments[0], expr.arguments[1], expr.arguments[2], body);
+        return;
+      }
+      if (funcName === "indexOf" && expr.arguments.length === 2) {
+        this._compileIndexOf(expr.arguments[0], expr.arguments[1], body);
         return;
       }
       const funcInfo = this.functions.get(funcName);

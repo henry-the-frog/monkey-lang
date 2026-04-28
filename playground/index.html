@@ -375,6 +375,33 @@ let eq = full == greeting;
 same + total_len + eq  // 1 + 22 + 1 = 24`
   },
   {
+    name: 'String Methods',
+    code: `// String methods: charAt, substring, indexOf
+let text = "the quick brown fox jumps over the lazy dog";
+
+// Find "fox" in the string
+let pos = indexOf(text, "fox");
+
+// Extract "quick" using substring
+let word = substring(text, 4, 9);
+
+// Get first character
+let first = charAt(text, 0);
+
+// Count spaces
+let spaces = 0;
+let i = 0;
+while (i < len(text)) {
+  if (charAt(text, i) == " ") {
+    set spaces = spaces + 1
+  };
+  set i = i + 1
+};
+
+// pos=16, word=="quick" (len=5), first=="t", spaces=8
+pos + len(word) + spaces  // 16 + 5 + 8 = 29`
+  },
+  {
     name: 'Sieve',
     code: `// Count primes up to 10,000 (Sieve of Eratosthenes)
 let sieve = fn(n) {
