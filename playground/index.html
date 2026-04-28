@@ -245,17 +245,19 @@ x`
   },
   {
     name: 'Higher-Order',
-    code: `// Functions as arguments
-let apply = fn(f, x) { f(x) };
-let applyTwice = fn(f, x) { f(f(x)) };
-
+    code: `// Functional programming pipeline
 let double = fn(x) { x * 2 };
-let addThree = fn(x) { x + 3 };
+let isEven = fn(x) { if (x % 2 == 0) { 1 } else { 0 } };
+let add = fn(acc, x) { acc + x };
 
-// apply(double, 21) = 42
-// applyTwice(double, 5) = 20
-// applyTwice(addThree, 10) = 16
-applyTwice(double, 5) + apply(addThree, 100)`
+let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+// Filter evens → double → sum
+// 2,4,6,8,10 → 4,8,12,16,20 → 60
+reduce(
+  map(filter(data, isEven), double),
+  add, 0
+)`
   },
   {
     name: 'Ackermann',
