@@ -513,3 +513,109 @@ describe('WASM arrays — for-in loops', () => {
     `), 5);
   });
 });
+
+describe('WASM arrays — comprehensions', () => {
+  it('basic map comprehension', async () => {
+    assert.equal(await run(`
+      let a = [x * 2 for x in [1, 2, 3, 4, 5]];
+      a[0] + a[1] + a[2] + a[3] + a[4]
+    `), 30);
+  });
+
+  it('identity comprehension', async () => {
+    assert.equal(await run(`
+      let src = [10, 20, 30];
+      let dst = [x for x in src];
+      dst[0] + dst[1] + dst[2]
+    `), 60);
+  });
+
+  it('comprehension with filter', async () => {
+    assert.equal(await run(`
+      let a = [x for x in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] if x % 2 == 0];
+      len(a)
+    `), 5);
+  });
+
+  it('comprehension with filter - values', async () => {
+    assert.equal(await run(`
+      let a = [x * x for x in [1, 2, 3, 4, 5] if x > 2];
+      a[0] + a[1] + a[2]
+    `), 9 + 16 + 25);
+  });
+
+  it('comprehension over empty array', async () => {
+    assert.equal(await run(`
+      let a = [x for x in []];
+      len(a)
+    `), 0);
+  });
+
+  it('comprehension over pushed array', async () => {
+    assert.equal(await run(`
+      let src = [];
+      push(src, 1); push(src, 2); push(src, 3);
+      let doubled = [x * 2 for x in src];
+      doubled[0] + doubled[1] + doubled[2]
+    `), 12);
+  });
+
+  it('comprehension in function', async () => {
+    assert.equal(await run(`
+      let doubleAll = fn(arr) {
+        [x * 2 for x in arr]
+      };
+      let result = doubleAll([5, 10, 15]);
+      result[0] + result[1] + result[2]
+    `), 60);
+  });
+
+  it('comprehension with complex body', async () => {
+    assert.equal(await run(`
+      let a = [1, 2, 3, 4, 5];
+      let b = [if (x > 3) { x * 10 } else { x } for x in a];
+      b[0] + b[1] + b[2] + b[3] + b[4]
+    `), 1 + 2 + 3 + 40 + 50);
+  });
+
+  it('chained comprehensions', async () => {
+    assert.equal(await run(`
+      let a = [x * 2 for x in [1, 2, 3, 4, 5]];
+      let b = [x + 1 for x in a];
+      b[0] + b[4]
+    `), 3 + 11);
+  });
+
+  it('large comprehension (500 elements)', async () => {
+    assert.equal(await run(`
+      let src = [];
+      let i = 0;
+      while (i < 500) { push(src, i); set i = i + 1 };
+      let doubled = [x * 2 for x in src];
+      doubled[499]
+    `), 998);
+  });
+
+  it('filter comprehension all pass', async () => {
+    assert.equal(await run(`
+      let a = [x for x in [1, 2, 3] if x > 0];
+      len(a)
+    `), 3);
+  });
+
+  it('filter comprehension none pass', async () => {
+    assert.equal(await run(`
+      let a = [x for x in [1, 2, 3] if x > 100];
+      len(a)
+    `), 0);
+  });
+
+  it('comprehension with for-in consumer', async () => {
+    assert.equal(await run(`
+      let squares = [x * x for x in [1, 2, 3, 4, 5]];
+      let sum = 0;
+      for (s in squares) { set sum = sum + s };
+      sum
+    `), 55);
+  });
+});
