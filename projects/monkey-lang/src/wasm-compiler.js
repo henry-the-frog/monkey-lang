@@ -1758,6 +1758,24 @@ export class WasmCompiler {
 
       // Higher-order builtins: map(arr, fn), filter(arr, fn), find(arr, fn), any(arr, fn), every(arr, fn)
       if (!isLocallyDefined && ['map', 'filter', 'find', 'any', 'every'].includes(name) && node.arguments.length === 2) {
+        // Optimization: inline map/filter when callback is a literal with no captures
+        if (name === 'map' && node.arguments[1] instanceof ast.FunctionLiteral) {
+          const callback = node.arguments[1];
+          const captures = this._findCaptures(callback);
+          if (captures.length === 0 && callback.parameters.length === 1) {
+            this._compileInlineMap(node.arguments[0], callback);
+            return;
+          }
+        }
+        if (name === 'filter' && node.arguments[1] instanceof ast.FunctionLiteral) {
+          const callback = node.arguments[1];
+          const captures = this._findCaptures(callback);
+          if (captures.length === 0 && callback.parameters.length === 1) {
+            this._compileInlineFilter(node.arguments[0], callback);
+            return;
+          }
+        }
+        
         this.compileNode(node.arguments[0]); // array
         this.compileNode(node.arguments[1]); // closure
         this.currentBody.call(this._runtimeFuncs[name]);
@@ -4061,6 +4079,180 @@ export class WasmCompiler {
       return val !== null ? (val === 0 ? 1 : 0) : null;
     }
     return null;
+  }
+
+  // Inline map: compile map(arr, fn(x){body}) as a WASM loop
+  // Only used when callback has no captures and 1 parameter
+  _compileInlineMap(arrExpr, callback) {
+    const paramName = callback.parameters[0].value || callback.parameters[0].token?.literal;
+    
+    // Locals: arrPtr, len, i, resultArr, elem
+    const arrLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    const lenLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    const iLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    const resultLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    
+    // arrPtr = compile(arrExpr)
+    this.compileNode(arrExpr);
+    this.currentBody.localSet(arrLocal);
+    
+    // len = i32.load(arrPtr + 4)
+    this.currentBody.localGet(arrLocal);
+    this.currentBody.i32Const(4);
+    this.currentBody.emit(Op.i32_add);
+    this.currentBody.i32Load();
+    this.currentBody.localSet(lenLocal);
+    
+    // resultArr = make_array(len)
+    this.currentBody.localGet(lenLocal);
+    this.currentBody.call(this._runtimeFuncs.makeArray);
+    this.currentBody.localSet(resultLocal);
+    
+    // i = 0
+    this.currentBody.i32Const(0);
+    this.currentBody.localSet(iLocal);
+    
+    // Bind parameter in a new scope
+    const prevScope = this.currentScope;
+    this.currentScope = new Scope(prevScope);
+    const paramLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    this.currentScope.define(paramName, paramLocal, ValType.i32);
+    
+    // Loop
+    this.currentBody.block();
+    this.currentBody.loop();
+    
+    // if (i >= len) break
+    this.currentBody.localGet(iLocal);
+    this.currentBody.localGet(lenLocal);
+    this.currentBody.emit(Op.i32_ge_s);
+    this.currentBody.brIf(1);
+    
+    // paramName = array_get(arrPtr, i)
+    this.currentBody.localGet(arrLocal);
+    this.currentBody.localGet(iLocal);
+    this.currentBody.call(this._runtimeFuncs.arrayGet);
+    this.currentBody.localSet(paramLocal);
+    
+    // result = compile(callback.body) — evaluate the body
+    this._compileBlockReturning(callback.body);
+    
+    // Temp local for the result value
+    const tmpLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    this.currentBody.localSet(tmpLocal);
+    
+    // array_set(resultArr, i, result)
+    this.currentBody.localGet(resultLocal);
+    this.currentBody.localGet(iLocal);
+    this.currentBody.localGet(tmpLocal);
+    this.currentBody.call(this._runtimeFuncs.arraySet);
+    
+    // i++
+    this.currentBody.localGet(iLocal);
+    this.currentBody.i32Const(1);
+    this.currentBody.emit(Op.i32_add);
+    this.currentBody.localSet(iLocal);
+    
+    // continue
+    this.currentBody.br(0);
+    
+    this.currentBody.end(); // loop
+    this.currentBody.end(); // block
+    
+    // Restore scope
+    this.currentScope = prevScope;
+    
+    // Return result array
+    this.currentBody.localGet(resultLocal);
+  }
+
+  // Inline filter: compile filter(arr, fn(x){pred}) as a WASM loop + conditional push
+  _compileInlineFilter(arrExpr, callback) {
+    const paramName = callback.parameters[0].value || callback.parameters[0].token?.literal;
+    
+    const arrLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    const lenLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    const iLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    const resultLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    
+    // arrPtr = compile(arrExpr)
+    this.compileNode(arrExpr);
+    this.currentBody.localSet(arrLocal);
+    
+    // len = array length
+    this.currentBody.localGet(arrLocal);
+    this.currentBody.i32Const(4);
+    this.currentBody.emit(Op.i32_add);
+    this.currentBody.i32Load();
+    this.currentBody.localSet(lenLocal);
+    
+    // resultArr = make_array(0)
+    this.currentBody.i32Const(0);
+    this.currentBody.call(this._runtimeFuncs.makeArray);
+    this.currentBody.localSet(resultLocal);
+    
+    // i = 0
+    this.currentBody.i32Const(0);
+    this.currentBody.localSet(iLocal);
+    
+    // Bind parameter
+    const prevScope = this.currentScope;
+    this.currentScope = new Scope(prevScope);
+    const paramLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    this.currentScope.define(paramName, paramLocal, ValType.i32);
+    
+    // Loop
+    this.currentBody.block();
+    this.currentBody.loop();
+    
+    this.currentBody.localGet(iLocal);
+    this.currentBody.localGet(lenLocal);
+    this.currentBody.emit(Op.i32_ge_s);
+    this.currentBody.brIf(1);
+    
+    // paramName = array_get(arrPtr, i)
+    this.currentBody.localGet(arrLocal);
+    this.currentBody.localGet(iLocal);
+    this.currentBody.call(this._runtimeFuncs.arrayGet);
+    this.currentBody.localSet(paramLocal);
+    
+    // predicate = compile(callback.body)
+    this._compileBlockReturning(callback.body);
+    
+    // if (predicate) push element
+    this.currentBody.if_(ValType.void);
+    // resultArr = push(resultArr, paramName)
+    this.currentBody.localGet(resultLocal);
+    this.currentBody.localGet(paramLocal);
+    this.currentBody.call(this._runtimeFuncs.push);
+    this.currentBody.localSet(resultLocal);
+    this.currentBody.end(); // if
+    
+    // i++
+    this.currentBody.localGet(iLocal);
+    this.currentBody.i32Const(1);
+    this.currentBody.emit(Op.i32_add);
+    this.currentBody.localSet(iLocal);
+    
+    this.currentBody.br(0);
+    
+    this.currentBody.end(); // loop
+    this.currentBody.end(); // block
+    
+    this.currentScope = prevScope;
+    
+    this.currentBody.localGet(resultLocal);
   }
 }
 
