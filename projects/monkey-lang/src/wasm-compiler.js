@@ -2246,7 +2246,7 @@ export class WasmCompiler {
 
     // Bind actual parameters (starting at local 1)
     // Infer integer types by scanning the function body
-    const intParams = this._inferIntegerParams(node);
+    const intParams = this._inferIntParams(node);
     for (let i = 0; i < node.parameters.length; i++) {
       const name = node.parameters[i].value || node.parameters[i].token?.literal;
       const isInt = intParams.has(name);
