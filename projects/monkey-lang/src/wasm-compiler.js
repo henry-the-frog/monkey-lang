@@ -43,7 +43,8 @@ class Scope {
     this.vars.set(name, { index, type, knownInt });
   }
 
-  // Mark a variable as captured from a closure environment (needs write-back on mutation)
+  // Note: markCaptured was used for the pre-box env write-back approach.
+  // It's been replaced by the box/cell pattern. Kept for compatibility but unused.
   markCaptured(name, envPtrLocal, envOffset) {
     const v = this.vars.get(name);
     if (v) {
