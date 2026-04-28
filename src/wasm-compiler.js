@@ -559,6 +559,306 @@ class WasmCompiler {
     if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
   }
 
+  // map(arr, fn) — create new array, apply fn to each element
+  _compileArrayMap(arrExpr, fnExpr, body) {
+    const srcPtr = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+    const dstPtr = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+    const srcLen = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+    const idxVar = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+    const fnIdx = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+
+    // Load source array
+    this._compileExpr(arrExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(srcPtr));
+
+    // Get source length
+    body.push(WasmOp.local_get, ...encodeULEB128(srcPtr));
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(srcLen));
+
+    // Allocate destination array: __alloc(8 + srcLen * 4)
+    const allocIdx = this._getAllocFunc();
+    body.push(WasmOp.i32_const, 8);
+    body.push(WasmOp.local_get, ...encodeULEB128(srcLen));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_mul);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(dstPtr));
+
+    // Set dst len and cap = srcLen
+    body.push(WasmOp.local_get, ...encodeULEB128(dstPtr));
+    body.push(WasmOp.local_get, ...encodeULEB128(srcLen));
+    body.push(WasmOp.i32_store, 2, 0);
+    body.push(WasmOp.local_get, ...encodeULEB128(dstPtr));
+    body.push(WasmOp.local_get, ...encodeULEB128(srcLen));
+    body.push(WasmOp.i32_store, 2, 4);
+
+    // Load function index
+    this._compileExpr(fnExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(fnIdx));
+
+    // Type index for fn(i32) -> i32
+    const typeIdx = this.module.addType([this.numType], [this.numType]);
+
+    // i = 0
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(idxVar));
+
+    // Loop: while (i < srcLen)
+    body.push(WasmOp.block, 0x40);
+    body.push(WasmOp.loop, 0x40);
+
+    // Break if i >= srcLen
+    body.push(WasmOp.local_get, ...encodeULEB128(idxVar));
+    body.push(WasmOp.local_get, ...encodeULEB128(srcLen));
+    body.push(WasmOp.i32_ge_s);
+    body.push(WasmOp.br_if, 1);
+
+    // dst[i] = fn(src[i])
+    // Compute dst addr
+    body.push(WasmOp.local_get, ...encodeULEB128(dstPtr));
+    body.push(WasmOp.i32_const, 8);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(idxVar));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_mul);
+    body.push(WasmOp.i32_add);
+
+    // Load src[i]
+    body.push(WasmOp.local_get, ...encodeULEB128(srcPtr));
+    body.push(WasmOp.i32_const, 8);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(idxVar));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_mul);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load, 2, 0);
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+
+    // call_indirect fn(src[i])
+    body.push(WasmOp.local_get, ...encodeULEB128(fnIdx));
+    body.push(WasmOp.call_indirect, ...encodeULEB128(typeIdx), 0x00);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+
+    // Store result
+    body.push(WasmOp.i32_store, 2, 0);
+
+    // i++
+    body.push(WasmOp.local_get, ...encodeULEB128(idxVar));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(idxVar));
+
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+
+    // Return dst pointer
+    body.push(WasmOp.local_get, ...encodeULEB128(dstPtr));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+  }
+
+  // filter(arr, fn) — create new array with elements where fn returns truthy
+  _compileArrayFilter(arrExpr, fnExpr, body) {
+    const srcPtr = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+    const dstPtr = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+    const srcLen = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+    const idxVar = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+    const fnIdx = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+    const elemVar = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+
+    // Load source array
+    this._compileExpr(arrExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(srcPtr));
+
+    // Get source length
+    body.push(WasmOp.local_get, ...encodeULEB128(srcPtr));
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(srcLen));
+
+    // Allocate destination array (max size = srcLen)
+    const allocIdx = this._getAllocFunc();
+    body.push(WasmOp.i32_const, 8);
+    body.push(WasmOp.local_get, ...encodeULEB128(srcLen));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_mul);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(dstPtr));
+
+    // Set dst len = 0, cap = srcLen
+    body.push(WasmOp.local_get, ...encodeULEB128(dstPtr));
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.i32_store, 2, 0);
+    body.push(WasmOp.local_get, ...encodeULEB128(dstPtr));
+    body.push(WasmOp.local_get, ...encodeULEB128(srcLen));
+    body.push(WasmOp.i32_store, 2, 4);
+
+    // Load function index
+    this._compileExpr(fnExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(fnIdx));
+
+    const typeIdx = this.module.addType([this.numType], [this.numType]);
+
+    // i = 0
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(idxVar));
+
+    // Loop
+    body.push(WasmOp.block, 0x40);
+    body.push(WasmOp.loop, 0x40);
+
+    body.push(WasmOp.local_get, ...encodeULEB128(idxVar));
+    body.push(WasmOp.local_get, ...encodeULEB128(srcLen));
+    body.push(WasmOp.i32_ge_s);
+    body.push(WasmOp.br_if, 1);
+
+    // elem = src[i]
+    body.push(WasmOp.local_get, ...encodeULEB128(srcPtr));
+    body.push(WasmOp.i32_const, 8);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(idxVar));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_mul);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(elemVar));
+
+    // if fn(elem) != 0, push to dst
+    body.push(WasmOp.local_get, ...encodeULEB128(elemVar));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+    body.push(WasmOp.local_get, ...encodeULEB128(fnIdx));
+    body.push(WasmOp.call_indirect, ...encodeULEB128(typeIdx), 0x00);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+
+    body.push(WasmOp.if_, 0x40); // void if — we manually handle the push
+    {
+      // Get dst current length
+      const dstLenTemp = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+      body.push(WasmOp.local_get, ...encodeULEB128(dstPtr));
+      body.push(WasmOp.i32_load, 2, 0);
+      body.push(WasmOp.local_set, ...encodeULEB128(dstLenTemp));
+
+      // dst[dstLen] = elem
+      body.push(WasmOp.local_get, ...encodeULEB128(dstPtr));
+      body.push(WasmOp.i32_const, 8);
+      body.push(WasmOp.i32_add);
+      body.push(WasmOp.local_get, ...encodeULEB128(dstLenTemp));
+      body.push(WasmOp.i32_const, 4);
+      body.push(WasmOp.i32_mul);
+      body.push(WasmOp.i32_add);
+      body.push(WasmOp.local_get, ...encodeULEB128(elemVar));
+      body.push(WasmOp.i32_store, 2, 0);
+
+      // dst len = dstLen + 1
+      body.push(WasmOp.local_get, ...encodeULEB128(dstPtr));
+      body.push(WasmOp.local_get, ...encodeULEB128(dstLenTemp));
+      body.push(WasmOp.i32_const, 1);
+      body.push(WasmOp.i32_add);
+      body.push(WasmOp.i32_store, 2, 0);
+    }
+    body.push(WasmOp.end); // end if
+
+    // i++
+    body.push(WasmOp.local_get, ...encodeULEB128(idxVar));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(idxVar));
+
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+
+    // Return dst pointer
+    body.push(WasmOp.local_get, ...encodeULEB128(dstPtr));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+  }
+
+  // reduce(arr, fn, init) — fold array: fn(fn(...fn(init, a[0]), a[1])..., a[n-1])
+  _compileArrayReduce(arrExpr, fnExpr, initExpr, body) {
+    const srcPtr = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+    const srcLen = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+    const idxVar = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+    const fnIdx = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+    const accVar = this.currentLocalCount + this.currentExtraLocals; this.currentExtraLocals++;
+
+    // Load source array
+    this._compileExpr(arrExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(srcPtr));
+
+    // Get source length
+    body.push(WasmOp.local_get, ...encodeULEB128(srcPtr));
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(srcLen));
+
+    // Load function index
+    this._compileExpr(fnExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(fnIdx));
+
+    // acc = init
+    this._compileExpr(initExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(accVar));
+
+    // Type index for fn(i32, i32) -> i32
+    const typeIdx = this.module.addType([this.numType, this.numType], [this.numType]);
+
+    // i = 0
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(idxVar));
+
+    // Loop
+    body.push(WasmOp.block, 0x40);
+    body.push(WasmOp.loop, 0x40);
+
+    body.push(WasmOp.local_get, ...encodeULEB128(idxVar));
+    body.push(WasmOp.local_get, ...encodeULEB128(srcLen));
+    body.push(WasmOp.i32_ge_s);
+    body.push(WasmOp.br_if, 1);
+
+    // acc = fn(acc, src[i])
+    body.push(WasmOp.local_get, ...encodeULEB128(accVar));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+
+    // Load src[i]
+    body.push(WasmOp.local_get, ...encodeULEB128(srcPtr));
+    body.push(WasmOp.i32_const, 8);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(idxVar));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_mul);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load, 2, 0);
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+
+    // call_indirect fn(acc, elem)
+    body.push(WasmOp.local_get, ...encodeULEB128(fnIdx));
+    body.push(WasmOp.call_indirect, ...encodeULEB128(typeIdx), 0x00);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(accVar));
+
+    // i++
+    body.push(WasmOp.local_get, ...encodeULEB128(idxVar));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(idxVar));
+
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+
+    // Return acc
+    body.push(WasmOp.local_get, ...encodeULEB128(accVar));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+  }
+
   _compileExpr(expr, body) {
     if (!expr) {
       this._emitConst(body, 0);
@@ -747,6 +1047,24 @@ class WasmCompiler {
       // Built-in: push(array, value) — append value, return new length
       if (funcName === 'push' && expr.arguments.length === 2) {
         this._compileArrayPush(expr.arguments[0], expr.arguments[1], body);
+        return;
+      }
+
+      // Built-in: map(array, fn) — returns new array with fn applied to each element
+      if (funcName === 'map' && expr.arguments.length === 2) {
+        this._compileArrayMap(expr.arguments[0], expr.arguments[1], body);
+        return;
+      }
+
+      // Built-in: filter(array, fn) — returns new array with elements where fn returns truthy
+      if (funcName === 'filter' && expr.arguments.length === 2) {
+        this._compileArrayFilter(expr.arguments[0], expr.arguments[1], body);
+        return;
+      }
+
+      // Built-in: reduce(array, fn, init) — fold array with fn(acc, elem) starting from init
+      if (funcName === 'reduce' && expr.arguments.length === 3) {
+        this._compileArrayReduce(expr.arguments[0], expr.arguments[1], expr.arguments[2], body);
         return;
       }
       
