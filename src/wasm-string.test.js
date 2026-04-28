@@ -344,3 +344,44 @@ describe('WASM strings — substring', () => {
     `), 'world');
   });
 });
+
+describe('WASM strings — indexOf', () => {
+  it('find word at beginning', async () => {
+    assert.equal(await run('indexOf("hello world", "hello")'), 0);
+  });
+
+  it('find word in middle', async () => {
+    assert.equal(await run('indexOf("hello world", "world")'), 6);
+  });
+
+  it('not found', async () => {
+    assert.equal(await run('indexOf("hello world", "xyz")'), -1);
+  });
+
+  it('empty needle', async () => {
+    assert.equal(await run('indexOf("hello", "")'), 0);
+  });
+
+  it('single char', async () => {
+    assert.equal(await run('indexOf("hello", "l")'), 2);
+  });
+
+  it('needle longer than haystack', async () => {
+    assert.equal(await run('indexOf("hi", "hello world")'), -1);
+  });
+
+  it('indexOf with variables', async () => {
+    assert.equal(await run(`
+      let s = "the quick brown fox";
+      let target = "quick";
+      indexOf(s, target)
+    `), 4);
+  });
+
+  it('indexOf in conditional', async () => {
+    assert.equal(await run(`
+      let s = "hello world";
+      if (indexOf(s, "world") >= 0) { 1 } else { 0 }
+    `), 1);
+  });
+});

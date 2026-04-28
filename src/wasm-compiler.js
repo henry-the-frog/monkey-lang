@@ -55,6 +55,7 @@ class WasmCompiler {
     this._ensureCapFuncIdx = null; // lazily added __array_ensure_cap function
     this._strConcatFuncIdx = null; // lazily added __str_concat function
     this._strEqFuncIdx = null; // lazily added __str_eq function
+    this._indexOfFuncIdx = null; // lazily added __str_indexOf function
     this._needsMemory = false; // set when arrays or dynamic allocation needed
     this._anonCounter = 0; // counter for anonymous function names
     this._anonMap = new Map(); // FunctionLiteral node → name string
@@ -105,6 +106,7 @@ class WasmCompiler {
       this._getArrayEnsureCapFunc(); // adds __array_ensure_cap before any user functions
       this._getStrConcatFunc(); // adds __str_concat before any user functions
       this._getStrEqFunc(); // adds __str_eq before any user functions
+      this._getIndexOfFunc(); // adds __str_indexOf before any user functions
     }
 
     // Pass 0.5: Process top-level let bindings as globals (non-function values)
@@ -392,6 +394,154 @@ class WasmCompiler {
     return funcIdx;
   }
 
+  // __str_indexOf(haystack: i32, needle: i32) -> i32 (index or -1)
+  _getIndexOfFunc() {
+    if (this._indexOfFuncIdx !== null) return this._indexOfFuncIdx;
+    
+    const typeIdx = this.module.addType([WASM_TYPE.I32, WASM_TYPE.I32], [WASM_TYPE.I32]);
+    
+    // Params: 0=haystack, 1=needle
+    // Locals: 2=hLen, 3=nLen, 4=i, 5=j, 6=matched
+    const body = [
+      // hLen = load(haystack)
+      WasmOp.local_get, 0,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 2,
+      
+      // nLen = load(needle)
+      WasmOp.local_get, 1,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 3,
+      
+      // if nLen == 0, return 0
+      WasmOp.local_get, 3,
+      WasmOp.i32_eqz,
+      WasmOp.if_, 0x40,
+        WasmOp.i32_const, 0,
+        WasmOp.return_,
+      WasmOp.end,
+      
+      // if nLen > hLen, return -1
+      WasmOp.local_get, 3,
+      WasmOp.local_get, 2,
+      WasmOp.i32_gt_u,
+      WasmOp.if_, 0x40,
+        ...encodeSLEB128(-1).flatMap(b => [WasmOp.i32_const, ...encodeSLEB128(-1)]),
+      WasmOp.end,
+    ];
+    
+    // Hmm, the -1 encoding is tricky. Let me use a simpler approach:
+    // Actually let me rewrite this more carefully.
+    
+    // Rewrite with cleaner logic:
+    const body2 = [
+      // hLen = load(haystack)
+      WasmOp.local_get, 0,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 2,
+      
+      // nLen = load(needle)
+      WasmOp.local_get, 1,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 3,
+      
+      // if nLen == 0, return 0
+      WasmOp.local_get, 3,
+      WasmOp.i32_eqz,
+      WasmOp.if_, 0x40,
+        WasmOp.i32_const, 0,
+        WasmOp.return_,
+      WasmOp.end,
+      
+      // Outer loop: i = 0; while (i <= hLen - nLen)
+      WasmOp.i32_const, 0,
+      WasmOp.local_set, 4, // i = 0
+      
+      WasmOp.block, 0x40, // outer_break
+        WasmOp.loop, 0x40, // outer_continue
+          // if i > hLen - nLen, break
+          WasmOp.local_get, 4,
+          WasmOp.local_get, 2,
+          WasmOp.local_get, 3,
+          WasmOp.i32_sub,
+          WasmOp.i32_gt_s,
+          WasmOp.br_if, 1,
+          
+          // Inner loop: compare needle bytes
+          WasmOp.i32_const, 0,
+          WasmOp.local_set, 5, // j = 0
+          WasmOp.i32_const, 1,
+          WasmOp.local_set, 6, // matched = 1
+          
+          WasmOp.block, 0x40, // inner_break
+            WasmOp.loop, 0x40, // inner_continue
+              WasmOp.local_get, 5,
+              WasmOp.local_get, 3,
+              WasmOp.i32_ge_u,
+              WasmOp.br_if, 1, // j >= nLen → break
+              
+              // Compare haystack[4+i+j] vs needle[4+j]
+              WasmOp.local_get, 0, // haystack
+              WasmOp.i32_const, 4,
+              WasmOp.i32_add,
+              WasmOp.local_get, 4, // i
+              WasmOp.i32_add,
+              WasmOp.local_get, 5, // j
+              WasmOp.i32_add,
+              WasmOp.i32_load8_u, 0, 0,
+              
+              WasmOp.local_get, 1, // needle
+              WasmOp.i32_const, 4,
+              WasmOp.i32_add,
+              WasmOp.local_get, 5, // j
+              WasmOp.i32_add,
+              WasmOp.i32_load8_u, 0, 0,
+              
+              WasmOp.i32_ne,
+              WasmOp.if_, 0x40,
+                WasmOp.i32_const, 0,
+                WasmOp.local_set, 6, // matched = 0
+                WasmOp.br, 2, // break inner
+              WasmOp.end,
+              
+              // j++
+              WasmOp.local_get, 5,
+              WasmOp.i32_const, 1,
+              WasmOp.i32_add,
+              WasmOp.local_set, 5,
+              WasmOp.br, 0, // continue inner
+            WasmOp.end,
+          WasmOp.end,
+          
+          // if matched, return i
+          WasmOp.local_get, 6,
+          WasmOp.if_, 0x40,
+            WasmOp.local_get, 4,
+            WasmOp.return_,
+          WasmOp.end,
+          
+          // i++
+          WasmOp.local_get, 4,
+          WasmOp.i32_const, 1,
+          WasmOp.i32_add,
+          WasmOp.local_set, 4,
+          WasmOp.br, 0, // continue outer
+        WasmOp.end,
+      WasmOp.end,
+      
+      // Not found: return -1
+      ...encodeSLEB128(-1).reduce((acc, _) => acc, []),
+      WasmOp.i32_const, ...encodeSLEB128(-1),
+    ];
+    
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [
+      { count: 5, type: WASM_TYPE.I32 } // hLen, nLen, i, j, matched
+    ], body2);
+    this._indexOfFuncIdx = funcIdx;
+    return funcIdx;
+  }
+
   // Ensure memory exists and heap pointer global is initialized
   _ensureMemory() {
     if (this._needsMemory) return;
@@ -644,6 +794,7 @@ class WasmCompiler {
         const name = expr.function.value;
         if (name === 'len') return 'int';
         if (name === 'push') return 'int';
+        if (name === 'indexOf') return 'int';
         if (name === 'map' || name === 'filter') return 'array';
         if (name === 'charAt' || name === 'substring') return 'string';
       }
@@ -1112,6 +1263,24 @@ class WasmCompiler {
     body.push(WasmOp.br, 0);          // br to loop start (continue)
     body.push(WasmOp.end);            // end loop
     body.push(WasmOp.end);            // end block
+  }
+
+  // indexOf(haystack, needle) → returns first index of needle in haystack, or -1
+  // Uses a naive O(n*m) algorithm — sufficient for reasonable string sizes
+  _compileIndexOf(haystackExpr, needleExpr, body) {
+    const indexOfIdx = this._getIndexOfFunc();
+    
+    // Evaluate haystack ptr
+    this._compileExpr(haystackExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    
+    // Evaluate needle ptr
+    this._compileExpr(needleExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    
+    // Call __str_indexOf(haystack, needle)
+    body.push(WasmOp.call, ...encodeULEB128(indexOfIdx));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
   }
 
   // charAt(str, idx) → returns a new 1-character string
@@ -1884,6 +2053,12 @@ class WasmCompiler {
       // Built-in: substring(string, start, end) — returns substring
       if (funcName === 'substring' && expr.arguments.length === 3) {
         this._compileSubstring(expr.arguments[0], expr.arguments[1], expr.arguments[2], body);
+        return;
+      }
+      
+      // Built-in: indexOf(string, target) — returns first index of target, or -1
+      if (funcName === 'indexOf' && expr.arguments.length === 2) {
+        this._compileIndexOf(expr.arguments[0], expr.arguments[1], body);
         return;
       }
       
