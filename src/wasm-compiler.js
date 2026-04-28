@@ -50,6 +50,7 @@ class WasmCompiler {
     this._strConcatImport = null; // lazily added on first string concat
     this._heapBaseGlobal = null; // global for heap pointer (bump allocator)
     this._allocFuncIdx = null; // lazily added __alloc function
+    this._ensureCapFuncIdx = null; // lazily added __array_ensure_cap function
     this._needsMemory = false; // set when arrays or dynamic allocation needed
     this._anonCounter = 0; // counter for anonymous function names
     this._anonMap = new Map(); // FunctionLiteral node → name string
@@ -97,6 +98,7 @@ class WasmCompiler {
     // Pass 0.25: Scan for arrays/memory needs and set up allocator early
     if (this._programNeedsMemory(program)) {
       this._getAllocFunc(); // adds __alloc function before any user functions
+      this._getArrayEnsureCapFunc(); // adds __array_ensure_cap before any user functions
     }
 
     // Pass 0.5: Process top-level let bindings as globals (non-function values)
@@ -227,35 +229,191 @@ class WasmCompiler {
     const typeIdx = this.module.addType([WASM_TYPE.I32], [WASM_TYPE.I32]);
     
     // Function body:
-    //   local $ptr i32
-    //   global.get $heap_base    ;; ptr = heap_base
-    //   local.set $ptr
-    //   global.get $heap_base
-    //   local.get 0              ;; size param
-    //   i32.add
-    //   i32.const 3
-    //   i32.add
-    //   i32.const -4             ;; ~3 = 0xFFFFFFFC
-    //   i32.and                  ;; align to 4 bytes
-    //   global.set $heap_base
-    //   local.get $ptr           ;; return old pointer
+    //   local $ptr i32, $new_top i32
+    //   ptr = heap_base
+    //   new_top = align4(heap_base + size)
+    //   // Grow memory if needed
+    //   while (new_top > memory.size * 65536) { memory.grow(1) }
+    //   heap_base = new_top
+    //   return ptr
     const body = [
+      // ptr = heap_base
       WasmOp.global_get, ...encodeULEB128(heapGlobal),
-      WasmOp.local_set, 1, // local 1 = $ptr (local 0 is the size param)
+      WasmOp.local_set, 1, // local 1 = $ptr
+      
+      // new_top = align4(heap_base + size)
       WasmOp.global_get, ...encodeULEB128(heapGlobal),
-      WasmOp.local_get, 0, // size
+      WasmOp.local_get, 0, // size param
       WasmOp.i32_add,
       WasmOp.i32_const, 3,
       WasmOp.i32_add,
       WasmOp.i32_const, ...encodeSLEB128(-4), // 0xFFFFFFFC
       WasmOp.i32_and,
+      WasmOp.local_set, 2, // local 2 = $new_top
+      
+      // Grow memory loop: while (new_top > memory.size * 65536) { memory.grow(1) }
+      WasmOp.block, 0x40,
+        WasmOp.loop, 0x40,
+          // if new_top <= memory.size * 65536, break
+          WasmOp.local_get, 2,
+          WasmOp.memory_size, 0, // memory.size (returns pages)
+          WasmOp.i32_const, ...encodeSLEB128(65536),
+          WasmOp.i32_mul,
+          WasmOp.i32_le_u,
+          WasmOp.br_if, 1, // break out of block
+          
+          // memory.grow(1) — grow by 1 page (64KB)
+          WasmOp.i32_const, 1,
+          WasmOp.memory_grow, 0,
+          // If grow returns -1, we're out of memory — just continue and let it trap
+          WasmOp.drop,
+          
+          WasmOp.br, 0, // continue loop
+        WasmOp.end,
+      WasmOp.end,
+      
+      // heap_base = new_top
+      WasmOp.local_get, 2,
       WasmOp.global_set, ...encodeULEB128(heapGlobal),
-      WasmOp.local_get, 1, // return ptr
+      
+      // return ptr
+      WasmOp.local_get, 1,
     ];
     
     const funcIdx = this.module.imports.length + this.module.functions.length;
-    this.module.addFunction(typeIdx, [{ count: 1, type: WASM_TYPE.I32 }], body);
+    this.module.addFunction(typeIdx, [{ count: 2, type: WASM_TYPE.I32 }], body);
     this._allocFuncIdx = funcIdx;
+    return funcIdx;
+  }
+
+  // Get the __array_ensure_cap function index (lazily created)
+  // __array_ensure_cap(ptr: i32) -> new_ptr: i32
+  // If len >= cap, allocates a new array with 2x capacity, copies data, returns new ptr.
+  // Otherwise returns the original ptr unchanged.
+  _getArrayEnsureCapFunc() {
+    if (this._ensureCapFuncIdx !== null) return this._ensureCapFuncIdx;
+    
+    const allocIdx = this._getAllocFunc();
+    const typeIdx = this.module.addType([WASM_TYPE.I32], [WASM_TYPE.I32]);
+    
+    // Locals: param0=ptr, local1=len, local2=cap, local3=newCap, local4=newPtr, local5=i
+    // Function body:
+    //   len = i32.load(ptr)        // ptr+0 = length
+    //   cap = i32.load(ptr, 4)     // ptr+4 = capacity
+    //   if (len < cap) return ptr  // fast path: capacity available
+    //   newCap = cap * 2
+    //   if (newCap < 8) newCap = 8 // minimum capacity
+    //   newPtr = __alloc(8 + newCap * 4)
+    //   store len at newPtr+0, newCap at newPtr+4
+    //   copy elements from ptr+8 to newPtr+8 (len * 4 bytes)
+    //   return newPtr
+    const body = [
+      // len = load(ptr+0)
+      WasmOp.local_get, 0,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 1,
+      
+      // cap = load(ptr+4)
+      WasmOp.local_get, 0,
+      WasmOp.i32_load, 2, 4,
+      WasmOp.local_set, 2,
+      
+      // if (len < cap) return ptr (fast path)
+      WasmOp.local_get, 1,
+      WasmOp.local_get, 2,
+      WasmOp.i32_lt_u,
+      WasmOp.if_, 0x40, // void block
+        WasmOp.local_get, 0,
+        WasmOp.return_,
+      WasmOp.end,
+      
+      // newCap = cap * 2
+      WasmOp.local_get, 2,
+      WasmOp.i32_const, 2,
+      WasmOp.i32_mul,
+      WasmOp.local_set, 3,
+      
+      // if (newCap < 8) newCap = 8
+      WasmOp.local_get, 3,
+      WasmOp.i32_const, 8,
+      WasmOp.i32_lt_u,
+      WasmOp.if_, 0x40,
+        WasmOp.i32_const, 8,
+        WasmOp.local_set, 3,
+      WasmOp.end,
+      
+      // newPtr = __alloc(8 + newCap * 4)
+      WasmOp.local_get, 3,
+      WasmOp.i32_const, 4,
+      WasmOp.i32_mul,
+      WasmOp.i32_const, 8,
+      WasmOp.i32_add,
+      WasmOp.call, ...encodeULEB128(allocIdx),
+      WasmOp.local_set, 4,
+      
+      // store len at newPtr+0
+      WasmOp.local_get, 4,
+      WasmOp.local_get, 1,
+      WasmOp.i32_store, 2, 0,
+      
+      // store newCap at newPtr+4
+      WasmOp.local_get, 4,
+      WasmOp.local_get, 3,
+      WasmOp.i32_store, 2, 4,
+      
+      // copy loop: i = 0; while (i < len) { newPtr[8+i*4] = ptr[8+i*4]; i++ }
+      WasmOp.i32_const, 0,
+      WasmOp.local_set, 5, // i = 0
+      
+      WasmOp.block, 0x40,  // outer block (break target)
+        WasmOp.loop, 0x40, // loop
+          // break if i >= len
+          WasmOp.local_get, 5,
+          WasmOp.local_get, 1,
+          WasmOp.i32_ge_u,
+          WasmOp.br_if, 1,
+          
+          // newPtr + 8 + i*4
+          WasmOp.local_get, 4,
+          WasmOp.i32_const, 8,
+          WasmOp.i32_add,
+          WasmOp.local_get, 5,
+          WasmOp.i32_const, 4,
+          WasmOp.i32_mul,
+          WasmOp.i32_add,
+          
+          // load from ptr + 8 + i*4
+          WasmOp.local_get, 0,
+          WasmOp.i32_const, 8,
+          WasmOp.i32_add,
+          WasmOp.local_get, 5,
+          WasmOp.i32_const, 4,
+          WasmOp.i32_mul,
+          WasmOp.i32_add,
+          WasmOp.i32_load, 2, 0,
+          
+          // store
+          WasmOp.i32_store, 2, 0,
+          
+          // i++
+          WasmOp.local_get, 5,
+          WasmOp.i32_const, 1,
+          WasmOp.i32_add,
+          WasmOp.local_set, 5,
+          
+          WasmOp.br, 0, // continue loop
+        WasmOp.end,
+      WasmOp.end,
+      
+      // return newPtr
+      WasmOp.local_get, 4,
+    ];
+    
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [
+      { count: 5, type: WASM_TYPE.I32 } // len, cap, newCap, newPtr, i
+    ], body);
+    this._ensureCapFuncIdx = funcIdx;
     return funcIdx;
   }
 
@@ -568,7 +726,8 @@ class WasmCompiler {
     body.push(WasmOp.end);            // end block
   }
 
-  // Compile push(array, value) — inline, no reallocation (uses pre-allocated capacity)
+  // Compile push(array, value) — with reallocation support
+  // Calls __array_ensure_cap to grow array if needed, then stores the value.
   // Returns new length
   _compileArrayPush(arrExpr, valExpr, body) {
     // Get array pointer into a temp local
@@ -581,6 +740,28 @@ class WasmCompiler {
     this._compileExpr(arrExpr, body);
     if (this.useI64) body.push(WasmOp.i32_wrap_i64);
     body.push(WasmOp.local_set, ...encodeULEB128(ptrLocal));
+
+    // Call __array_ensure_cap(ptr) — returns possibly-new ptr
+    const ensureCapIdx = this._getArrayEnsureCapFunc();
+    body.push(WasmOp.local_get, ...encodeULEB128(ptrLocal));
+    body.push(WasmOp.call, ...encodeULEB128(ensureCapIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(ptrLocal)); // update ptr to new location
+
+    // Also update the variable holding the array if it's a simple identifier
+    // This ensures subsequent pushes use the new pointer
+    if (arrExpr instanceof ast.Identifier) {
+      const name = arrExpr.value;
+      const localIdx = this.currentLocals?.get(name);
+      if (localIdx !== undefined) {
+        body.push(WasmOp.local_get, ...encodeULEB128(ptrLocal));
+        if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+        body.push(WasmOp.local_set, ...encodeULEB128(localIdx));
+      } else if (this.globals.has(name)) {
+        body.push(WasmOp.local_get, ...encodeULEB128(ptrLocal));
+        if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+        body.push(WasmOp.global_set, ...encodeULEB128(this.globals.get(name).index));
+      }
+    }
 
     // Read current length
     body.push(WasmOp.local_get, ...encodeULEB128(ptrLocal));
