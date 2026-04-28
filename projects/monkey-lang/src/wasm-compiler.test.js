@@ -2740,6 +2740,137 @@ describe('Array Push Performance', () => {
 });
 
 // Hash-stored Closures + Deep Nesting Regression Tests (Apr 28, 2026)
+describe('Do-While Edge Cases', () => {
+  it('single iteration (condition false immediately after first)', async () => {
+    assert.strictEqual(await compileAndRun('let x = 100; do { x = x + 1; } while (x < 50); x'), 101);
+  });
+
+  it('nested do-while', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let total = 0;
+      let i = 0;
+      do {
+        let j = 0;
+        do {
+          total = total + 1;
+          j = j + 1;
+        } while (j < 3);
+        i = i + 1;
+      } while (i < 4);
+      total
+    `), 12);
+  });
+
+  it('break from do-while', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let x = 0;
+      do {
+        x = x + 1;
+        if (x == 5) { break; }
+      } while (x < 100);
+      x
+    `), 5);
+  });
+
+  it('do-while with closure capture', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let count = 0;
+      let inc = fn() { count = count + 1; };
+      do {
+        inc();
+      } while (count < 10);
+      count
+    `), 10);
+  });
+
+  it('do-while modifying array', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let arr = [1];
+      let i = 0;
+      do {
+        arr = push(arr, last(arr) * 2);
+        i = i + 1;
+      } while (i < 5);
+      len(arr)
+    `), 6);
+  });
+});
+
+describe('For-In Edge Cases', () => {
+  it('empty array', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let sum = 0;
+      for (x in []) { sum = sum + x; }
+      sum
+    `), 0);
+  });
+
+  it('single element', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let sum = 0;
+      for (x in [42]) { sum = sum + x; }
+      sum
+    `), 42);
+  });
+
+  it('nested for-in', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let total = 0;
+      for (x in [1, 2, 3]) {
+        for (y in [10, 20]) {
+          total = total + x * y;
+        }
+      }
+      total
+    `), 180);
+  });
+
+  it('for-in with break', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let sum = 0;
+      for (x in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+        if (x > 5) { break; }
+        sum = sum + x;
+      }
+      sum
+    `), 15);
+  });
+
+  it('for-in over range with step', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let sum = 0;
+      for (x in 0..5) { sum = sum + x; }
+      sum
+    `), 10);
+  });
+
+  it('for-in with closure creation', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let fns = [];
+      for (x in [10, 20, 30]) {
+        fns = push(fns, fn() { x });
+      }
+      fns[0]() + fns[1]() + fns[2]()
+    `), 60);
+  });
+
+  it('for-in with mutation in body', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let result = 1;
+      for (x in [2, 3, 4, 5]) {
+        result = result * x;
+      }
+      result
+    `), 120);
+  });
+
+  it('for-in string characters', async () => {
+    const lines = [];
+    await compileAndRun('for (ch in "xyz") { puts(ch); }', { outputLines: lines });
+    assert.deepStrictEqual(lines, ['x', 'y', 'z']);
+  });
+});
+
 describe('Box/Cell Advanced Patterns', () => {
   it('counter object pattern with hash', async () => {
     assert.strictEqual(await compileAndRun(`
