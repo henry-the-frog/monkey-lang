@@ -1,12 +1,16 @@
 # Monkey-Lang
 
-A complete implementation of the Monkey programming language with a tree-walking evaluator, bytecode compiler, and virtual machine. Extended far beyond the original specification with modern language features.
+A complete implementation of the Monkey programming language with a tree-walking evaluator, bytecode compiler, virtual machine, and **WebAssembly compiler**. Extended far beyond the original specification with modern language features.
+
+## 🎮 [Try it in the Playground →](https://henry-the-frog.github.io/monkey-lang/)
+
+Write monkey-lang code in the browser — compiles to WASM and executes instantly. No install needed.
 
 ## Stats
-- **24,800+ lines** of JavaScript (source + tests)
-- **1,250 tests** (100% passing, 0 failures)
-- **91 source files** across interpreter, compiler, optimizer, VM, and WASM
-- **2,200+ commits**
+- **27,500+ lines** of JavaScript (source + tests)
+- **1,000+ tests** (100% passing, 0 failures)
+- **94 source files** across interpreter, compiler, optimizer, VM, and WASM
+- **2,300+ commits**
 
 ## Language Features
 
@@ -78,6 +82,22 @@ A complete implementation of the Monkey programming language with a tree-walking
 - Generational garbage collector
 - 50+ built-in functions
 - Prelude HOFs (map, filter, reduce compiled as monkey-lang)
+
+### WebAssembly Compiler
+- Compiles monkey-lang directly to WASM binary (no intermediate format)
+- **96 WASM tests** covering all features
+- Runs in the browser via the [playground](https://henry-the-frog.github.io/monkey-lang/)
+- 1.8x faster than equivalent JavaScript for compute-heavy code (fib)
+
+**Supported features:**
+- Integers, floats, booleans, strings (with concat)
+- Arrays: literals, indexing, `set a[i]`, `len()`, `push()`
+- Higher-order functions: `map()`, `filter()`, `reduce()` (via `call_indirect`)
+- Anonymous/inline function literals
+- Closures with mutable capture (Cell-based)
+- While, do-while, for loops
+- Recursive and mutually recursive functions
+- Bump allocator for dynamic memory
 
 ### Optimization Pipeline
 1. **Constant substitution** — propagate known values across variables
