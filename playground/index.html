@@ -514,17 +514,36 @@ window.run = async function run() {
     resultEl.textContent = `→ ${res.result}`;
     output.appendChild(resultEl);
     
-    const infoEl = document.createElement('div');
-    infoEl.className = 'output-wasm';
-    infoEl.textContent = `\nWASM binary: ${res.wasmSize} bytes`;
-    output.appendChild(infoEl);
+    const statsEl = document.createElement('div');
+    statsEl.className = 'output-wasm';
+    statsEl.innerHTML = `\nWASM binary: ${res.wasmSize.toLocaleString()} bytes\n` +
+      `Compile:     ${res.compileTime.toFixed(2)}ms\n` +
+      `Execute:     ${res.execTime < 0.01 ? '<0.01' : res.execTime.toFixed(2)}ms\n` +
+      `Total:       ${(res.compileTime + res.execTime).toFixed(2)}ms`;
+    output.appendChild(statsEl);
   } catch (e) {
     statusDot.className = 'status-dot error';
     timing.textContent = '';
     output.innerHTML = '';
     const errEl = document.createElement('div');
     errEl.className = 'output-error';
-    errEl.textContent = `Error: ${e.message}`;
+    
+    // Friendly error messages
+    let msg = e.message;
+    if (msg.includes('Unsupported expression')) {
+      const match = msg.match(/: (\w+)/);
+      const feature = match ? match[1] : 'expression';
+      msg = `This feature isn't supported in WASM mode yet: ${feature}\n\n` +
+        `The WASM compiler handles: integers, floats, booleans, strings,\n` +
+        `functions, closures, if/else, while, for, let/set, and recursion.\n\n` +
+        `Arrays, classes, do-while, and pipe operators coming soon!`;
+    } else if (msg.includes('Parse error')) {
+      msg = `Syntax error:\n${msg}`;
+    } else if (msg.includes('Undefined variable')) {
+      msg = msg.replace('in WASM compilation', '');
+    }
+    
+    errEl.textContent = msg;
     output.appendChild(errEl);
   } finally {
     runBtn.disabled = false;
