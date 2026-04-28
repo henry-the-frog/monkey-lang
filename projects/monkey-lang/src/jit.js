@@ -62,6 +62,7 @@ export const IR = {
   CONST_NULL:   'const_null',
   CONST_OBJ:    'const_obj',     // value: MonkeyObject ref
   LOAD_LOCAL:   'load_local',    // slot: number
+  LOAD_STACK:   'load_stack',    // stackOffset: number, value: any — operand stack value from parent trace
   LOAD_GLOBAL:  'load_global',   // index: number
   LOAD_FREE:    'load_free',     // index: number
   LOAD_CONST:   'load_const',    // index: number (from constant pool)
@@ -266,6 +267,30 @@ export class TraceRecorder {
     this.trustedTypes.clear();
     this.parentTrace = parentTrace;
     this.parentGuardIdx = guardIdx;
+
+    // Initialize irStack from VM stack state at the guard exit point.
+    // The parent trace may have had values on the operand stack when the guard
+    // fired. These values were restored to the VM stack by _executeTrace.
+    // Emit LOAD_STACK instructions so the side trace can reference them.
+    const frame = this.vm.currentFrame();
+    const numLocals = frame.closure.fn.numLocals;
+    this.trace.numLocals = numLocals;
+    const stackBase = frame.basePointer + numLocals;
+    const stackDepth = this.vm.sp - stackBase;
+    for (let i = 0; i < stackDepth; i++) {
+      const val = this.vm.stack[stackBase + i];
+      // Emit a CONST or LOAD instruction for each stack value
+      const ref = this.trace.addInst(IR.LOAD_STACK, { stackOffset: i, value: val });
+      this.irStack.push(ref);
+      // Track the type
+      if (val && val.constructor && val.constructor.name === 'MonkeyInteger') {
+        this.typeMap.set(ref, 'int');
+      } else if (val && val.constructor && val.constructor.name === 'MonkeyString') {
+        this.typeMap.set(ref, 'string');
+      } else if (val && val.constructor && val.constructor.name === 'MonkeyBoolean') {
+        this.typeMap.set(ref, 'bool');
+      }
+    }
 
     if (JIT_EVENTS_FULL) {
       emitEvent({
@@ -734,6 +759,13 @@ export class JIT {
     if (!this.enabled) return false;
     if (trace.sideTraces[guardIdx]) return false; // already have one
     if (trace._sideTraceCount >= MAX_SIDE_TRACES) return false;
+    // Don't record side traces for guards with operand stack values.
+    // The root trace doesn't maintain the VM operand stack, so side traces
+    // can't reliably read stack values that were only in the root's virtual state.
+    const guardInst = trace.ir[guardIdx];
+    if (guardInst && guardInst.snapshot && guardInst.snapshot.irStack && guardInst.snapshot.irStack.length > 0) {
+      return false;
+    }
     const exitCount = trace.sideExits.get(guardIdx) || 0;
     return exitCount >= HOT_EXIT_THRESHOLD;
   }
@@ -1088,7 +1120,7 @@ export class TraceCompiler {
       IR.LOOP_START, IR.LOOP_END,
       IR.CONST_INT, IR.CONST_BOOL, IR.CONST_STRING, IR.CONST_NULL,
       IR.LOAD_GLOBAL, IR.STORE_GLOBAL,
-      IR.LOAD_LOCAL, IR.STORE_LOCAL,
+      IR.LOAD_LOCAL, IR.STORE_LOCAL, IR.LOAD_STACK,
       IR.LOAD_FREE, IR.STORE_FREE,
       IR.GUARD_INT, IR.GUARD_BOOL, IR.GUARD_TRUTHY, IR.GUARD_FALSY,
       IR.GUARD_STRING, IR.GUARD_ARRAY,
@@ -1532,6 +1564,14 @@ export class TraceCompiler {
           } else {
             this.lines.push(`  const ${v} = __stack[__bp + ${inst.operands.slot}];`);
           }
+          break;
+        }
+
+        case IR.LOAD_STACK: {
+          // Load a value from the VM operand stack (used in side traces
+          // to reference values left on the stack by the parent trace)
+          const numLocals = this.trace.numLocals || 0;
+          this.lines.push(`  const ${v} = __stack[__bp + ${numLocals + inst.operands.stackOffset}];`);
           break;
         }
 
@@ -2057,6 +2097,12 @@ export class TraceCompiler {
           break;
         }
 
+        case IR.LOAD_STACK: {
+          const numLocals = this.trace.numLocals || 0;
+          this.lines.push(`  const ${v} = __stack[__bp + ${numLocals + inst.operands.stackOffset}];`);
+          break;
+        }
+
         case IR.LOAD_GLOBAL: {
           this.lines.push(`  const ${v} = __globals[${inst.operands.index}];`);
           break;
@@ -2441,6 +2487,11 @@ export class TraceOptimizer {
         }
         for (const [idx, ref] of inst.snapshot.globals) {
           if (ref === oldRef) inst.snapshot.globals.set(idx, newRef);
+        }
+        if (inst.snapshot.irStack) {
+          for (let j = 0; j < inst.snapshot.irStack.length; j++) {
+            if (inst.snapshot.irStack[j] === oldRef) inst.snapshot.irStack[j] = newRef;
+          }
         }
       }
     }
@@ -2855,6 +2906,13 @@ export class TraceOptimizer {
         }
         for (const [idx, ref] of inst.snapshot.globals) {
           if (oldToNew.has(ref)) inst.snapshot.globals.set(idx, oldToNew.get(ref));
+        }
+        if (inst.snapshot.irStack) {
+          for (let j = 0; j < inst.snapshot.irStack.length; j++) {
+            if (oldToNew.has(inst.snapshot.irStack[j])) {
+              inst.snapshot.irStack[j] = oldToNew.get(inst.snapshot.irStack[j]);
+            }
+          }
         }
       }
     }
@@ -3630,6 +3688,14 @@ export class TraceOptimizer {
         }
         for (const [idx, ref] of inst.snapshot.globals) {
           if (remap.has(ref)) inst.snapshot.globals.set(idx, remap.get(ref));
+        }
+        // Remap irStack refs for operand stack restoration
+        if (inst.snapshot.irStack) {
+          for (let i = 0; i < inst.snapshot.irStack.length; i++) {
+            if (remap.has(inst.snapshot.irStack[i])) {
+              inst.snapshot.irStack[i] = remap.get(inst.snapshot.irStack[i]);
+            }
+          }
         }
       }
     }

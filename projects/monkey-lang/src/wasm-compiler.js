@@ -42,6 +42,16 @@ class Scope {
     this.vars.set(name, { index, type, knownInt });
   }
 
+  // Mark a variable as captured from a closure environment (needs write-back on mutation)
+  markCaptured(name, envPtrLocal, envOffset) {
+    const v = this.vars.get(name);
+    if (v) {
+      v.captured = true;
+      v.envPtrLocal = envPtrLocal;
+      v.envOffset = envOffset;
+    }
+  }
+
   resolve(name) {
     if (this.vars.has(name)) return this.vars.get(name);
     if (this.parent) return this.parent.resolve(name);
@@ -93,7 +103,7 @@ export class WasmCompiler {
     };
 
     // Add 1 page of memory for strings/arrays
-    this.builder.addMemory(4); // 4 pages = 256KB
+    this.builder.addMemory(64, 256); // 64 pages initial (4MB), max 256 pages (16MB)
     
     // Exception handling: create a tag for monkey-lang exceptions (carries i32 value)
     const exTagType = this.builder.addType([ValType.i32], []);
@@ -169,6 +179,10 @@ export class WasmCompiler {
     this.nextParamIndex = 0;
     this.nextLocalIndex = 0;
 
+    // Infer return types BEFORE compiling main body,
+    // so returnsInt/returnsIntClosure are available during main body compilation
+    this._inferReturnTypes();
+
     let lastIsExpr = false;
     for (let i = 0; i < program.statements.length; i++) {
       const stmt = program.statements[i];
@@ -213,9 +227,7 @@ export class WasmCompiler {
     }
 
     // Now compile all collected functions
-    // Infer return types for direct functions (enables i32_add for result arithmetic)
-    this._inferReturnTypes();
-    
+    // (Return types already inferred before main body compilation)
     this._compileFunctions();
 
     // Add string constant data segments
@@ -234,13 +246,15 @@ export class WasmCompiler {
     // Finalize closure table
     if (this.closureFuncs.length > 0) {
       const tableSize = this.closureFuncs.length;
-      this.builder.addTable(ValType.funcref, tableSize, tableSize);
+      const tableIdx = this.builder.addTable(ValType.funcref, tableSize, tableSize);
       // Map function indices by their assigned table slot, not insertion order
       const funcIndices = new Array(tableSize);
       for (const cf of this.closureFuncs) {
         funcIndices[cf.tableIndex] = cf.wasmFuncIndex;
       }
       this.builder.addElement(0, 0, funcIndices);
+      // Export the table so host imports (map/filter/reduce) can call closures
+      this.builder.addExport('__indirect_function_table', ExportKind.Table, tableIdx);
     }
 
     // Peephole optimize all function bodies
@@ -369,6 +383,47 @@ export class WasmCompiler {
     const reverseIdx = this.builder.addImport('env', '__reverse', [ValType.i32], [ValType.i32]);
     this._runtimeFuncs.reverse = reverseIdx;
 
+    // Higher-order function imports: map/filter/reduce/find/any/every
+    // These take (arr_ptr, closure_ptr) and call back into WASM via exported table
+    const mapIdx = this.builder.addImport('env', '__map', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.map = mapIdx;
+
+    const filterIdx = this.builder.addImport('env', '__filter', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.filter = filterIdx;
+
+    // __reduce(arr_ptr, closure_ptr, initial_value) → i32
+    const reduceIdx = this.builder.addImport('env', '__reduce', [ValType.i32, ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.reduce = reduceIdx;
+
+    const findIdx = this.builder.addImport('env', '__find', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.find = findIdx;
+
+    const anyIdx = this.builder.addImport('env', '__any', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.any = anyIdx;
+
+    const everyIdx = this.builder.addImport('env', '__every', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.every = everyIdx;
+
+    // sort(arr) or sort(arr, cmpFn) — sort takes optional comparator closure
+    const sortIdx = this.builder.addImport('env', '__sort', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.sort = sortIdx;
+
+    // forEach(arr, fn) — call fn for each element, returns 0 (null)
+    const forEachIdx = this.builder.addImport('env', '__forEach', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.forEach = forEachIdx;
+
+    // flatMap(arr, fn) — map + flatten one level
+    const flatMapIdx = this.builder.addImport('env', '__flatMap', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.flatMap = flatMapIdx;
+
+    // zip(arr1, arr2) — pair elements from two arrays
+    const zipIdx = this.builder.addImport('env', '__zip', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.zip = zipIdx;
+
+    // enumerate(arr) — pair each element with its index
+    const enumerateIdx = this.builder.addImport('env', '__enumerate', [ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.enumerate = enumerateIdx;
+
     // Import __slice from JS host: env.__slice(arr: i32, start: i32, end: i32) → i32
     const sliceIdx = this.builder.addImport('env', '__slice', [ValType.i32, ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.slice = sliceIdx;
@@ -431,23 +486,49 @@ export class WasmCompiler {
     const toFloatIdx = this.builder.addImport('env', '__to_float', [ValType.i32], [ValType.i32]);
     this._runtimeFuncs.toFloat = toFloatIdx;
 
-    // __alloc(size) → pointer — bump allocator, registers with GC for tracking
+    // __alloc(size) → pointer — bump allocator with memory growth
     const { index: allocIdx, body: allocBody } = this.builder.addFunction(
       [ValType.i32], [ValType.i32]
     );
     allocBody.addLocal(ValType.i32); // local[1] = ptr
+    allocBody.addLocal(ValType.i32); // local[2] = new_heap_ptr
     allocBody
       .globalGet(this.heapPtr) // ptr = heap_ptr
       .localTee(1)
       .localGet(0)             // size
-      .emit(Op.i32_add)        // heap_ptr + size
-      .globalSet(this.heapPtr) // heap_ptr = heap_ptr + size
-      // Register allocation with GC
-      .localGet(1)             // ptr
-      .localGet(0)             // size
-      .call(gcRegisterIdx);    // __gc_register(ptr, size)
-    allocBody.localGet(1);      // return old heap_ptr
+      .emit(Op.i32_add)        // new_heap_ptr = heap_ptr + size
+      .localTee(2);
+    // Check if we need to grow memory
+    allocBody
+      .emit(Op.memory_size, 0x00)  // memory_size in pages (memory 0)
+      .i32Const(16)
+      .emit(Op.i32_shl)            // current_mem_bytes = pages * 65536
+      .emit(Op.i32_gt_u);          // new_heap_ptr > current_mem_bytes?
+    allocBody.if_();                // if need growth
+    // Grow by needed pages + 16 extra pages for headroom
+    allocBody
+      .localGet(2)                  // new_heap_ptr
+      .emit(Op.memory_size, 0x00)
+      .i32Const(16)
+      .emit(Op.i32_shl)
+      .emit(Op.i32_sub)            // bytes_over = new_heap_ptr - current_bytes
+      .i32Const(16)
+      .emit(Op.i32_shr_u)          // pages_over = bytes_over / 65536
+      .i32Const(17)                 // + 16 + 1 for headroom
+      .emit(Op.i32_add)
+      .emit(Op.memory_grow, 0x00)  // grow by pages_over + 17
+      .emit(Op.drop);              // drop result
+    allocBody.end();                // end if
+
+    allocBody
+      .localGet(2)
+      .globalSet(this.heapPtr)      // heap_ptr = new_heap_ptr
+      .localGet(1)                  // ptr
+      .localGet(0)                  // size
+      .call(gcRegisterIdx);         // __gc_register(ptr, size)
+    allocBody.localGet(1);          // return old heap_ptr
     this._runtimeFuncs.alloc = allocIdx;
+    this.builder.addExport('__alloc', ExportKind.Func, allocIdx);
 
     // __len(ptr) → i32 — get length of string or array
     const { index: lenIdx, body: lenBody } = this.builder.addFunction(
@@ -718,11 +799,11 @@ export class WasmCompiler {
     this.globalScope.define('__push', pushIdx, 'func');
   }
   // Infer return types: if all return paths of a function return integers, mark it
+  // Also detect functions that return integer-returning closures
   _inferReturnTypes() {
     const funcNames = new Set(this.functions.map(f => f.name));
     
     // Fixed-point iteration for recursive functions
-    // Start by assuming all functions return int, then refine
     for (const func of this.functions) {
       func.returnsInt = true; // optimistic assumption
     }
@@ -734,6 +815,27 @@ export class WasmCompiler {
       
       for (const func of this.functions) {
         func.returnsInt = this._allReturnPathsInt(func.funcLit.body, func.funcLit.parameters, returnIntFuncs);
+      }
+    }
+    
+    // Detect functions that return integer-returning closures
+    // e.g., let adder = fn(x) { fn(y) { x + y } } → adder.returnsIntClosure = true
+    for (const func of this.functions) {
+      if (!func.returnsInt) {
+        // Check if the function returns a FunctionLiteral whose body returns int
+        const returnedClosure = this._getReturnedClosure(func.funcLit.body);
+        if (returnedClosure) {
+          // Include both the closure's own params and the outer function's params
+          // (outer params are captured variables that are also integers)
+          const outerParams = func.funcLit.parameters || [];
+          const closureParams = returnedClosure.parameters || [];
+          const allParams = [...closureParams, ...outerParams];
+          const closureReturnsInt = this._allReturnPathsInt(
+            returnedClosure.body, allParams,
+            new Set(this.functions.filter(f => f.returnsInt).map(f => f.name))
+          );
+          func.returnsIntClosure = closureReturnsInt;
+        }
       }
     }
   }
@@ -750,7 +852,12 @@ export class WasmCompiler {
       if (node instanceof ast.BooleanLiteral) return true;
       if (node instanceof ast.Identifier) return paramNames.has(node.value);
       if (node instanceof ast.InfixExpression) {
-        if (['-', '*', '/', '%', '<', '>', '<=', '>=', '==', '!='].includes(node.operator)) return true;
+        // Comparison operators always return int (boolean)
+        if (['<', '>', '<=', '>=', '==', '!='].includes(node.operator)) return true;
+        // Arithmetic operators return int only if both operands are int
+        if (['-', '*', '/', '%'].includes(node.operator)) {
+          return isIntExpr(node.left) && isIntExpr(node.right);
+        }
         if (node.operator === '+') return isIntExpr(node.left) && isIntExpr(node.right);
         return false;
       }
@@ -819,16 +926,35 @@ export class WasmCompiler {
       this.nextParamIndex = 0;
       this.nextLocalIndex = func.params.length;
 
-      // Bind parameters
+      // Bind parameters — mark as knownInt if the function only uses them
+      // in integer contexts (arithmetic, comparisons, calls to returnsInt functions)
+      // Always run _inferIntParams, not just for returnsInt functions.
+      // Functions returning closures may still have integer parameters
+      // (e.g., let adder = fn(x) { fn(y) { x + y } } — x is an int)
+      const intParams = this._inferIntParams(func.funcLit);
       for (const param of func.funcLit.parameters) {
         const name = param.value || param.token?.literal;
-        this.currentScope.define(name, this.nextParamIndex, ValType.i32);
+        this.currentScope.define(name, this.nextParamIndex, ValType.i32, intParams.has(name));
         this.nextParamIndex++;
       }
 
-      // Compile function body
+      // Compile function body (with tail-call optimization if applicable)
       const body = func.funcLit.body;
-      this._compileBlockReturning(body);
+      const tailCallInfo = this._detectTailRecursion(func.name, func.funcLit);
+      
+      if (tailCallInfo) {
+        // Tail-call optimization: wrap body in a loop
+        // The tail call becomes: set params, branch to loop start
+        this.currentFunc._tailCallEnabled = true;
+        this.currentFunc._tailCallDepth = this.blockDepth;
+        this.currentBody.loop(ValType.i32);  // loop (result i32)
+        this.blockDepth++;
+        this._compileBlockReturning(body);
+        this.blockDepth--;
+        this.currentBody.end();  // end loop
+      } else {
+        this._compileBlockReturning(body);
+      }
 
       this._scopeIdStack.pop();
       this.currentBody = prevBody;
@@ -998,6 +1124,18 @@ export class WasmCompiler {
         this._constVars.add(name);
       }
 
+      // Track if the bound value is a call to a named function (for return type tracking)
+      if (stmt.value instanceof ast.CallExpression && stmt.value.function instanceof ast.Identifier) {
+        const binding = this.currentScope.resolve(name);
+        if (binding) {
+          binding._initCall = stmt.value.function.value;
+          const calledFunc = this.functions.find(f => f.name === stmt.value.function.value);
+          if (calledFunc?.returnsIntClosure) {
+            binding.callReturnsInt = true;
+          }
+        }
+      }
+
       if (stmt.value) {
         this.compileNode(stmt.value);
         this.currentBody.localSet(localIdx);
@@ -1096,8 +1234,13 @@ export class WasmCompiler {
       this.compileThrowExpression(node);
     } else if (node instanceof ast.SelfExpression) {
       // self is local[0] in methods (env_ptr = instance hash)
+      // But if 'self' is a regular variable (e.g., closure parameter named 'self'),
+      // use the variable binding instead
       const binding = this.currentScope.resolve('self');
-      if (binding) {
+      if (binding && binding.index !== 0) {
+        // Regular variable named 'self' (not class env_ptr)
+        this.currentBody.localGet(binding.index);
+      } else if (binding) {
         this.currentBody.localGet(binding.index);
       } else {
         this.currentBody.i32Const(0);
@@ -1506,8 +1649,12 @@ export class WasmCompiler {
     if (node.function instanceof ast.Identifier) {
       const name = node.function.value;
 
+      // If the name is locally defined (user shadowed a builtin), use normal call path
+      const isLocallyDefined = (this.currentScope && this.currentScope.vars.has(name)) ||
+        this.functions.some(f => f.name === name);
+
       // Built-in: len(x)
-      if (name === 'len' && node.arguments.length === 1) {
+      if (!isLocallyDefined && name === 'len' && node.arguments.length === 1) {
         this.compileNode(node.arguments[0]);
         this.currentBody.call(this._runtimeFuncs.len);
         return;
@@ -1570,6 +1717,70 @@ export class WasmCompiler {
         // Import rest from JS host
         this.compileNode(node.arguments[0]);
         this.currentBody.call(this._runtimeFuncs.rest);
+        return;
+      }
+
+      // Higher-order builtins: map(arr, fn), filter(arr, fn), find(arr, fn), any(arr, fn), every(arr, fn)
+      if (!isLocallyDefined && ['map', 'filter', 'find', 'any', 'every'].includes(name) && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]); // array
+        this.compileNode(node.arguments[1]); // closure
+        this.currentBody.call(this._runtimeFuncs[name]);
+        return;
+      }
+
+      // Built-in: reduce(arr, fn, init) or reduce(arr, fn)
+      if (!isLocallyDefined && name === 'reduce' && (node.arguments.length === 2 || node.arguments.length === 3)) {
+        this.compileNode(node.arguments[0]); // array
+        this.compileNode(node.arguments[1]); // closure
+        if (node.arguments.length === 3) {
+          this.compileNode(node.arguments[2]); // initial value
+        } else {
+          this.currentBody.i32Const(-2147483648); // sentinel: no initial value (MIN_INT)
+        }
+        this.currentBody.call(this._runtimeFuncs.reduce);
+        return;
+      }
+
+      // Built-in: sort(arr) or sort(arr, cmpFn)
+      if (!isLocallyDefined && name === 'sort' && (node.arguments.length === 1 || node.arguments.length === 2)) {
+        this.compileNode(node.arguments[0]); // array
+        if (node.arguments.length === 2) {
+          this.compileNode(node.arguments[1]); // comparator closure
+        } else {
+          this.currentBody.i32Const(0); // 0 = no comparator (default sort)
+        }
+        this.currentBody.call(this._runtimeFuncs.sort);
+        return;
+      }
+
+      // Built-in: forEach(arr, fn) — calls fn for each element
+      if (!isLocallyDefined && name === 'forEach' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]); // array
+        this.compileNode(node.arguments[1]); // closure
+        this.currentBody.call(this._runtimeFuncs.forEach);
+        return;
+      }
+
+      // flatMap(arr, fn)
+      if (!isLocallyDefined && name === 'flatMap' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        this.currentBody.call(this._runtimeFuncs.flatMap);
+        return;
+      }
+
+      // zip(arr1, arr2)
+      if (!isLocallyDefined && name === 'zip' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]);
+        this.compileNode(node.arguments[1]);
+        this.currentBody.call(this._runtimeFuncs.zip);
+        return;
+      }
+
+      // enumerate(arr)
+      if (!isLocallyDefined && name === 'enumerate' && node.arguments.length === 1) {
+        this.compileNode(node.arguments[0]);
+        this.currentBody.call(this._runtimeFuncs.enumerate);
         return;
       }
 
@@ -1685,8 +1896,28 @@ export class WasmCompiler {
       const name = node.function.value;
       const binding = this.currentScope.resolve(name);
       if (binding && binding.type === 'func') {
+        // Check for tail-call optimization: if calling ourselves in tail position
+        if (this.currentFunc?._tailCallEnabled && name === this.currentFunc.name) {
+          // Tail call optimization: set parameters and branch to loop start
+          // Compile all arguments onto the stack, then set params in reverse
+          // (to avoid overwriting params that are used in later arg expressions)
+          const paramCount = node.arguments.length;
+          for (const arg of node.arguments) {
+            this.compileNode(arg);
+          }
+          // Set params in reverse order (stack is LIFO)
+          for (let i = paramCount - 1; i >= 0; i--) {
+            this.currentBody.localSet(i);
+          }
+          // Branch to loop start
+          const loopDepth = this.blockDepth - this.currentFunc._tailCallDepth - 1;
+          this.currentBody.br(loopDepth);
+          // After br, need a dummy value for the block type (unreachable code)
+          this.currentBody.i32Const(0);
+          return;
+        }
+        
         // Direct function call
-        // Compile arguments
         for (const arg of node.arguments) {
           this.compileNode(arg);
         }
@@ -2158,7 +2389,7 @@ export class WasmCompiler {
 
     // Bind actual parameters (starting at local 1)
     // Infer integer types by scanning the function body
-    const intParams = this._inferIntegerParams(node);
+    const intParams = this._inferIntParams(node);
     for (let i = 0; i < node.parameters.length; i++) {
       const name = node.parameters[i].value || node.parameters[i].token?.literal;
       const isInt = intParams.has(name);
@@ -2566,10 +2797,16 @@ export class WasmCompiler {
           boxed.add(name);
         }
       }
-      // (c) self-referencing closures with captures
+      // (c) self-referencing closures that also have OTHER captures
+      // Pure self-recursion (only captures itself) works fine as direct function.
+      // But self-ref with other captures needs boxing so the captures can access the function.
       for (const name of selfRefs) {
         if (capturedBy.has(name)) {
-          boxed.add(name);
+          // Check if there are other captures besides the self-reference
+          const otherCaptures = [...capturedBy.keys()].filter(k => k !== name);
+          if (otherCaptures.length > 0) {
+            boxed.add(name);
+          }
         }
       }
       
@@ -2637,6 +2874,13 @@ export class WasmCompiler {
         if (!params.has(name) && this.currentScope.resolve(name) &&
             this.currentScope.resolve(name).type !== 'func') {
           captures.add(name);
+        }
+      }
+      // SelfExpression: treat 'self' like a regular identifier for capture purposes
+      if (node instanceof ast.SelfExpression) {
+        if (!params.has('self') && this.currentScope.resolve('self') &&
+            this.currentScope.resolve('self').type !== 'func') {
+          captures.add('self');
         }
       }
       // Walk children
@@ -3360,6 +3604,277 @@ export class WasmCompiler {
     return intParams;
   }
 
+  // Get the FunctionLiteral returned by a function body (if it directly returns a closure)
+  _getReturnedClosure(body) {
+    if (!body || !body.statements || body.statements.length === 0) return null;
+    const last = body.statements[body.statements.length - 1];
+    const expr = last instanceof ast.ExpressionStatement ? last.expression :
+                 last instanceof ast.ReturnStatement ? last.returnValue : null;
+    if (expr instanceof ast.FunctionLiteral) return expr;
+    // Check if the return is from an if/else where both branches return closures
+    if (expr instanceof ast.IfExpression) {
+      const thenClosure = this._getReturnedClosure(expr.consequence);
+      if (thenClosure) return thenClosure; // use first found
+    }
+    return null;
+  }
+
+  // Infer which parameters of a function are definitely integers.
+  // A parameter is definitely integer if it's only used in integer contexts:
+  // - Arithmetic operations (+, -, *, /, %)
+  // - Integer comparisons (<, >, <=, >=, ==, !=) with other int expressions
+  // - Passed to functions where the corresponding parameter is also int
+  // - Used as a direct call argument
+  _inferIntParams(funcLit) {
+    const paramNames = new Set(
+      (funcLit.parameters || []).map(p => p.value || p.token?.literal)
+    );
+    const nonIntParams = new Set();
+
+    const checkNode = (node) => {
+      if (!node) return;
+
+      if (node instanceof ast.CallExpression) {
+        // Check if the called function is a builtin that expects non-int args
+        if (node.function instanceof ast.Identifier) {
+          const name = node.function.value;
+          // Builtins that accept non-integer arguments
+          const nonIntBuiltins = ['len', 'push', 'first', 'last', 'rest', 'puts', 'str',
+            'map', 'filter', 'reduce', 'sort', 'reverse', 'join', 'split', 'contains',
+            'keys', 'values', 'type', 'range', 'zip', 'flat', 'any', 'all', 'find',
+            'count', 'sum', 'max', 'min', 'slice', 'insert', 'remove', 'concat',
+            'unique', 'groupBy', 'sortBy', 'chunks'];
+          if (nonIntBuiltins.includes(name) && !paramNames.has(name)) {
+            // If a parameter is passed as argument to a non-int builtin, it's not int
+            for (const arg of node.arguments || []) {
+              if (arg instanceof ast.Identifier && paramNames.has(arg.value)) {
+                nonIntParams.add(arg.value);
+              }
+            }
+          }
+        }
+        // Check arguments recursively
+        for (const arg of node.arguments || []) checkNode(arg);
+        checkNode(node.function);
+        return;
+      }
+
+      // If a param is used in arithmetic with a float literal, it's not int
+      if (node instanceof ast.InfixExpression) {
+        const hasFloat = (n) => n instanceof ast.FloatLiteral;
+        if (hasFloat(node.left) || hasFloat(node.right)) {
+          // If a param appears in an expression with floats, mark it non-int
+          if (node.left instanceof ast.Identifier && paramNames.has(node.left.value)) {
+            nonIntParams.add(node.left.value);
+          }
+          if (node.right instanceof ast.Identifier && paramNames.has(node.right.value)) {
+            nonIntParams.add(node.right.value);
+          }
+          // Also check nested: 3.14 * r * r → the outer * has left=(3.14*r), right=r
+          const checkForParam = (n) => {
+            if (n instanceof ast.Identifier && paramNames.has(n.value)) {
+              nonIntParams.add(n.value);
+            }
+            if (n instanceof ast.InfixExpression) {
+              checkForParam(n.left);
+              checkForParam(n.right);
+            }
+          };
+          checkForParam(node.left);
+          checkForParam(node.right);
+        }
+        checkNode(node.left);
+        checkNode(node.right);
+        return;
+      }
+
+      if (node instanceof ast.IndexExpression) {
+        // If a param is used as the object of an index expression, it's not int
+        if (node.left instanceof ast.Identifier && paramNames.has(node.left.value)) {
+          nonIntParams.add(node.left.value);
+        }
+        checkNode(node.left);
+        checkNode(node.index);
+        return;
+      }
+
+      if (node instanceof ast.IfExpression) {
+        checkNode(node.condition);
+        if (node.consequence) checkBlock(node.consequence);
+        if (node.alternative) checkBlock(node.alternative);
+        return;
+      }
+
+      if (node instanceof ast.InfixExpression) {
+        checkNode(node.left);
+        checkNode(node.right);
+        return;
+      }
+
+      if (node instanceof ast.PrefixExpression) {
+        checkNode(node.right);
+        return;
+      }
+
+      if (node instanceof ast.LetStatement) {
+        checkNode(node.value);
+        return;
+      }
+
+      if (node instanceof ast.ExpressionStatement) {
+        checkNode(node.expression);
+        return;
+      }
+
+      if (node instanceof ast.ReturnStatement) {
+        checkNode(node.returnValue);
+        return;
+      }
+
+      if (node instanceof ast.WhileExpression || node instanceof ast.DoWhileExpression) {
+        checkNode(node.condition);
+        if (node.body) checkBlock(node.body);
+        return;
+      }
+
+      if (node instanceof ast.ForExpression) {
+        checkNode(node.init);
+        checkNode(node.condition);
+        checkNode(node.update);
+        if (node.body) checkBlock(node.body);
+        return;
+      }
+
+      if (node instanceof ast.BlockStatement) {
+        checkBlock(node);
+        return;
+      }
+    };
+
+    const checkBlock = (block) => {
+      for (const stmt of (block.statements || [])) checkNode(stmt);
+    };
+
+    if (funcLit.body) checkBlock(funcLit.body);
+
+    // Return the set of params that are NOT in nonIntParams
+    const intParams = new Set();
+    for (const name of paramNames) {
+      if (!nonIntParams.has(name)) intParams.add(name);
+    }
+    return intParams;
+  }
+
+  // Detect if a function has ONLY tail-recursive calls (all recursive calls in tail position)
+  _detectTailRecursion(funcName, funcLit) {
+    if (!funcName || !funcLit.body) return null;
+    
+    let hasTailCalls = false;
+    let hasNonTailCalls = false;
+    
+    // Check if a node contains any non-tail recursive calls to funcName
+    const checkForNonTailCalls = (node) => {
+      if (!node) return;
+      
+      if (node instanceof ast.CallExpression) {
+        if (node.function instanceof ast.Identifier && node.function.value === funcName) {
+          hasNonTailCalls = true;
+        }
+        // Also check arguments for recursive calls
+        for (const arg of node.arguments || []) {
+          checkForNonTailCalls(arg);
+        }
+        return;
+      }
+      
+      if (node instanceof ast.InfixExpression) {
+        checkForNonTailCalls(node.left);
+        checkForNonTailCalls(node.right);
+        return;
+      }
+      
+      if (node instanceof ast.PrefixExpression) {
+        checkForNonTailCalls(node.right);
+        return;
+      }
+      
+      if (node instanceof ast.IndexExpression) {
+        checkForNonTailCalls(node.left);
+        checkForNonTailCalls(node.index);
+        return;
+      }
+      
+      if (node instanceof ast.AssignExpression) {
+        checkForNonTailCalls(node.value);
+        return;
+      }
+    };
+    
+    // Check tail position recursively
+    const checkTail = (node) => {
+      if (!node) return;
+      
+      // Direct tail call
+      if (node instanceof ast.CallExpression) {
+        if (node.function instanceof ast.Identifier && node.function.value === funcName) {
+          hasTailCalls = true;
+          // Check if ANY argument contains a recursive call (which wouldn't be tail)
+          for (const arg of node.arguments || []) {
+            checkForNonTailCalls(arg);
+          }
+          return;
+        }
+        // Not a self-call in tail position — check if it contains recursive calls
+        checkForNonTailCalls(node);
+        return;
+      }
+      
+      // If/else: check both branches for tail calls
+      if (node instanceof ast.IfExpression) {
+        // The condition is NOT in tail position
+        checkForNonTailCalls(node.condition);
+        if (node.consequence) checkTail(this._lastExpr(node.consequence));
+        if (node.alternative) checkTail(this._lastExpr(node.alternative));
+        // Also check non-last statements for non-tail calls
+        if (node.consequence) {
+          for (let i = 0; i < node.consequence.statements.length - 1; i++) {
+            checkForNonTailCalls(node.consequence.statements[i]);
+          }
+        }
+        if (node.alternative) {
+          for (let i = 0; i < node.alternative.statements.length - 1; i++) {
+            checkForNonTailCalls(node.alternative.statements[i]);
+          }
+        }
+        return;
+      }
+      
+      // Any other node — check for non-tail calls
+      checkForNonTailCalls(node);
+    };
+    
+    checkTail(this._lastExpr(funcLit.body));
+    
+    // Also check non-last statements of the body
+    if (funcLit.body && funcLit.body.statements) {
+      for (let i = 0; i < funcLit.body.statements.length - 1; i++) {
+        checkForNonTailCalls(funcLit.body.statements[i]);
+      }
+    }
+    
+    // Only enable TCO if there are tail calls and NO non-tail calls
+    return (hasTailCalls && !hasNonTailCalls) ? { funcName } : null;
+  }
+  
+  // Get the last expression from a block (the return value)
+  _lastExpr(block) {
+    if (!block || !block.statements || block.statements.length === 0) return null;
+    const last = block.statements[block.statements.length - 1];
+    if (last instanceof ast.ExpressionStatement) return last.expression;
+    if (last instanceof ast.ReturnStatement) return last.returnValue;
+    return last;
+  }
+
   _isDefinitelyInteger(node) {
     if (node instanceof ast.IntegerLiteral) return true;
     if (node instanceof ast.BooleanLiteral) return true;
@@ -3374,13 +3889,27 @@ export class WasmCompiler {
       if (node.function instanceof ast.Identifier) {
         const func = this.functions?.find(f => f.name === node.function.value);
         if (func && func.returnsInt) return true;
+        // Check if the variable is bound to a function that returns int (e.g., closures)
+        const binding = this.currentScope?.resolve(node.function.value);
+        if (binding && binding.callReturnsInt) return true;
+        // Check if the variable was assigned from calling a returnsIntClosure function
+        // This handles: let f = adder(10); f(5) — f returns int because adder returns int-closure
+        if (binding && binding._initCall) {
+          const initFunc = this.functions?.find(f => f.name === binding._initCall);
+          if (initFunc?.returnsIntClosure) return true;
+        }
       }
       return false;
     }
     if (node instanceof ast.InfixExpression) {
       const op = node.operator;
-      if (['-', '*', '/', '%', '==', '!=', '<', '>', '<=', '>='].includes(op)) return true;
-      if (op === '+' && this._isDefinitelyInteger(node.left) && this._isDefinitelyInteger(node.right)) return true;
+      // Comparison operators always return boolean (int)
+      if (['==', '!=', '<', '>', '<=', '>='].includes(op)) return true;
+      // Arithmetic operators return int only if both operands are int
+      if (['-', '*', '/', '%'].includes(op)) {
+        return this._isDefinitelyInteger(node.left) && this._isDefinitelyInteger(node.right);
+      }
+      if (op === '+') return this._isDefinitelyInteger(node.left) && this._isDefinitelyInteger(node.right);
     }
     if (node instanceof ast.PrefixExpression) return true;
     return false;
@@ -3487,14 +4016,35 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
     return view.getFloat64(ptr + 4, true);
   }
 
+  // Unified allocator: uses WASM alloc if available, falls back to JS heap
+  function hostAlloc(size) {
+    size = (size + 3) & ~3; // align to 4 bytes
+    if (memoryRef.alloc) {
+      return memoryRef.alloc(size);
+    }
+    // Fallback: JS-side bump allocator
+    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
+    const ptr = memoryRef.jsHeapPtr;
+    memoryRef.jsHeapPtr += size;
+    // Grow memory if needed (each page = 64KB)
+    const mem = memoryRef.memory;
+    if (mem && memoryRef.jsHeapPtr > mem.buffer.byteLength) {
+      const needed = Math.ceil((memoryRef.jsHeapPtr - mem.buffer.byteLength) / 65536);
+      try {
+        mem.grow(needed);
+      } catch (e) {
+        // Memory growth failed — OOM
+        throw new Error(`WASM heap exhausted: needed ${memoryRef.jsHeapPtr} bytes, have ${mem.buffer.byteLength}`);
+      }
+    }
+    return ptr;
+  }
+
   function writeFloat(value) {
     const mem = memoryRef.memory;
     if (!mem) return 0;
     const view = new DataView(mem.buffer);
-    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 100000;
-    const ptr = memoryRef.jsHeapPtr;
-    memoryRef.jsHeapPtr += 12; // TAG_FLOAT(4) + f64(8)
-    memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
+    const ptr = hostAlloc(12); // TAG_FLOAT(4) + f64(8)
     view.setInt32(ptr, TAG_FLOAT, true);
     view.setFloat64(ptr + 4, value, true);
     return ptr;
@@ -3518,16 +4068,9 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
     if (!mem) return 0;
     const encoder = new TextEncoder();
     const bytes = encoder.encode(str);
+    const size = 8 + bytes.length; // [TAG_STRING:i32][length:i32][bytes...]
+    const ptr = hostAlloc(size);
     const view = new DataView(mem.buffer);
-
-    // Read heap pointer from global — we need to bump-allocate
-    // The heap pointer is stored as a WASM global, but we can't read it from JS.
-    // Instead, we'll track our own allocation offset.
-    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 100000; // start high to avoid collisions
-    const ptr = memoryRef.jsHeapPtr;
-    memoryRef.jsHeapPtr += 8 + bytes.length;
-    // Align to 4 bytes
-    memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
 
     // Write: [TAG_STRING:i32][length:i32][bytes...]
     view.setInt32(ptr, TAG_STRING, true);
@@ -3540,12 +4083,9 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
   function writeArray(elements) {
     const mem = memoryRef.memory;
     if (!mem) return 0;
+    const size = 8 + elements.length * 4; // [TAG_ARRAY:i32][length:i32][elem0:i32]...
+    const ptr = hostAlloc(size);
     const view = new DataView(mem.buffer);
-    if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 100000;
-    const ptr = memoryRef.jsHeapPtr;
-    const size = 8 + elements.length * 4; // [TAG_ARRAY:i32][length:i32][elem0:i32][elem1:i32]...
-    memoryRef.jsHeapPtr += size;
-    memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
 
     view.setInt32(ptr, TAG_ARRAY, true);
     view.setInt32(ptr + 4, elements.length, true);
@@ -3748,6 +4288,244 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         }
         return writeArray(elems);
       },
+
+      // Higher-order functions: call closure via exported table
+      // NOTE: After each callback, we must refresh the DataView because
+      // WASM memory may have grown (buffer detached on Memory.grow())
+      __map(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        let view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        const results = [];
+        for (let i = 0; i < len; i++) {
+          view = new DataView(mem.buffer); // refresh after potential growth
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          results.push(fn(envPtr, elem));
+        }
+        return writeArray(results);
+      },
+
+      __filter(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        let view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        const results = [];
+        for (let i = 0; i < len; i++) {
+          view = new DataView(mem.buffer);
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          if (fn(envPtr, elem)) results.push(elem);
+        }
+        return writeArray(results);
+      },
+
+      __reduce(arrPtr, closurePtr, initValue) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        let view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        const sentinel = -2147483648; // MIN_INT sentinel = no initial value
+        let acc;
+        let startIdx;
+        if (initValue !== sentinel) {
+          acc = initValue;
+          startIdx = 0;
+        } else {
+          if (len === 0) return 0;
+          acc = view.getInt32(arrPtr + 8, true);
+          startIdx = 1;
+        }
+        for (let i = startIdx; i < len; i++) {
+          view = new DataView(mem.buffer);
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          acc = fn(envPtr, acc, elem);
+        }
+        return acc;
+      },
+
+      __find(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        let view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        for (let i = 0; i < len; i++) {
+          view = new DataView(mem.buffer);
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          if (fn(envPtr, elem)) return elem;
+        }
+        return 0; // null
+      },
+
+      __any(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        let view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        for (let i = 0; i < len; i++) {
+          view = new DataView(mem.buffer);
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          if (fn(envPtr, elem)) return 1;
+        }
+        return 0;
+      },
+
+      __every(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        let view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        for (let i = 0; i < len; i++) {
+          view = new DataView(mem.buffer);
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          if (!fn(envPtr, elem)) return 0;
+        }
+        return 1;
+      },
+
+      __sort(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        let view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        // Read elements
+        const elems = [];
+        for (let i = 0; i < len; i++) {
+          elems.push(view.getInt32(arrPtr + 8 + i * 4, true));
+        }
+        if (closurePtr > 0 && view.getInt32(closurePtr, true) === TAG_CLOSURE) {
+          // Custom comparator
+          const table = memoryRef.table;
+          if (table) {
+            const tableIdx = view.getInt32(closurePtr + 4, true);
+            const envPtr = view.getInt32(closurePtr + 8, true);
+            const cmpFn = table.get(tableIdx);
+            elems.sort((a, b) => cmpFn(envPtr, a, b));
+          }
+        } else {
+          // Default ascending integer sort
+          elems.sort((a, b) => a - b);
+        }
+        return writeArray(elems);
+      },
+
+      __forEach(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        let view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        for (let i = 0; i < len; i++) {
+          view = new DataView(mem.buffer);
+          fn(envPtr, view.getInt32(arrPtr + 8 + i * 4, true));
+        }
+        return 0; // null
+      },
+
+      __flatMap(arrPtr, closurePtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        let view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const table = memoryRef.table;
+        if (!table) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const tableIdx = view.getInt32(closurePtr + 4, true);
+        const envPtr = view.getInt32(closurePtr + 8, true);
+        const fn = table.get(tableIdx);
+        const results = [];
+        for (let i = 0; i < len; i++) {
+          view = new DataView(mem.buffer);
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          const subResult = fn(envPtr, elem);
+          view = new DataView(mem.buffer);
+          // If subResult is an array, flatten it
+          if (subResult > 0 && view.getInt32(subResult, true) === TAG_ARRAY) {
+            const subLen = view.getInt32(subResult + 4, true);
+            for (let j = 0; j < subLen; j++) {
+              results.push(view.getInt32(subResult + 8 + j * 4, true));
+            }
+          } else {
+            results.push(subResult);
+          }
+        }
+        return writeArray(results);
+      },
+
+      __zip(arrAPtr, arrBPtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrAPtr < 16 || view.getInt32(arrAPtr, true) !== TAG_ARRAY) return 0;
+        if (arrBPtr < 16 || view.getInt32(arrBPtr, true) !== TAG_ARRAY) return 0;
+        const lenA = view.getInt32(arrAPtr + 4, true);
+        const lenB = view.getInt32(arrBPtr + 4, true);
+        const len = Math.min(lenA, lenB);
+        const pairs = [];
+        for (let i = 0; i < len; i++) {
+          const a = view.getInt32(arrAPtr + 8 + i * 4, true);
+          const b = view.getInt32(arrBPtr + 8 + i * 4, true);
+          pairs.push(writeArray([a, b]));
+        }
+        return writeArray(pairs);
+      },
+
+      __enumerate(arrPtr) {
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        if (arrPtr < 16 || view.getInt32(arrPtr, true) !== TAG_ARRAY) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        const pairs = [];
+        for (let i = 0; i < len; i++) {
+          const elem = view.getInt32(arrPtr + 8 + i * 4, true);
+          pairs.push(writeArray([i, elem]));
+        }
+        return writeArray(pairs);
+      },
+
       __add(a, b) {
         const mem = memoryRef.memory;
         if (mem) {
@@ -3888,7 +4666,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const lenB = (arrB > 0 && view.getInt32(arrB, true) === TAG_ARRAY) ? view.getInt32(arrB + 4, true) : 0;
         const newLen = lenA + lenB;
         
-        if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 100000;
+        if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
         const newPtr = memoryRef.jsHeapPtr;
         memoryRef.jsHeapPtr += 8 + newLen * 4;
         memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
@@ -3914,7 +4692,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
 
         // Allocate new array with len-1 elements
         const newLen = len - 1;
-        if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 100000;
+        if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
         const newPtr = memoryRef.jsHeapPtr;
         const newSize = 8 + newLen * 4;
         memoryRef.jsHeapPtr += newSize;
@@ -3970,7 +4748,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         if (end > len) end = len;
         const newLen = Math.max(0, end - start);
 
-        if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 100000;
+        if (!memoryRef.jsHeapPtr) memoryRef.jsHeapPtr = 1048576;
         const newPtr = memoryRef.jsHeapPtr;
         memoryRef.jsHeapPtr += 8 + newLen * 4;
         memoryRef.jsHeapPtr = (memoryRef.jsHeapPtr + 3) & ~3;
@@ -4181,11 +4959,45 @@ export function formatWasmValue(value, dataView) {
   return String(value);
 }
 
+// Module cache: source string → { module: WebAssembly.Module, binary: Uint8Array, warnings }
+const _moduleCache = new Map();
+const _MODULE_CACHE_MAX = 64;
+
+function _hashString(str) {
+  // Simple FNV-1a hash for cache keying
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    hash ^= str.charCodeAt(i);
+    hash = (hash * 0x01000193) | 0;
+  }
+  return hash >>> 0; // unsigned
+}
+
 export async function compileAndRun(input, options = {}) {
   const timings = {};
   const t0 = performance.now();
 
-  const compiler = new WasmCompiler();
+  // Check module cache (skip compile+encode+wasmCompile on hit)
+  const useCache = options.cache !== false; // enabled by default
+  const cacheKey = useCache ? `${_hashString(input)}:${options.optimize ? 1 : 0}` : null;
+  let module = null;
+  let cacheHit = false;
+
+  if (useCache && _moduleCache.has(cacheKey)) {
+    const cached = _moduleCache.get(cacheKey);
+    module = cached.module;
+    if (options.warnings && cached.warnings.length > 0) {
+      options.warnings.push(...cached.warnings);
+    }
+    timings.compile = 0;
+    timings.encode = 0;
+    timings.wasmCompile = 0;
+    timings.cacheHit = true;
+    cacheHit = true;
+  }
+
+  if (!module) {
+    const compiler = new WasmCompiler();
   
   // Run optimization pipeline if enabled
   if (options.optimize) {
@@ -4236,13 +5048,24 @@ export async function compileAndRun(input, options = {}) {
     options.warnings.push(...compiler.warnings);
   }
 
-  const t1 = performance.now();
-  const binary = compiler.builder.build();
-  timings.encode = performance.now() - t1;
+    const t1 = performance.now();
+    const binary = compiler.builder.build();
+    timings.encode = performance.now() - t1;
 
-  const t2 = performance.now();
-  const module = await WebAssembly.compile(binary);
-  timings.wasmCompile = performance.now() - t2;
+    const t2 = performance.now();
+    module = await WebAssembly.compile(binary);
+    timings.wasmCompile = performance.now() - t2;
+
+    // Store in cache
+    if (useCache) {
+      if (_moduleCache.size >= _MODULE_CACHE_MAX) {
+        // Evict oldest entry
+        const firstKey = _moduleCache.keys().next().value;
+        _moduleCache.delete(firstKey);
+      }
+      _moduleCache.set(cacheKey, { module, warnings: compiler.warnings.slice() });
+    }
+  } // end if (!module)
 
   const outputLines = options.outputLines || [];
   const memoryRef = { memory: null };
@@ -4259,6 +5082,8 @@ export async function compileAndRun(input, options = {}) {
   const t3 = performance.now();
   const instance = await WebAssembly.instantiate(module, imports);
   memoryRef.memory = instance.exports.memory;
+  memoryRef.table = instance.exports.__indirect_function_table || null;
+  memoryRef.alloc = instance.exports.__alloc || null;
   timings.instantiate = performance.now() - t3;
 
   const t4 = performance.now();
@@ -4290,6 +5115,8 @@ export async function compileToInstance(input, options = {}) {
 
   const instance = await WebAssembly.instantiate(module, imports);
   memoryRef.memory = instance.exports.memory;
+  memoryRef.table = instance.exports.__indirect_function_table || null;
+  memoryRef.alloc = instance.exports.__alloc || null;
 
   return instance;
 }
@@ -4314,6 +5141,16 @@ export async function precompile(input) {
     const imports = createWasmImports(outputLines, memoryRef);
     const instance = await WebAssembly.instantiate(module, imports);
     memoryRef.memory = instance.exports.memory;
+    memoryRef.table = instance.exports.__indirect_function_table || null;
+  memoryRef.alloc = instance.exports.__alloc || null;
     return instance.exports.main();
   };
+}
+
+export function clearModuleCache() {
+  _moduleCache.clear();
+}
+
+export function getModuleCacheStats() {
+  return { size: _moduleCache.size, maxSize: _MODULE_CACHE_MAX };
 }

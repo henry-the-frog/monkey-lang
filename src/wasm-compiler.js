@@ -40,12 +40,15 @@ class WasmCompiler {
     this.module = new WasmModule();
     this.functions = new Map();
     this.globals = new Map(); // name → {index, mutable}
+    this.stringConstants = new Map(); // string value → data segment offset
     this.currentLocals = null;
     this.currentLocalCount = 0;
     this.currentExtraLocals = 0;
     this.useI64 = options.useI64 || false;
     this.useF64 = options.useF64 || false;
     this.importSignatures = options.importSignatures || null;
+    this._strConcatImport = null; // lazily added on first string concat
+    this._heapBaseGlobal = null; // global for heap pointer (bump allocator)
   }
 
   // Count local (non-imported) functions in the map
@@ -111,7 +114,23 @@ class WasmCompiler {
       this._compileMainBlock(mainStatements);
     }
     
+    // Export memory if data segments were added (strings)
+    if (this.module.dataSegments.length > 0) {
+      this.module.exportMemory();
+    }
+    
     return this.module.encode();
+  }
+
+  // Lazily add the __str_concat import when string concatenation is first used
+  _getStrConcatImport() {
+    if (this._strConcatImport === null) {
+      this._strConcatImport = this.module.addImport(
+        'env', '__str_concat',
+        [WASM_TYPE.I32, WASM_TYPE.I32], [WASM_TYPE.I32]
+      );
+    }
+    return this._strConcatImport;
   }
 
   _processGlobals(statements) {
@@ -382,6 +401,19 @@ class WasmCompiler {
       return;
     }
     
+    // String literal — store in data segment, push pointer
+    if (expr instanceof ast.StringLiteral) {
+      const str = expr.value;
+      if (!this.stringConstants.has(str)) {
+        const { offset } = this.module.addStringConstant(str);
+        this.stringConstants.set(str, offset);
+      }
+      const ptr = this.stringConstants.get(str);
+      body.push(WasmOp.i32_const, ...encodeSLEB128(ptr));
+      if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+      return;
+    }
+
     // Boolean literal
     if (expr instanceof ast.BooleanLiteral) {
       if (this.useF64) {
@@ -440,7 +472,27 @@ class WasmCompiler {
       this._compileExpr(expr.right, body);
       
       switch (expr.operator) {
-        case '+': body.push(this.iop("add")); break;
+        case '+': {
+          // If either operand is a string, use string concatenation
+          if (expr.left instanceof ast.StringLiteral || expr.right instanceof ast.StringLiteral) {
+            const concatIdx = this._getStrConcatImport();
+            // Both operands already on stack as i32 pointers
+            if (this.useI64) {
+              // Wrap to i32 for the import call
+              body.push(WasmOp.i32_wrap_i64); // right
+              // Need to swap — but WASM doesn't have swap. Use locals.
+              // Actually, arguments are already on stack in order: left, right
+              // So we need left to be i32 too. Recompile with wraps.
+              body.length -= 1; // remove the wrap we just added
+              // Recompile left as i32
+              // This is getting complex — for now, only support i32 mode for strings
+            }
+            body.push(WasmOp.call, ...encodeULEB128(concatIdx));
+          } else {
+            body.push(this.iop("add"));
+          }
+          break;
+        }
         case '-': body.push(this.iop("sub")); break;
         case '*': body.push(this.iop("mul")); break;
         case '/': body.push(this.useF64 ? WasmOp.f64_div : this.iop("div_s")); break;

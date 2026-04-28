@@ -447,6 +447,7 @@ class MonkeyREPL {
     this.lastVM = null;  // Keep reference for JIT diagnostics
     this.stdlibLoaded = false;
     this.showTiming = true;
+    this.wasmHistory = []; // Accumulated WASM REPL definitions
   }
 
   parse(input) {
@@ -556,7 +557,14 @@ class MonkeyREPL {
       const timings = {};
       const warnings = [];
       const instanceRef = {};
-      const result = await wasmCompileAndRun(input, { outputLines, timings, warnings, instance: instanceRef });
+
+      // REPL incremental: accumulate definitions across lines
+      // Compile full history + current input, so earlier definitions are available
+      const fullSource = this.wasmHistory.length > 0
+        ? this.wasmHistory.join('\n') + '\n' + input
+        : input;
+
+      const result = await wasmCompileAndRun(fullSource, { outputLines, timings, warnings, instance: instanceRef });
 
       for (const line of outputLines) {
         console.log(line);
@@ -576,11 +584,19 @@ class MonkeyREPL {
       }
 
       if (result !== 0 || outputLines.length === 0) {
+        const cacheInfo = timings.cacheHit ? ' cache-hit' : '';
         const timing = this.showTiming ?
-          `  \x1b[90m(${timings.total?.toFixed(2)}ms total: compile=${timings.compile?.toFixed(1)}ms exec=${timings.execute?.toFixed(1)}ms)\x1b[0m` : '';
+          `  \x1b[90m(${timings.total?.toFixed(2)}ms total: compile=${timings.compile?.toFixed(1)}ms exec=${timings.execute?.toFixed(1)}ms${cacheInfo})\x1b[0m` : '';
         console.log(formattedResult + timing);
       } else if (this.showTiming) {
-        console.log(`\x1b[90m(${timings.total?.toFixed(2)}ms total: compile=${timings.compile?.toFixed(1)}ms exec=${timings.execute?.toFixed(1)}ms)\x1b[0m`);
+        const cacheInfo = timings.cacheHit ? ' cache-hit' : '';
+        console.log(`\x1b[90m(${timings.total?.toFixed(2)}ms total: compile=${timings.compile?.toFixed(1)}ms exec=${timings.execute?.toFixed(1)}ms${cacheInfo})\x1b[0m`);
+      }
+
+      // Track this input in REPL history for incremental compilation
+      // Only add if it looks like a definition (let/fn/class) — pure expressions don't need history
+      if (/^\s*(let|fn|class)\s/.test(input)) {
+        this.wasmHistory.push(input);
       }
     } catch (e) {
       console.error(`WASM error: ${e.message}`);
@@ -952,6 +968,7 @@ class MonkeyREPL {
         this.constants = [];
         this.globals = new Array(65536);
         this.lastVM = null;
+        this.wasmHistory = [];
         this.stdlibLoaded = false;
         console.log('State reset');
         return true;

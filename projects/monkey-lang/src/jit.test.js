@@ -1325,7 +1325,7 @@ describe('Real World JIT', () => {
     const vm = runJIT('let collatz = fn(n) { let steps = 0; while (n != 1) { if (n % 2 == 0) { n = n / 2; } else { n = n * 3 + 1; } steps++; } steps }; collatz(27)');
     assert.equal(vm.lastPoppedStackElem().value, 111);
   });
-  it('sieve-like counting', { skip: 'JIT deopt crash on j*j<=i comparison' }, () => {
+  it('sieve-like counting', () => {
     const vm = runJIT('let count = 0; for (let i = 2; i < 100; i++) { let is_p = true; for (let j = 2; j * j <= i; j++) { if (i % j == 0) { is_p = false; break; } } if (is_p) { count++; } } count');
     assert.equal(vm.lastPoppedStackElem().value, 25);
   });
@@ -1379,7 +1379,7 @@ describe('JIT Correctness', () => {
     const vm = runJIT('let i = 100; let s = 0; do { s += i; i--; } while (i > 0); s');
     assert.equal(vm.lastPoppedStackElem().value, 5050);
   });
-  it('match in loop', { skip: 'JIT deopt crash with match expression after trace exit' }, () => {
+  it('match in loop', () => {
     const vm = runJIT('let s = 0; for (let i = 0; i < 100; i++) { s += match (i % 4) { 0 => 1, 1 => 2, 2 => 3, _ => 4 }; } s');
     assert.equal(vm.lastPoppedStackElem().value, 250);
   });

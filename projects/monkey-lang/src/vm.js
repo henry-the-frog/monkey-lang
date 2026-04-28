@@ -603,7 +603,7 @@ export class VM {
             if (recording()) {
               this.recorder.popRef();
               this.recorder.popRef();
-              this.recorder.abort('string multiplication not JIT-compiled');
+              this._abortRecording('string multiplication not JIT-compiled');
             }
             const n = right.value;
             this.push(new MonkeyString(n > 0 ? left.value.repeat(n) : ''));
@@ -612,7 +612,7 @@ export class VM {
             if (recording()) {
               this.recorder.popRef();
               this.recorder.popRef();
-              this.recorder.abort('string multiplication not JIT-compiled');
+              this._abortRecording('string multiplication not JIT-compiled');
             }
             const n = left.value;
             this.push(new MonkeyString(n > 0 ? right.value.repeat(n) : ''));
@@ -816,6 +816,17 @@ export class VM {
             // Hot counting (only when not already recording)
             if (!recording() && this.jit.countEdge(closureId, target2)) {
               this._startRecording(target2);
+            }
+            
+            // If we're recording an outer loop and hit an inner loop back-edge
+            // that doesn't have a compiled trace yet, abort recording.
+            // The inner loop will get its own trace, and trace stitching will
+            // handle the combination. Without this, the outer trace inlines the
+            // inner loop body with constant-folded values from the recording
+            // iteration, producing incorrect results for subsequent iterations.
+            if (recording() && target2 !== this.recorder.startIp &&
+                target2 < this.recorder.startIp) {
+              this._abortRecording('inner loop without compiled trace');
             }
           }
 
@@ -1452,7 +1463,7 @@ export class VM {
           frame.ip += 1;
           frame.closure.free[freeIdx2] = this.pop();
           if (recording()) {
-            this.recorder.abort('OpSetFree not JIT-compiled');
+            this._abortRecording('OpSetFree not JIT-compiled');
           }
           break;
         }
@@ -1476,7 +1487,7 @@ export class VM {
           }
           this.push(val);
           if (recording()) {
-            this.recorder.abort('OpSetIndex not JIT-compiled');
+            this._abortRecording('OpSetIndex not JIT-compiled');
           }
           break;
         }
@@ -1507,7 +1518,7 @@ export class VM {
             this.push(NULL);
           }
           if (recording()) {
-            this.recorder.abort('OpSlice not JIT-compiled');
+            this._abortRecording('OpSlice not JIT-compiled');
           }
           break;
         }
@@ -1564,7 +1575,7 @@ export class VM {
           }
           this.push(ok8 ? TRUE : FALSE);
           if (recording()) {
-            this.recorder.abort('OpTypeIs not JIT-compiled');
+            this._abortRecording('OpTypeIs not JIT-compiled');
           }
           break;
         }
@@ -1719,7 +1730,7 @@ export class VM {
           } else if ((left4 instanceof MonkeyFloat || right4 instanceof MonkeyFloat) &&
                      (left4 instanceof MonkeyInteger || left4 instanceof MonkeyFloat) &&
                      (right4 instanceof MonkeyInteger || right4 instanceof MonkeyFloat)) {
-            if (recording()) { this.recorder.abort('float constant op'); }
+            if (recording()) { this._abortRecording('float constant op'); }
             const lv = left4.value, rv = right4.value;
             let result;
             switch (op) {
@@ -1759,14 +1770,14 @@ export class VM {
           } else if (left4 instanceof MonkeyString && right4 instanceof MonkeyInteger && op === Opcodes.OpMulConst) {
             if (recording()) {
               this.recorder.popRef();
-              this.recorder.abort('string multiplication not JIT-compiled');
+              this._abortRecording('string multiplication not JIT-compiled');
             }
             const n = right4.value;
             this.push(new MonkeyString(n > 0 ? left4.value.repeat(n) : ''));
           } else if (left4 instanceof MonkeyInteger && right4 instanceof MonkeyString && op === Opcodes.OpMulConst) {
             if (recording()) {
               this.recorder.popRef();
-              this.recorder.abort('string multiplication not JIT-compiled');
+              this._abortRecording('string multiplication not JIT-compiled');
             }
             const n = left4.value;
             this.push(new MonkeyString(n > 0 ? right4.value.repeat(n) : ''));
@@ -2120,23 +2131,40 @@ export class VM {
       switch (result.exit) {
         case 'guard_falsy':
         case 'guard_truthy':
-        case 'guard':
+        case 'guard': {
           // Guard failed and no side trace was available inline
           // (side trace dispatch is now handled in compiled code)
-          if (result.ip !== undefined) {
-            frame.ip = result.ip - 1;
-          }
-
-          // Restore state from snapshot if available
-          if (result.snapshot) {
-            if (result.snapshot.globals) {
-              for (const [idx, value] of Object.entries(result.snapshot.globals)) {
-                this.globals[Number(idx)] = value;
-              }
+          
+          // Check if the guard's snapshot had operand stack entries.
+          // The trace's __wb already wrote back promoted vars to globals/locals.
+          // If there were stack values, the mid-trace exit IP requires correct
+          // operand stack state which is hard to restore. Instead, restart from
+          // the trace's loop header where the stack is always empty.
+          const guardInst = trace.ir ? trace.ir[result.guardIdx] : null;
+          const hasStackValues = guardInst && guardInst.snapshot && 
+                                 guardInst.snapshot.irStack && guardInst.snapshot.irStack.length > 0;
+          
+          if (hasStackValues) {
+            // Restart from trace start (loop header) — stack is empty there.
+            // __wb already ensured globals reflect the state at the guard point.
+            frame.ip = trace.startIp - 1;
+            this.sp = frame.basePointer + frame.closure.fn.numLocals;
+          } else {
+            // No stack values — safe to resume at the guard's exit IP
+            if (result.ip !== undefined) {
+              frame.ip = result.ip - 1;
             }
-            if (result.snapshot.locals) {
-              for (const [slot, value] of Object.entries(result.snapshot.locals)) {
-                this.stack[frame.basePointer + Number(slot)] = value;
+            // Restore state from snapshot if available
+            if (result.snapshot) {
+              if (result.snapshot.globals) {
+                for (const [idx, value] of Object.entries(result.snapshot.globals)) {
+                  this.globals[Number(idx)] = value;
+                }
+              }
+              if (result.snapshot.locals) {
+                for (const [slot, value] of Object.entries(result.snapshot.locals)) {
+                  this.stack[frame.basePointer + Number(slot)] = value;
+                }
               }
             }
           }
@@ -2152,7 +2180,7 @@ export class VM {
             }
           }
 
-          if (this.jit && !this.recorder && this.jit.shouldRecordSideTrace(trace, result.guardIdx)) {
+          if (!hasStackValues && this.jit && !this.recorder && this.jit.shouldRecordSideTrace(trace, result.guardIdx)) {
             if (JIT_EVENTS_FULL) {
               process.stderr.write(JSON.stringify({
                 v: 1, t: 'side_trace_promote', parent: traceKey, guard_idx: result.guardIdx,
@@ -2161,6 +2189,7 @@ export class VM {
             this._startSideTraceRecording(trace, result.guardIdx, result.ip);
           }
           return true;
+        }
         case 'loop_back':
           if (JIT_EVENTS_FULL) {
             process.stderr.write(JSON.stringify({ v: 1, t: 'trace_exit', key: traceKey, exit: 'loop_back' }) + '\n');
