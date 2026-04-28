@@ -119,6 +119,13 @@ export class WasmCompiler {
     // Add runtime helper functions first
     this._addRuntimeFunctions();
 
+    // Pass 0: Analyze which variables need boxing (heap-allocated cells)
+    // A variable needs boxing if it is:
+    //   (a) captured by a closure AND mutated (by closure or enclosing scope)
+    //   (b) captured by multiple closures (shared state)
+    //   (c) a self-referencing closure (let f = fn() { f(...) } where f captures itself)
+    this._boxedVars = this._analyzeBoxedVariables(program);
+
     // First pass: collect top-level function names to know what's global
     const topLevelFuncNames = new Set();
     for (const stmt of program.statements) {
@@ -2234,6 +2241,302 @@ export class WasmCompiler {
       for (const stmt of funcLit.body.statements) walk(stmt);
     }
     return hasFree;
+  }
+
+  // Analyze AST to determine which variables need heap boxing.
+  // Returns a Map<scopeKey, Set<varName>> where scopeKey identifies a scope.
+  // A variable needs boxing if:
+  //   (a) it is captured by a closure AND assigned anywhere (closure or enclosing scope)
+  //   (b) it is captured by 2+ closures (they need to share the same cell)
+  //   (c) it is self-referencing (let f = fn(){...f...} where f is in the closure's captures)
+  _analyzeBoxedVariables(program) {
+    const result = new Map(); // scopeId → Set<varName>
+    
+    // We do a recursive scope-aware walk. For each scope, we track:
+    //   - which variables are defined (let bindings)
+    //   - which variables are assigned (appear on LHS of =)
+    //   - which variables are captured by inner functions, and how many functions capture each
+    //   - which variables are self-referencing (let X = fn(){...X...})
+    
+    const analyzeScope = (statements, scopeId, outerDefs) => {
+      const defs = new Set(outerDefs || []); // variables defined in this scope
+      const assigns = new Set(); // variables assigned in this scope
+      const capturedBy = new Map(); // varName → count of closures that capture it
+      const selfRefs = new Set(); // variables that are self-referencing closures
+      
+      // First: collect all let bindings in this scope
+      for (const stmt of statements) {
+        if (stmt instanceof ast.LetStatement && stmt.name) {
+          defs.add(stmt.name.value);
+        } else if (stmt instanceof ast.ExpressionStatement && stmt.expression instanceof ast.LetStatement) {
+          defs.add(stmt.expression.name.value);
+        }
+      }
+      
+      // Collect assignments and captures
+      const walkExpr = (node, currentScopeDefs) => {
+        if (!node) return;
+        
+        // Assignment expression: mark variable as assigned
+        if (node instanceof ast.AssignExpression) {
+          const name = node.name?.value || node.name;
+          if (name && typeof name === 'string') {
+            assigns.add(name);
+          }
+          walkExpr(node.value, currentScopeDefs);
+          return;
+        }
+        
+        // Function literal: analyze captures
+        if (node instanceof ast.FunctionLiteral) {
+          const params = new Set(node.parameters.map(p => p.value || p.token?.literal));
+          const innerDefs = new Set(params);
+          const captures = new Set();
+          
+          // Collect inner let bindings
+          const collectInnerDefs = (n) => {
+            if (!n) return;
+            if (n instanceof ast.LetStatement && n.name) {
+              innerDefs.add(n.name.value);
+            }
+            if (n.body && n.body.statements) {
+              for (const s of n.body.statements) collectInnerDefs(s);
+            }
+            if (n.statements) {
+              for (const s of n.statements) collectInnerDefs(s);
+            }
+            if (n.consequence && n.consequence.statements) {
+              for (const s of n.consequence.statements) collectInnerDefs(s);
+            }
+            if (n.alternative && n.alternative.statements) {
+              for (const s of n.alternative.statements) collectInnerDefs(s);
+            }
+          };
+          if (node.body && node.body.statements) {
+            for (const s of node.body.statements) collectInnerDefs(s);
+          }
+          
+          // Find identifiers referenced in the closure that are from the outer scope
+          const findCaptures = (n) => {
+            if (!n) return;
+            if (n instanceof ast.FunctionLiteral) {
+              // Don't recurse into nested functions for capture analysis at this level
+              // But DO check their bodies for references to our scope's vars
+              const nestedParams = new Set(n.parameters.map(p => p.value || p.token?.literal));
+              const findNestedCaptures = (nn) => {
+                if (!nn) return;
+                if (nn instanceof ast.Identifier) {
+                  const name = nn.value;
+                  if (!nestedParams.has(name) && !innerDefs.has(name) && defs.has(name)) {
+                    captures.add(name);
+                  }
+                }
+                if (nn instanceof ast.FunctionLiteral) return; // stop at deeper nesting
+                if (nn.left) findNestedCaptures(nn.left);
+                if (nn.right) findNestedCaptures(nn.right);
+                if (nn.condition) findNestedCaptures(nn.condition);
+                if (nn.consequence) findNestedCaptures(nn.consequence);
+                if (nn.alternative) findNestedCaptures(nn.alternative);
+                if (nn.expression) findNestedCaptures(nn.expression);
+                if (nn.value) findNestedCaptures(nn.value);
+                if (nn.returnValue) findNestedCaptures(nn.returnValue);
+                if (nn.index) findNestedCaptures(nn.index);
+                if (nn.function) findNestedCaptures(nn.function);
+                if (nn.body && nn.body.statements) for (const s of nn.body.statements) findNestedCaptures(s);
+                if (nn.statements) for (const s of nn.statements) findNestedCaptures(s);
+                if (nn.arguments) for (const a of nn.arguments) findNestedCaptures(a);
+                if (nn.elements) for (const e of nn.elements) findNestedCaptures(e);
+              };
+              if (n.body && n.body.statements) {
+                for (const s of n.body.statements) findNestedCaptures(s);
+              }
+              return;
+            }
+            if (n instanceof ast.Identifier) {
+              const name = n.value;
+              if (!params.has(name) && !innerDefs.has(name) && defs.has(name)) {
+                captures.add(name);
+              }
+            }
+            if (n.left) findCaptures(n.left);
+            if (n.right) findCaptures(n.right);
+            if (n.condition) findCaptures(n.condition);
+            if (n.consequence) findCaptures(n.consequence);
+            if (n.alternative) findCaptures(n.alternative);
+            if (n.expression) findCaptures(n.expression);
+            if (n.value) findCaptures(n.value);
+            if (n.returnValue) findCaptures(n.returnValue);
+            if (n.index) findCaptures(n.index);
+            if (n.function) findCaptures(n.function);
+            if (n.body && n.body.statements) for (const s of n.body.statements) findCaptures(s);
+            if (n.statements) for (const s of n.statements) findCaptures(s);
+            if (n.arguments) for (const a of n.arguments) findCaptures(a);
+            if (n.elements) for (const e of n.elements) findCaptures(e);
+          };
+          
+          if (node.body && node.body.statements) {
+            for (const s of node.body.statements) findCaptures(s);
+          }
+          
+          // Also check for assignments inside the closure body
+          const findInnerAssigns = (n) => {
+            if (!n) return;
+            if (n instanceof ast.AssignExpression) {
+              const name = n.name?.value || n.name;
+              if (name && typeof name === 'string' && defs.has(name)) {
+                assigns.add(name);
+              }
+            }
+            if (n instanceof ast.FunctionLiteral) return; // don't cross function boundaries
+            if (n.left) findInnerAssigns(n.left);
+            if (n.right) findInnerAssigns(n.right);
+            if (n.condition) findInnerAssigns(n.condition);
+            if (n.consequence) findInnerAssigns(n.consequence);
+            if (n.alternative) findInnerAssigns(n.alternative);
+            if (n.expression) findInnerAssigns(n.expression);
+            if (n.value) findInnerAssigns(n.value);
+            if (n.returnValue) findInnerAssigns(n.returnValue);
+            if (n.body && n.body.statements) for (const s of n.body.statements) findInnerAssigns(s);
+            if (n.statements) for (const s of n.statements) findInnerAssigns(s);
+            if (n.arguments) for (const a of n.arguments) findInnerAssigns(a);
+            if (n.elements) for (const e of n.elements) findInnerAssigns(e);
+          };
+          if (node.body && node.body.statements) {
+            for (const s of node.body.statements) findInnerAssigns(s);
+          }
+          
+          // Record captures
+          for (const name of captures) {
+            capturedBy.set(name, (capturedBy.get(name) || 0) + 1);
+          }
+          
+          // Recurse into the function body as a new scope
+          if (node.body && node.body.statements) {
+            analyzeScope(node.body.statements, scopeId + '/' + (node.parameters.map(p => p.value || p.token?.literal).join(',') || 'anon'), defs);
+          }
+          return;
+        }
+        
+        // Walk all child nodes
+        if (node.left) walkExpr(node.left, currentScopeDefs);
+        if (node.right) walkExpr(node.right, currentScopeDefs);
+        if (node.condition) walkExpr(node.condition, currentScopeDefs);
+        if (node.consequence && node.consequence.statements) {
+          for (const s of node.consequence.statements) walkStmt(s, currentScopeDefs);
+        }
+        if (node.alternative && node.alternative.statements) {
+          for (const s of node.alternative.statements) walkStmt(s, currentScopeDefs);
+        }
+        if (node.expression) walkExpr(node.expression, currentScopeDefs);
+        if (node.value && !(node instanceof ast.LetStatement)) walkExpr(node.value, currentScopeDefs);
+        if (node.returnValue) walkExpr(node.returnValue, currentScopeDefs);
+        if (node.index) walkExpr(node.index, currentScopeDefs);
+        if (node.function) walkExpr(node.function, currentScopeDefs);
+        if (node.body && node.body.statements) {
+          for (const s of node.body.statements) walkStmt(s, currentScopeDefs);
+        }
+        if (node.statements) {
+          for (const s of node.statements) walkStmt(s, currentScopeDefs);
+        }
+        if (node.arguments) for (const a of node.arguments) walkExpr(a, currentScopeDefs);
+        if (node.elements) for (const e of node.elements) walkExpr(e, currentScopeDefs);
+      };
+      
+      const walkStmt = (stmt, currentScopeDefs) => {
+        if (stmt instanceof ast.LetStatement) {
+          // Check for self-referencing: let f = fn(){...f...}
+          if (stmt.value instanceof ast.FunctionLiteral) {
+            const name = stmt.name.value;
+            const params = new Set(stmt.value.parameters.map(p => p.value || p.token?.literal));
+            // Check if the function body references 'name'
+            const refsSelf = this._astReferencesName(stmt.value.body, name, params);
+            if (refsSelf) {
+              selfRefs.add(name);
+            }
+          }
+          if (stmt.value) walkExpr(stmt.value, currentScopeDefs);
+        } else if (stmt instanceof ast.ExpressionStatement) {
+          if (stmt.expression) walkExpr(stmt.expression, currentScopeDefs);
+        } else if (stmt instanceof ast.ReturnStatement) {
+          if (stmt.returnValue) walkExpr(stmt.returnValue, currentScopeDefs);
+        } else {
+          walkExpr(stmt, currentScopeDefs);
+        }
+      };
+      
+      for (const stmt of statements) {
+        walkStmt(stmt, defs);
+      }
+      
+      // Determine which variables need boxing in this scope
+      const boxed = new Set();
+      for (const [name, count] of capturedBy) {
+        // (a) captured AND assigned anywhere
+        if (assigns.has(name)) {
+          boxed.add(name);
+        }
+        // (b) captured by 2+ closures
+        if (count >= 2) {
+          boxed.add(name);
+        }
+      }
+      // (c) self-referencing closures with captures
+      for (const name of selfRefs) {
+        if (capturedBy.has(name)) {
+          boxed.add(name);
+        }
+      }
+      
+      if (boxed.size > 0) {
+        result.set(scopeId, boxed);
+      }
+    };
+    
+    analyzeScope(program.statements, 'top', new Set());
+    return result;
+  }
+  
+  // Helper: check if an AST node references a name (excluding params)
+  _astReferencesName(node, name, excludeParams) {
+    if (!node) return false;
+    if (node instanceof ast.Identifier) {
+      return node.value === name && !excludeParams?.has(name);
+    }
+    if (node instanceof ast.FunctionLiteral) {
+      // Don't cross into nested function definitions to check for references
+      // But DO check the body for references to the name
+      const innerParams = new Set(node.parameters.map(p => p.value || p.token?.literal));
+      if (innerParams.has(name)) return false; // shadowed by param
+      return this._astReferencesName(node.body, name, innerParams);
+    }
+    // Check all children
+    const children = [node.left, node.right, node.condition, node.consequence, 
+                      node.alternative, node.expression, node.value, node.returnValue,
+                      node.index, node.function];
+    for (const child of children) {
+      if (this._astReferencesName(child, name, excludeParams)) return true;
+    }
+    if (node.body && node.body.statements) {
+      for (const s of node.body.statements) {
+        if (this._astReferencesName(s, name, excludeParams)) return true;
+      }
+    }
+    if (node.statements) {
+      for (const s of node.statements) {
+        if (this._astReferencesName(s, name, excludeParams)) return true;
+      }
+    }
+    if (node.arguments) {
+      for (const a of node.arguments) {
+        if (this._astReferencesName(a, name, excludeParams)) return true;
+      }
+    }
+    if (node.elements) {
+      for (const e of node.elements) {
+        if (this._astReferencesName(e, name, excludeParams)) return true;
+      }
+    }
+    return false;
   }
 
   // Find free variables in a function literal
