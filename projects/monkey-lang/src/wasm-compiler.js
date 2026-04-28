@@ -141,9 +141,15 @@ export class WasmCompiler {
     }
 
     // Second pass: register non-capturing functions
+    // Skip functions that need boxing — they must go through the closure path
     for (const stmt of program.statements) {
       if (stmt instanceof ast.LetStatement &&
           (stmt.value instanceof ast.FunctionLiteral)) {
+        // Don't register as direct function if it needs boxing
+        const topBoxed = this._boxedVars.get('top');
+        if (topBoxed && topBoxed.has(stmt.name.value)) {
+          continue; // will be compiled as a boxed closure via compileLetStatement
+        }
         const params = new Set(stmt.value.parameters.map(p => p.value || p.token?.literal));
         const hasFreeVars = this._hasFreeVariables(stmt.value, params, topLevelFuncNames, stmt.name.value);
         if (!hasFreeVars) {
@@ -801,6 +807,11 @@ export class WasmCompiler {
       const prevParamIdx = this.nextParamIndex;
       const prevBlockDepth = this.blockDepth;
 
+      // Push scope ID for box analysis lookup
+      const parentScopeId = this._scopeIdStack[this._scopeIdStack.length - 1];
+      const paramNames = func.funcLit.parameters.map(p => p.value || p.token?.literal).join(',') || 'anon';
+      this._scopeIdStack.push(parentScopeId + '/' + paramNames);
+
       this.currentBody = func.body;
       this.blockDepth = 0;
       this.currentFunc = func;
@@ -819,6 +830,7 @@ export class WasmCompiler {
       const body = func.funcLit.body;
       this._compileBlockReturning(body);
 
+      this._scopeIdStack.pop();
       this.currentBody = prevBody;
       this.blockDepth = prevBlockDepth;
       this.currentScope = prevScope;
@@ -1681,7 +1693,15 @@ export class WasmCompiler {
         this.currentBody.call(binding.index);
       } else if (binding) {
         // Variable holding a closure — indirect call
-        this._emitClosureCall(node, () => this.currentBody.localGet(binding.index));
+        // If boxed, dereference the box to get the closure pointer
+        if (binding.boxed) {
+          this._emitClosureCall(node, () => {
+            this.currentBody.localGet(binding.index);
+            this.currentBody.i32Load(); // dereference box → closure ptr
+          });
+        } else {
+          this._emitClosureCall(node, () => this.currentBody.localGet(binding.index));
+        }
       } else {
         const _l3 = node?.token?.line ? ` (line ${node.token.line})` : ""; this.errors.push(`unknown function: ${name}${_l3}`);
         this.currentBody.i32Const(0);
@@ -2094,10 +2114,14 @@ export class WasmCompiler {
     // 1. Analyze free variables (captures from current scope)
     const captures = this._findCaptures(node);
 
-    // Collect knownInt status from outer scope before we switch
+    // Collect knownInt status and boxed status from outer scope before we switch
     const captureKnownInt = captures.map(name => {
       const binding = this.currentScope.resolve(name);
       return binding ? !!binding.knownInt : false;
+    });
+    const captureBoxed = captures.map(name => {
+      const binding = this.currentScope.resolve(name);
+      return binding ? !!binding.boxed : false;
     });
 
     // 2. Create the WASM function with extra env_ptr as first param
@@ -2115,6 +2139,11 @@ export class WasmCompiler {
     const prevParamIdx = this.nextParamIndex;
     const prevTempLocal = this._tempLocal;
     const prevBlockDepth = this.blockDepth;
+
+    // Push scope ID for box analysis lookup
+    const parentScopeId = this._scopeIdStack[this._scopeIdStack.length - 1];
+    const paramNames = node.parameters.map(p => p.value || p.token?.literal).join(',') || 'anon';
+    this._scopeIdStack.push(parentScopeId + '/' + paramNames);
 
     this.currentBody = funcBody;
     this.blockDepth = 0;
@@ -2137,7 +2166,7 @@ export class WasmCompiler {
     }
 
     // Bind captured variables — read them from the environment
-    // Propagate knownInt status from outer scope through captures
+    // Propagate knownInt and boxed status from outer scope through captures
     for (let i = 0; i < captures.length; i++) {
       const localIdx = this.nextLocalIndex++;
       funcBody.addLocal(ValType.i32);
@@ -2149,12 +2178,17 @@ export class WasmCompiler {
         .i32Load()
         .localSet(localIdx);
       this.currentScope.define(captures[i], localIdx, ValType.i32, captureKnownInt[i]);
+      // If the outer variable was boxed, this capture holds a box pointer too
+      if (captureBoxed[i]) {
+        this.currentScope.vars.get(captures[i]).boxed = true;
+      }
     }
 
     // Compile function body
     this._compileBlockReturning(node.body);
 
     // Restore state
+    this._scopeIdStack.pop();
     this.currentBody = prevBody;
     this.blockDepth = prevBlockDepth;
     this.currentScope = prevScope;

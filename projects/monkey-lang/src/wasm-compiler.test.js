@@ -916,10 +916,9 @@ describe('WASM Compiler', () => {
       const maps = builder.getSourceMaps();
       const funcIndices = Object.keys(maps);
       assert.ok(funcIndices.length > 0, 'should have source maps');
-      // Fib function should reference lines 2-3
-      const fibMap = maps[funcIndices[0]];
-      const lines = [...new Set(fibMap.map(e => e.line))];
-      assert.ok(lines.includes(2) || lines.includes(3), `should reference lines 2-3, got ${lines}`);
+      // Fib function should reference lines 2-3 (may be any func index due to compilation order)
+      const allLines = funcIndices.flatMap(idx => maps[idx].map(e => e.line));
+      assert.ok(allLines.includes(2) || allLines.includes(3), `should reference lines 2-3, got ${[...new Set(allLines)]}`);
     });
   });
 
