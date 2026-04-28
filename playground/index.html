@@ -407,6 +407,29 @@ let sieve = fn(n) {
 sieve(10000)  // 1229 primes`
   },
   {
+    name: 'QuickSort',
+    code: `// QuickSort using array comprehensions
+let qsort = fn(arr) {
+  if (len(arr) <= 1) { arr }
+  else {
+    let pivot = arr[0];
+    let left = [x for x in arr if x < pivot];
+    let mid = [x for x in arr if x == pivot];
+    let right = [x for x in arr if x > pivot];
+    let sl = qsort(left);
+    let sr = qsort(right);
+    let result = [];
+    for (x in sl) { push(result, x) };
+    for (x in mid) { push(result, x) };
+    for (x in sr) { push(result, x) };
+    result
+  }
+};
+let data = [5, 3, 8, 1, 9, 2, 7, 4, 6, 10];
+let sorted = qsort(data);
+sorted[0] + sorted[4] + sorted[9]  // 1 + 5 + 10 = 16`
+  },
+  {
     name: 'Collatz',
     code: `// Collatz conjecture: steps to reach 1
 let collatz = fn(n) {
