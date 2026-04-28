@@ -318,22 +318,61 @@ isEven(100)  // 1`
   },
   {
     name: 'Arrays',
-    code: `// Arrays with push and index access
+    code: `// Dynamic arrays with for-in loops
 let data = [10, 20, 30, 40, 50];
 
-// Sum all elements
+// Sum with for-in (no index needed!)
 let total = 0;
-let i = 0;
-while (i < len(data)) {
-  set total = total + data[i];
-  set i = i + 1;
+for (x in data) {
+  set total = total + x
 };
 
-// Push new elements
-push(data, 60);
-push(data, 70);
+// Push grows dynamically (even past 256!)
+let big = [];
+let i = 0;
+while (i < 500) { push(big, i); set i = i + 1 };
 
-total + data[5] + data[6]  // 150 + 60 + 70 = 280`
+// Array comprehension with filter
+let evens = [x for x in big if x % 2 == 0];
+
+total + len(big) + len(evens)  // 150 + 500 + 250 = 900`
+  },
+  {
+    name: 'Comprehensions',
+    code: `// Array comprehensions — Python-style
+let nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+// Square all numbers
+let squares = [x * x for x in nums];
+
+// Filter: only odd squares
+let odd_sq = [x * x for x in nums if x % 2 != 0];
+
+// Chained: double the odd squares
+let result = [x * 2 for x in odd_sq];
+
+// Sum the result
+let sum = 0;
+for (x in result) { set sum = sum + x };
+sum  // 2*(1+9+25+49+81) = 330`
+  },
+  {
+    name: 'Strings',
+    code: `// String operations in WASM
+let greeting = "hello" + " " + "world";
+let name = "monkey-lang";
+
+// String comparison
+let same = greeting == "hello world";
+
+// Length works on strings
+let total_len = len(greeting) + len(name);
+
+// Concat result compared
+let full = "hello" + " " + "world";
+let eq = full == greeting;
+
+same + total_len + eq  // 1 + 22 + 1 = 24`
   },
   {
     name: 'Sieve',
