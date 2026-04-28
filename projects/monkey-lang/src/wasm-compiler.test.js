@@ -2150,3 +2150,134 @@ describe('String Methods', () => {
     assert.strictEqual(outputLines[0], 'hello');
   });
 });
+
+// Box/Cell Closure Regression Tests (Apr 28, 2026)
+// These test the 3 closure bugs found during Apr 27 exploration
+describe('Box/Cell Closures', () => {
+  describe('Bug 1: Self-referencing closures with multiple captures', () => {
+    it('self-ref closure with captured variable returns correct value', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let make = fn() {
+          let x = 100;
+          let f = fn(n) { if (n <= 0) { x } else { f(n - 1) } };
+          f(3)
+        };
+        make()
+      `), 100);
+    });
+
+    it('self-ref closure with multiple captured vars', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let make = fn() {
+          let a = 10;
+          let b = 20;
+          let f = fn(n) { if (n <= 0) { a + b } else { f(n - 1) } };
+          f(5)
+        };
+        make()
+      `), 30);
+    });
+  });
+
+  describe('Bug 2: Shared mutable state between closures', () => {
+    it('two closures share the same mutable variable', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let make = fn() {
+          let x = 0;
+          let inc = fn() { x = x + 1; x };
+          let get = fn() { x };
+          inc();
+          get()
+        };
+        make()
+      `), 1);
+    });
+
+    it('multiple increments visible through getter', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let make = fn() {
+          let x = 0;
+          let inc = fn() { x = x + 1; x };
+          let get = fn() { x };
+          inc(); inc(); inc();
+          get()
+        };
+        make()
+      `), 3);
+    });
+
+    it('outer scope reads mutations from inner closure', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let f = fn() {
+          let result = 0;
+          let inner = fn(i) { result = result + i; result };
+          inner(1); inner(2); inner(3);
+          result
+        };
+        f()
+      `), 6);
+    });
+
+    it('counter pattern with inc/dec/get', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let make = fn() {
+          let count = 10;
+          let inc = fn() { count = count + 1; count };
+          let dec = fn() { count = count - 1; count };
+          let get = fn() { count };
+          inc(); inc(); dec();
+          get()
+        };
+        make()
+      `), 11);
+    });
+  });
+
+  describe('Bug 3: Recursive closures with mutable captures', () => {
+    it('recursive accumulation', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let make = fn() {
+          let result = 0;
+          let loop = fn(i) { if (i > 0) { result = result + i; loop(i - 1) } else { result } };
+          loop(5)
+        };
+        make()
+      `), 15);
+    });
+
+    it('recursive factorial via mutable accumulator', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let make = fn() {
+          let acc = 1;
+          let fact = fn(n) { if (n <= 1) { acc } else { acc = acc * n; fact(n - 1) } };
+          fact(5)
+        };
+        make()
+      `), 120);
+    });
+  });
+
+  describe('Box/cell does not break non-boxed closures', () => {
+    it('simple counter (single closure, no sharing needed)', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let make = fn() {
+          let x = 0;
+          let inc = fn() { x = x + 1; x };
+          inc(); inc(); inc()
+        };
+        make()
+      `), 3);
+    });
+
+    it('non-mutating closure (no boxing needed)', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let make = fn() {
+          let x = 42;
+          let get = fn() { x };
+          get()
+        };
+        make()
+      `), 42);
+    });
+  });
+});
