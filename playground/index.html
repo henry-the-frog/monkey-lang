@@ -515,7 +515,9 @@ async function compileAndRun(source) {
 
   // If the result is a string pointer, try to read it
   let displayResult = result;
-  if (instance.exports.memory && typeof result === 'number' && result >= 4) {
+      // Try to detect string results (only if source contains string literals)
+    const hasStrings = /["']/.test(source);
+    if (hasStrings && instance.exports.memory && typeof result === 'number') {
     try {
       const rt = createStringRuntime();
       rt.setMemory(instance.exports.memory, 0);
