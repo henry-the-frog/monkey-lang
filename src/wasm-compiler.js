@@ -796,7 +796,7 @@ class WasmCompiler {
         if (name === 'push') return 'int';
         if (name === 'indexOf') return 'int';
         if (name === 'map' || name === 'filter') return 'array';
-        if (name === 'charAt' || name === 'substring') return 'string';
+        if (name === 'charAt' || name === 'substring' || name === 'toUpperCase' || name === 'toLowerCase') return 'string';
       }
       return 'unknown';
     }
@@ -1263,6 +1263,118 @@ class WasmCompiler {
     body.push(WasmOp.br, 0);          // br to loop start (continue)
     body.push(WasmOp.end);            // end loop
     body.push(WasmOp.end);            // end block
+  }
+
+  // toUpperCase/toLowerCase(str) → returns new string with case converted
+  // For ASCII only: a-z ↔ A-Z (add/subtract 32)
+  _compileCaseConvert(strExpr, body, toUpper) {
+    const allocIdx = this._getAllocFunc();
+    
+    const strPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const lenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const newPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const iLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const byteLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    
+    // Evaluate string
+    this._compileExpr(strExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(strPtrLocal));
+    
+    // Read length
+    body.push(WasmOp.local_get, ...encodeULEB128(strPtrLocal));
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(lenLocal));
+    
+    // Allocate new string
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.local_get, ...encodeULEB128(lenLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(newPtrLocal));
+    
+    // Store length
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(lenLocal));
+    body.push(WasmOp.i32_store, 2, 0);
+    
+    // Copy + convert: loop i = 0..len
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(iLocal));
+    body.push(WasmOp.block, 0x40);
+    body.push(WasmOp.loop, 0x40);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(lenLocal));
+    body.push(WasmOp.i32_ge_u);
+    body.push(WasmOp.br_if, 1);
+    
+    // Read byte
+    body.push(WasmOp.local_get, ...encodeULEB128(strPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(byteLocal));
+    
+    if (toUpper) {
+      // If byte >= 'a' (97) and byte <= 'z' (122), subtract 32
+      body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+      body.push(WasmOp.i32_const, ...encodeSLEB128(97)); // 'a'
+      body.push(WasmOp.i32_ge_u);
+      body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+      body.push(WasmOp.i32_const, ...encodeSLEB128(122)); // 'z'
+      body.push(WasmOp.i32_le_u);
+      body.push(WasmOp.i32_and);
+      body.push(WasmOp.if_, 0x40);
+        body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+        body.push(WasmOp.i32_const, 32);
+        body.push(WasmOp.i32_sub);
+        body.push(WasmOp.local_set, ...encodeULEB128(byteLocal));
+      body.push(WasmOp.end);
+    } else {
+      // If byte >= 'A' (65) and byte <= 'Z' (90), add 32
+      body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+      body.push(WasmOp.i32_const, ...encodeSLEB128(65)); // 'A'
+      body.push(WasmOp.i32_ge_u);
+      body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+      body.push(WasmOp.i32_const, ...encodeSLEB128(90)); // 'Z'
+      body.push(WasmOp.i32_le_u);
+      body.push(WasmOp.i32_and);
+      body.push(WasmOp.if_, 0x40);
+        body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+        body.push(WasmOp.i32_const, 32);
+        body.push(WasmOp.i32_add);
+        body.push(WasmOp.local_set, ...encodeULEB128(byteLocal));
+      body.push(WasmOp.end);
+    }
+    
+    // Store converted byte
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_store8, 0, 0);
+    
+    // i++
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(iLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    
+    // Return new string pointer
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
   }
 
   // indexOf(haystack, needle) → returns first index of needle in haystack, or -1
@@ -2059,6 +2171,18 @@ class WasmCompiler {
       // Built-in: indexOf(string, target) — returns first index of target, or -1
       if (funcName === 'indexOf' && expr.arguments.length === 2) {
         this._compileIndexOf(expr.arguments[0], expr.arguments[1], body);
+        return;
+      }
+      
+      // Built-in: toUpperCase(string) — returns new uppercase string
+      if (funcName === 'toUpperCase' && expr.arguments.length === 1) {
+        this._compileCaseConvert(expr.arguments[0], body, true);
+        return;
+      }
+      
+      // Built-in: toLowerCase(string) — returns new lowercase string
+      if (funcName === 'toLowerCase' && expr.arguments.length === 1) {
+        this._compileCaseConvert(expr.arguments[0], body, false);
         return;
       }
       

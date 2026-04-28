@@ -385,3 +385,52 @@ describe('WASM strings — indexOf', () => {
     `), 1);
   });
 });
+
+describe('WASM strings — toUpperCase/toLowerCase', () => {
+  it('toUpperCase basic', async () => {
+    assert.equal(await runStr('toUpperCase("hello")'), 'HELLO');
+  });
+
+  it('toLowerCase basic', async () => {
+    assert.equal(await runStr('toLowerCase("HELLO")'), 'hello');
+  });
+
+  it('toUpperCase with non-alpha', async () => {
+    assert.equal(await runStr('toUpperCase("hello world 123!")'), 'HELLO WORLD 123!');
+  });
+
+  it('toLowerCase with non-alpha', async () => {
+    assert.equal(await runStr('toLowerCase("HELLO WORLD 123!")'), 'hello world 123!');
+  });
+
+  it('toUpperCase comparison', async () => {
+    assert.equal(await run('toUpperCase("hello") == "HELLO"'), 1);
+  });
+
+  it('toLowerCase comparison', async () => {
+    assert.equal(await run('toLowerCase("HELLO") == "hello"'), 1);
+  });
+
+  it('roundtrip: lower(upper(s))', async () => {
+    assert.equal(await runStr('toLowerCase(toUpperCase("Hello World"))'), 'hello world');
+  });
+
+  it('toUpperCase empty string', async () => {
+    assert.equal(await run('len(toUpperCase(""))'), 0);
+  });
+
+  it('toUpperCase on variable', async () => {
+    assert.equal(await runStr(`
+      let s = "hello";
+      toUpperCase(s)
+    `), 'HELLO');
+  });
+
+  it('case-insensitive comparison pattern', async () => {
+    assert.equal(await run(`
+      let a = "Hello";
+      let b = "HELLO";
+      toLowerCase(a) == toLowerCase(b)
+    `), 1);
+  });
+});
