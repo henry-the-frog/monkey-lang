@@ -2597,6 +2597,63 @@ describe('Higher-Order Function Builtins', () => {
 });
 
 // Array Push Stress Tests (Apr 28, 2026)
+describe('Pipe Operator (|>)', () => {
+  it('simple pipe to function', async () => {
+    assert.strictEqual(await compileAndRun('5 |> str'), '5');
+  });
+
+  it('pipe to len', async () => {
+    assert.strictEqual(await compileAndRun('[1, 2, 3, 4, 5] |> len'), 5);
+  });
+
+  it('pipe to user function', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let double = fn(x) { x * 2 };
+      10 |> double
+    `), 20);
+  });
+
+  it('pipe chain', async () => {
+    const outputLines = [];
+    const result = await compileAndRun(`
+      let double = fn(x) { x * 2 };
+      let add1 = fn(x) { x + 1 };
+      5 |> double |> add1
+    `, { outputLines });
+    assert.strictEqual(result, 11);
+  });
+
+  it('pipe to function with extra args', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let add = fn(a, b) { a + b };
+      10 |> add(5)
+    `), 15);
+  });
+
+  it('pipe with map', async () => {
+    const outputLines = [];
+    await compileAndRun(`
+      [1, 2, 3] |> map(fn(x) { x * 10 }) |> first |> puts
+    `, { outputLines });
+    assert.deepStrictEqual(outputLines, ['10']);
+  });
+
+  it('pipe with filter and reduce', async () => {
+    assert.strictEqual(await compileAndRun(`
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        |> filter(fn(x) { x % 2 == 0 })
+        |> reduce(fn(a, b) { a + b }, 0)
+    `), 30);
+  });
+
+  it('pipe in let binding', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let result = 5 |> fn(x) { x * x };
+      result
+    `), 25);
+  });
+});
+
 describe('Inline HOF Optimization', () => {
   // These tests specifically exercise the inline compilation path
   // (callback with no captures and 1 parameter → compiled as WASM loop, not runtime call)
