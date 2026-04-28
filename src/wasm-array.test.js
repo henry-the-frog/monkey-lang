@@ -402,3 +402,114 @@ describe('WASM arrays — reallocation edge cases', () => {
     `), 299 + 399);
   });
 });
+
+describe('WASM arrays — for-in loops', () => {
+  it('basic for-in sum', async () => {
+    assert.equal(await run(`
+      let a = [10, 20, 30, 40, 50];
+      let sum = 0;
+      for (x in a) { set sum = sum + x };
+      sum
+    `), 150);
+  });
+
+  it('for-in over empty array', async () => {
+    assert.equal(await run(`
+      let a = [];
+      let sum = 0;
+      for (x in a) { set sum = sum + x };
+      sum
+    `), 0);
+  });
+
+  it('for-in with push (build new array)', async () => {
+    assert.equal(await run(`
+      let a = [1, 2, 3, 4, 5];
+      let b = [];
+      for (x in a) { push(b, x * 10) };
+      b[0] + b[2] + b[4]
+    `), 10 + 30 + 50);
+  });
+
+  it('for-in over pushed array', async () => {
+    assert.equal(await run(`
+      let a = [];
+      push(a, 100);
+      push(a, 200);
+      push(a, 300);
+      let sum = 0;
+      for (x in a) { set sum = sum + x };
+      sum
+    `), 600);
+  });
+
+  it('nested for-in (matrix sum)', async () => {
+    // Simulate 2D: [[1,2],[3,4],[5,6]] stored as flat arrays
+    assert.equal(await run(`
+      let a = [1, 2, 3];
+      let b = [10, 20, 30];
+      let sum = 0;
+      for (x in a) {
+        for (y in b) {
+          set sum = sum + x * y
+        }
+      };
+      sum
+    `), (1+2+3) * (10+20+30));
+  });
+
+  it('for-in in function', async () => {
+    assert.equal(await run(`
+      let sum = fn(arr) {
+        let total = 0;
+        for (x in arr) { set total = total + x };
+        total
+      };
+      sum([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    `), 55);
+  });
+
+  it('for-in with conditional accumulation', async () => {
+    assert.equal(await run(`
+      let a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+      let evenSum = 0;
+      for (x in a) {
+        if (x % 2 == 0) {
+          set evenSum = evenSum + x
+        }
+      };
+      evenSum
+    `), 2 + 4 + 6 + 8 + 10);
+  });
+
+  it('for-in over large grown array', async () => {
+    assert.equal(await run(`
+      let a = [];
+      let i = 0;
+      while (i < 500) { push(a, i); set i = i + 1 };
+      let sum = 0;
+      for (x in a) { set sum = sum + x };
+      sum
+    `), 500 * 499 / 2);
+  });
+
+  it('for-in with map-like transformation', async () => {
+    assert.equal(await run(`
+      let src = [1, 2, 3, 4, 5];
+      let dst = [];
+      for (x in src) { push(dst, x * x) };
+      dst[0] + dst[1] + dst[2] + dst[3] + dst[4]
+    `), 1 + 4 + 9 + 16 + 25);
+  });
+
+  it('for-in counting', async () => {
+    assert.equal(await run(`
+      let a = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+      let count = 0;
+      for (x in a) {
+        if (x > 50) { set count = count + 1 }
+      };
+      count
+    `), 5);
+  });
+});
