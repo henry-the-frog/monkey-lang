@@ -2690,6 +2690,140 @@ describe('Inline HOF Optimization', () => {
   });
 });
 
+describe('Stress Tests: Complex Programs', () => {
+  it('5-level nested closures with capture', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let make = fn(a) {
+        fn(b) {
+          fn(c) {
+            fn(d) {
+              fn(e) { a + b + c + d + e }
+            }
+          }
+        }
+      };
+      make(1)(2)(3)(4)(5)
+    `), 15);
+  });
+
+  it('large array operations (1000 elements)', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let arr = [];
+      let i = 0;
+      while (i < 1000) {
+        arr = push(arr, i);
+        i = i + 1;
+      }
+      arr[999] + len(arr)
+    `), 1999);
+  });
+
+  it('recursive closure with mutable capture', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let count = 0;
+      let fib = fn(n) {
+        count = count + 1;
+        if (n <= 1) { n } else { fib(n - 1) + fib(n - 2) }
+      };
+      fib(10)
+    `), 55);
+  });
+
+  it('class method calling another method', async () => {
+    assert.strictEqual(await compileAndRun(`
+      class Acc {
+        let total;
+        fn init(n) { self.total = n; }
+        fn inc() { self.total = self.total + 1; self }
+        fn addN(n) {
+          let i = 0;
+          while (i < n) { self.inc(); i = i + 1; }
+          self
+        }
+        fn get() { self.total }
+      }
+      let a = Acc(0);
+      a.addN(10).inc().inc().get()
+    `), 12);
+  });
+
+  it('try-catch with closure in catch block', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let handler = fn(x) { x * 2 };
+      let result = 0;
+      try { throw 21; }
+      catch (e) { result = handler(e); }
+      result
+    `), 42);
+  });
+
+  it('nested for-in with closure capture (combinatorics)', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let results = [];
+      for (x in [1, 2, 3]) {
+        for (y in [10, 20, 30]) {
+          results = push(results, x * y);
+        }
+      }
+      reduce(results, fn(a, b) { a + b }, 0)
+    `), 360);
+  });
+
+  it('do-while inside for-in with break', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let total = 0;
+      for (x in [1, 2, 3, 4, 5]) {
+        let acc = 0;
+        do {
+          acc = acc + x;
+          if (acc > 10) { break; }
+        } while (acc < 20);
+        total = total + acc;
+      }
+      total
+    `), 62);
+  });
+
+  it('map/filter/reduce pipeline on large data', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let data = [];
+      let i = 1;
+      while (i <= 100) { data = push(data, i); i = i + 1; }
+      reduce(
+        map(
+          filter(data, fn(x) { x % 2 == 0 }),
+          fn(x) { x * x }
+        ),
+        fn(a, b) { a + b },
+        0
+      )
+    `), 171700);
+  });
+
+  it('match expression with complex patterns', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let classify = fn(n) {
+        match (n % 3) {
+          0 => 100,
+          1 => 200,
+          _ => 300
+        }
+      };
+      classify(9) + classify(10) + classify(11)
+    `), 600);
+  });
+
+  it('closure over loop variable (fresh binding per iteration)', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let fns = [];
+      for (x in [10, 20, 30]) {
+        fns = push(fns, fn() { x });
+      }
+      fns[0]() + fns[1]() + fns[2]()
+    `), 60);
+  });
+});
+
 describe('Array Push Performance', () => {
   it('push 5000 elements without crashing (was O(N²), crashed at 3-5K)', async () => {
     const result = await compileAndRun(`
