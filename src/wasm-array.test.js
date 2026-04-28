@@ -310,3 +310,95 @@ describe('WASM arrays — reallocation (growth beyond capacity)', () => {
     `), 499500);
   });
 });
+
+describe('WASM arrays — reallocation edge cases', () => {
+  it('grow from truly empty (0 elements, 256 cap)', async () => {
+    assert.equal(await run(`
+      let a = [];
+      push(a, 42);
+      a[0]
+    `), 42);
+  });
+
+  it('grow from cap=1 (single element literal)', async () => {
+    // [1] has len=1, cap=2 → after 2 pushes, needs realloc
+    assert.equal(await run(`
+      let a = [1];
+      push(a, 2);
+      push(a, 3);
+      push(a, 4);
+      len(a)
+    `), 4);
+  });
+
+  it('push in map callback (HOF with growing array)', async () => {
+    // map creates new array, should work with reallocation
+    assert.equal(await run(`
+      let a = [];
+      let i = 0;
+      while (i < 300) { push(a, i); set i = i + 1 };
+      let b = map(a, fn(x) { x * 2 });
+      b[299]
+    `), 598);
+  });
+
+  it('filter on large grown array', async () => {
+    assert.equal(await run(`
+      let a = [];
+      let i = 0;
+      while (i < 500) { push(a, i); set i = i + 1 };
+      let evens = filter(a, fn(x) { x % 2 == 0 });
+      len(evens)
+    `), 250);
+  });
+
+  it('reduce on large grown array', async () => {
+    // Sum of 0..99 = 4950
+    assert.equal(await run(`
+      let a = [];
+      let i = 0;
+      while (i < 100) { push(a, i); set i = i + 1 };
+      reduce(a, fn(acc, x) { acc + x }, 0)
+    `), 4950);
+  });
+
+  it('push after set (realloc does not lose set values)', async () => {
+    assert.equal(await run(`
+      let a = [];
+      let i = 0;
+      while (i < 256) { push(a, 0); set i = i + 1 };
+      set a[0] = 999;
+      set a[255] = 888;
+      push(a, 777);
+      a[0] + a[255] + a[256]
+    `), 999 + 888 + 777);
+  });
+
+  it('interleaved push on two arrays near capacity', async () => {
+    assert.equal(await run(`
+      let a = [];
+      let b = [];
+      let i = 0;
+      while (i < 300) {
+        push(a, i);
+        push(b, 1000 - i);
+        set i = i + 1
+      };
+      a[0] + a[299] + b[0] + b[299]
+    `), 0 + 299 + 1000 + 701);
+  });
+
+  it('nested function creating large arrays', async () => {
+    assert.equal(await run(`
+      let range = fn(n) {
+        let a = [];
+        let i = 0;
+        while (i < n) { push(a, i); set i = i + 1 };
+        a
+      };
+      let a = range(300);
+      let b = range(400);
+      a[299] + b[399]
+    `), 299 + 399);
+  });
+});

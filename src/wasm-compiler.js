@@ -120,12 +120,13 @@ class WasmCompiler {
     }
     
     // Pass 2.5: Initialize globals (compile init expressions into a start-like function)
-    this._initializeGlobals(program.statements);
+    // Globals are now initialized inline in the main block (preserving execution order)
+    // No separate init function needed
     
-    // Collect non-let, non-function, non-import statements for main block
+    // Collect non-import, non-function-def statements for main block (lets + expressions in order)
     const mainStatements = program.statements.filter(stmt =>
-      !(stmt instanceof ast.LetStatement) &&
-      !(stmt instanceof ast.ImportStatement)
+      !(stmt instanceof ast.ImportStatement) &&
+      !(stmt instanceof ast.LetStatement && stmt.value instanceof ast.FunctionLiteral)
     );
     if (mainStatements.length > 0) {
       this._compileMainBlock(mainStatements);
@@ -596,9 +597,6 @@ class WasmCompiler {
     this.currentExtraLocals = 0;
     
     const body = [];
-    if (this._initFuncIdx !== undefined) {
-      body.push(WasmOp.call, ...encodeULEB128(this._initFuncIdx));
-    }
     
     for (let i = 0; i < statements.length; i++) {
       const isLast = i === statements.length - 1;
@@ -618,17 +616,27 @@ class WasmCompiler {
       this._compileExpr(stmt.returnValue, body);
       body.push(WasmOp.return_);
     } else if (stmt instanceof ast.LetStatement) {
-      // Allocate a local for this variable
-      const localIdx = this.currentLocalCount + this.currentExtraLocals;
-      this.currentExtraLocals++;
-      this.currentLocals.set(stmt.name.value, localIdx);
-      
-      this._compileExpr(stmt.value, body);
-      body.push(WasmOp.local_set, ...encodeULEB128(localIdx));
-      
-      // If this is the last statement and we need a return value, push the local
-      if (isLast) {
-        body.push(WasmOp.local_get, ...encodeULEB128(localIdx));
+      const name = stmt.name.value;
+      // Check if this is a global variable (top-level let)
+      if (this.globals.has(name)) {
+        this._compileExpr(stmt.value, body);
+        body.push(WasmOp.global_set, ...encodeULEB128(this.globals.get(name).index));
+        if (isLast) {
+          body.push(WasmOp.global_get, ...encodeULEB128(this.globals.get(name).index));
+        }
+      } else {
+        // Allocate a local for this variable (inside a function)
+        const localIdx = this.currentLocalCount + this.currentExtraLocals;
+        this.currentExtraLocals++;
+        this.currentLocals.set(name, localIdx);
+        
+        this._compileExpr(stmt.value, body);
+        body.push(WasmOp.local_set, ...encodeULEB128(localIdx));
+        
+        // If this is the last statement and we need a return value, push the local
+        if (isLast) {
+          body.push(WasmOp.local_get, ...encodeULEB128(localIdx));
+        }
       }
     } else if (stmt instanceof ast.SetStatement) {
       // Array/indexed assignment: set arr[i] = value
