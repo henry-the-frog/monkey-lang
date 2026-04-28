@@ -2639,6 +2639,9 @@ var WasmCompiler = class {
     this._heapBaseGlobal = null;
     this._allocFuncIdx = null;
     this._needsMemory = false;
+    this._anonCounter = 0;
+    this._anonMap = /* @__PURE__ */ new Map();
+    this._anonFunctions = [];
   }
   // Count local (non-imported) functions in the map
   _localFunctionCount() {
@@ -2682,6 +2685,9 @@ var WasmCompiler = class {
       if (stmt instanceof LetStatement && stmt.value instanceof FunctionLiteral) {
         this._compileFunction(stmt.name.value, stmt.value);
       }
+    }
+    for (const { name, fnLit } of this._anonFunctions) {
+      this._compileFunction(name, fnLit);
     }
     this._initializeGlobals(program.statements);
     const mainStatements = program.statements.filter(
@@ -2871,6 +2877,44 @@ var WasmCompiler = class {
         this.functions.set(name, { index: funcIdx, params: paramCount, typeIdx, tableIdx });
       }
     }
+    this._scanForAnonymousFunctions(statements);
+  }
+  _scanForAnonymousFunctions(nodes) {
+    const scan = (node) => {
+      if (!node) return;
+      if (node instanceof FunctionLiteral && !this._anonMap.has(node)) {
+        const name = `__anon_${this._anonCounter++}`;
+        const paramCount = node.parameters.length;
+        const typeIdx = this.module.addType(
+          new Array(paramCount).fill(this.numType),
+          [this.numType]
+        );
+        const funcIdx = this.module.imports.length + this.module.functions.length + this._localFunctionCount();
+        const tableIdx = this.module.addTableElement(funcIdx);
+        this.functions.set(name, { index: funcIdx, params: paramCount, typeIdx, tableIdx });
+        this._anonMap.set(node, name);
+        this._anonFunctions.push({ name, fnLit: node });
+        if (node.body) scan(node.body);
+        return;
+      }
+      if (node.statements) node.statements.forEach((s) => scan(s));
+      if (node.expression) scan(node.expression);
+      if (node.value) scan(node.value);
+      if (node.returnValue) scan(node.returnValue);
+      if (node.consequence) scan(node.consequence);
+      if (node.alternative) scan(node.alternative);
+      if (node.body) scan(node.body);
+      if (node.left) scan(node.left);
+      if (node.right) scan(node.right);
+      if (node.arguments) node.arguments.forEach((a) => scan(a));
+      if (node.elements) node.elements.forEach((e) => scan(e));
+      if (node.condition) scan(node.condition);
+      if (node.init) scan(node.init);
+      if (node.update) scan(node.update);
+      if (node.index) scan(node.index);
+      if (node.function) scan(node.function);
+    };
+    for (const node of nodes) scan(node);
   }
   _compileFunction(name, fnLit) {
     const info = this.functions.get(name);
@@ -3540,8 +3584,37 @@ var WasmCompiler = class {
       body.push(WasmOp.end);
       return;
     }
+    if (expr instanceof FunctionLiteral) {
+      const anonKey = this._anonMap.get(expr);
+      if (anonKey) {
+        const info = this.functions.get(anonKey);
+        this._emitConst(body, info.tableIdx);
+      } else {
+        throw new Error("Anonymous function not pre-registered (should not happen)");
+      }
+      return;
+    }
     if (expr instanceof WhileExpression) {
       this._compileWhile(expr.condition, expr.body, body);
+      this._emitConst(body, 0);
+      return;
+    }
+    if (expr instanceof DoWhileExpression) {
+      body.push(WasmOp.loop, 64);
+      if (expr.body) {
+        const stmts = expr.body.statements;
+        for (let i = 0; i < stmts.length; i++) {
+          this._compileStatement(stmts[i], body, false);
+        }
+      }
+      this._compileExpr(expr.condition, body);
+      if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+      if (this.useF64) {
+        this._emitF64Const(body, 0);
+        body.push(WasmOp.f64_ne);
+      }
+      body.push(WasmOp.br_if, 0);
+      body.push(WasmOp.end);
       this._emitConst(body, 0);
       return;
     }

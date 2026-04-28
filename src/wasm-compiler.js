@@ -51,6 +51,9 @@ class WasmCompiler {
     this._heapBaseGlobal = null; // global for heap pointer (bump allocator)
     this._allocFuncIdx = null; // lazily added __alloc function
     this._needsMemory = false; // set when arrays or dynamic allocation needed
+    this._anonCounter = 0; // counter for anonymous function names
+    this._anonMap = new Map(); // FunctionLiteral node → name string
+    this._anonFunctions = []; // [{name, fnLit}] — anonymous functions to compile
   }
 
   // Count local (non-imported) functions in the map
@@ -107,6 +110,11 @@ class WasmCompiler {
       if (stmt instanceof ast.LetStatement && stmt.value instanceof ast.FunctionLiteral) {
         this._compileFunction(stmt.name.value, stmt.value);
       }
+    }
+    
+    // Pass 2.1: Compile anonymous function bodies
+    for (const { name, fnLit } of this._anonFunctions) {
+      this._compileFunction(name, fnLit);
     }
     
     // Pass 2.5: Initialize globals (compile init expressions into a start-like function)
@@ -336,6 +344,52 @@ class WasmCompiler {
         this.functions.set(name, { index: funcIdx, params: paramCount, typeIdx, tableIdx });
       }
     }
+    
+    // Scan all statements for inline FunctionLiteral nodes (not assigned to let)
+    this._scanForAnonymousFunctions(statements);
+  }
+  
+  _scanForAnonymousFunctions(nodes) {
+    const scan = (node) => {
+      if (!node) return;
+      if (node instanceof ast.FunctionLiteral && !this._anonMap.has(node)) {
+        // Check if this is already a named function (assigned via let)
+        // Named functions are handled above, so we only catch inline ones
+        const name = `__anon_${this._anonCounter++}`;
+        const paramCount = node.parameters.length;
+        const typeIdx = this.module.addType(
+          new Array(paramCount).fill(this.numType),
+          [this.numType]
+        );
+        const funcIdx = this.module.imports.length + this.module.functions.length + this._localFunctionCount();
+        const tableIdx = this.module.addTableElement(funcIdx);
+        this.functions.set(name, { index: funcIdx, params: paramCount, typeIdx, tableIdx });
+        this._anonMap.set(node, name);
+        this._anonFunctions.push({ name, fnLit: node });
+        
+        // Also scan inside the anonymous function body
+        if (node.body) scan(node.body);
+        return;
+      }
+      // Recursively scan child nodes
+      if (node.statements) node.statements.forEach(s => scan(s));
+      if (node.expression) scan(node.expression);
+      if (node.value) scan(node.value);
+      if (node.returnValue) scan(node.returnValue);
+      if (node.consequence) scan(node.consequence);
+      if (node.alternative) scan(node.alternative);
+      if (node.body) scan(node.body);
+      if (node.left) scan(node.left);
+      if (node.right) scan(node.right);
+      if (node.arguments) node.arguments.forEach(a => scan(a));
+      if (node.elements) node.elements.forEach(e => scan(e));
+      if (node.condition) scan(node.condition);
+      if (node.init) scan(node.init);
+      if (node.update) scan(node.update);
+      if (node.index) scan(node.index);
+      if (node.function) scan(node.function);
+    };
+    for (const node of nodes) scan(node);
   }
   
   _compileFunction(name, fnLit) {
@@ -1134,11 +1188,47 @@ class WasmCompiler {
       body.push(WasmOp.end);
       return;
     }
+
+    // Inline function literal — uses pre-registered anonymous function
+    if (expr instanceof ast.FunctionLiteral) {
+      // Look up the pre-registered entry for this function literal
+      const anonKey = this._anonMap.get(expr);
+      if (anonKey) {
+        const info = this.functions.get(anonKey);
+        this._emitConst(body, info.tableIdx);
+      } else {
+        throw new Error('Anonymous function not pre-registered (should not happen)');
+      }
+      return;
+    }
     
     // While expression
     if (expr instanceof ast.WhileExpression) {
       this._compileWhile(expr.condition, expr.body, body);
       this._emitConst(body, 0); // while returns 0 (null)
+      return;
+    }
+
+    // Do-while expression: do { body } while (condition)
+    if (expr instanceof ast.DoWhileExpression) {
+      body.push(WasmOp.loop, 0x40);     // loop with void type
+      
+      // Body (executes at least once)
+      if (expr.body) {
+        const stmts = expr.body.statements;
+        for (let i = 0; i < stmts.length; i++) {
+          this._compileStatement(stmts[i], body, false);
+        }
+      }
+      
+      // Condition — if true, branch back to loop start
+      this._compileExpr(expr.condition, body);
+      if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+      if (this.useF64) { this._emitF64Const(body, 0.0); body.push(WasmOp.f64_ne); }
+      body.push(WasmOp.br_if, 0);       // br_if to loop start if condition true
+      
+      body.push(WasmOp.end);            // end loop
+      this._emitConst(body, 0); // do-while returns 0
       return;
     }
 

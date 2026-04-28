@@ -368,6 +368,23 @@ let sieve = fn(n) {
 sieve(10000)  // 1229 primes`
   },
   {
+    name: 'Collatz',
+    code: `// Collatz conjecture: steps to reach 1
+let collatz = fn(n) {
+  let steps = 0;
+  do {
+    if (n % 2 == 0) {
+      set n = n / 2;
+    } else {
+      set n = n * 3 + 1;
+    };
+    set steps = steps + 1;
+  } while (n != 1);
+  steps
+};
+collatz(27)  // 111 steps`
+  },
+  {
     name: 'Nested Loops',
     code: `// 1000×1000 nested loop — pure WASM speed
 let nested = fn(n) {
