@@ -132,6 +132,37 @@ describe('WASM Performance Benchmarks', () => {
     });
   });
 
+  describe('tail-call optimization', () => {
+    it('tail-recursive sum handles 1M calls', async () => {
+      const { result, execute } = await bench(
+        'let sum = fn(n, acc) { if (n <= 0) { acc } else { sum(n - 1, acc + n) } }; sum(1000000, 0)'
+      );
+      // i32 wraps, but the important thing is it doesn't stack overflow
+      assert.ok(execute < 10, `TCO sum(1M) took ${execute.toFixed(1)}ms, expected <10ms`);
+    });
+
+    it('tail-recursive factorial', async () => {
+      const { result } = await bench(
+        'let fact = fn(n, acc) { if (n <= 1) { acc } else { fact(n - 1, n * acc) } }; fact(12, 1)'
+      );
+      assert.strictEqual(result, 479001600);
+    });
+
+    it('tail-recursive countdown 100K', async () => {
+      const { result } = await bench(
+        'let countdown = fn(n) { if (n <= 0) { 0 } else { countdown(n - 1) } }; countdown(100000)'
+      );
+      assert.strictEqual(result, 0);
+    });
+
+    it('ackermann is NOT optimized (has non-tail recursive calls)', async () => {
+      const { result } = await bench(
+        'let ack = fn(m, n) { if (m == 0) { n + 1 } else { if (n == 0) { ack(m - 1, 1) } else { ack(m - 1, ack(m, n - 1)) } } }; ack(3, 4)'
+      );
+      assert.strictEqual(result, 125);
+    });
+  });
+
   describe('compilation', () => {
     it('compile time < 20ms for fibonacci', async () => {
       const { compile } = await bench(

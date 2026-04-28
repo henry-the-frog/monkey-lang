@@ -892,9 +892,23 @@ export class WasmCompiler {
         this.nextParamIndex++;
       }
 
-      // Compile function body
+      // Compile function body (with tail-call optimization if applicable)
       const body = func.funcLit.body;
-      this._compileBlockReturning(body);
+      const tailCallInfo = this._detectTailRecursion(func.name, func.funcLit);
+      
+      if (tailCallInfo) {
+        // Tail-call optimization: wrap body in a loop
+        // The tail call becomes: set params, branch to loop start
+        this.currentFunc._tailCallEnabled = true;
+        this.currentFunc._tailCallDepth = this.blockDepth;
+        this.currentBody.loop(ValType.i32);  // loop (result i32)
+        this.blockDepth++;
+        this._compileBlockReturning(body);
+        this.blockDepth--;
+        this.currentBody.end();  // end loop
+      } else {
+        this._compileBlockReturning(body);
+      }
 
       this.currentBody = prevBody;
       this.blockDepth = prevBlockDepth;
@@ -1797,8 +1811,28 @@ export class WasmCompiler {
       const name = node.function.value;
       const binding = this.currentScope.resolve(name);
       if (binding && binding.type === 'func') {
+        // Check for tail-call optimization: if calling ourselves in tail position
+        if (this.currentFunc?._tailCallEnabled && name === this.currentFunc.name) {
+          // Tail call optimization: set parameters and branch to loop start
+          // Compile all arguments onto the stack, then set params in reverse
+          // (to avoid overwriting params that are used in later arg expressions)
+          const paramCount = node.arguments.length;
+          for (const arg of node.arguments) {
+            this.compileNode(arg);
+          }
+          // Set params in reverse order (stack is LIFO)
+          for (let i = paramCount - 1; i >= 0; i--) {
+            this.currentBody.localSet(i);
+          }
+          // Branch to loop start
+          const loopDepth = this.blockDepth - this.currentFunc._tailCallDepth - 1;
+          this.currentBody.br(loopDepth);
+          // After br, need a dummy value for the block type (unreachable code)
+          this.currentBody.i32Const(0);
+          return;
+        }
+        
         // Direct function call
-        // Compile arguments
         for (const arg of node.arguments) {
           this.compileNode(arg);
         }
@@ -3296,6 +3330,116 @@ export class WasmCompiler {
       if (!nonIntParams.has(name)) intParams.add(name);
     }
     return intParams;
+  }
+
+  // Detect if a function has ONLY tail-recursive calls (all recursive calls in tail position)
+  _detectTailRecursion(funcName, funcLit) {
+    if (!funcName || !funcLit.body) return null;
+    
+    let hasTailCalls = false;
+    let hasNonTailCalls = false;
+    
+    // Check if a node contains any non-tail recursive calls to funcName
+    const checkForNonTailCalls = (node) => {
+      if (!node) return;
+      
+      if (node instanceof ast.CallExpression) {
+        if (node.function instanceof ast.Identifier && node.function.value === funcName) {
+          hasNonTailCalls = true;
+        }
+        // Also check arguments for recursive calls
+        for (const arg of node.arguments || []) {
+          checkForNonTailCalls(arg);
+        }
+        return;
+      }
+      
+      if (node instanceof ast.InfixExpression) {
+        checkForNonTailCalls(node.left);
+        checkForNonTailCalls(node.right);
+        return;
+      }
+      
+      if (node instanceof ast.PrefixExpression) {
+        checkForNonTailCalls(node.right);
+        return;
+      }
+      
+      if (node instanceof ast.IndexExpression) {
+        checkForNonTailCalls(node.left);
+        checkForNonTailCalls(node.index);
+        return;
+      }
+      
+      if (node instanceof ast.AssignExpression) {
+        checkForNonTailCalls(node.value);
+        return;
+      }
+    };
+    
+    // Check tail position recursively
+    const checkTail = (node) => {
+      if (!node) return;
+      
+      // Direct tail call
+      if (node instanceof ast.CallExpression) {
+        if (node.function instanceof ast.Identifier && node.function.value === funcName) {
+          hasTailCalls = true;
+          // Check if ANY argument contains a recursive call (which wouldn't be tail)
+          for (const arg of node.arguments || []) {
+            checkForNonTailCalls(arg);
+          }
+          return;
+        }
+        // Not a self-call in tail position — check if it contains recursive calls
+        checkForNonTailCalls(node);
+        return;
+      }
+      
+      // If/else: check both branches for tail calls
+      if (node instanceof ast.IfExpression) {
+        // The condition is NOT in tail position
+        checkForNonTailCalls(node.condition);
+        if (node.consequence) checkTail(this._lastExpr(node.consequence));
+        if (node.alternative) checkTail(this._lastExpr(node.alternative));
+        // Also check non-last statements for non-tail calls
+        if (node.consequence) {
+          for (let i = 0; i < node.consequence.statements.length - 1; i++) {
+            checkForNonTailCalls(node.consequence.statements[i]);
+          }
+        }
+        if (node.alternative) {
+          for (let i = 0; i < node.alternative.statements.length - 1; i++) {
+            checkForNonTailCalls(node.alternative.statements[i]);
+          }
+        }
+        return;
+      }
+      
+      // Any other node — check for non-tail calls
+      checkForNonTailCalls(node);
+    };
+    
+    checkTail(this._lastExpr(funcLit.body));
+    
+    // Also check non-last statements of the body
+    if (funcLit.body && funcLit.body.statements) {
+      for (let i = 0; i < funcLit.body.statements.length - 1; i++) {
+        checkForNonTailCalls(funcLit.body.statements[i]);
+      }
+    }
+    
+    // Only enable TCO if there are tail calls and NO non-tail calls
+    return (hasTailCalls && !hasNonTailCalls) ? { funcName } : null;
+  }
+  
+  // Get the last expression from a block (the return value)
+  _lastExpr(block) {
+    if (!block || !block.statements || block.statements.length === 0) return null;
+    const last = block.statements[block.statements.length - 1];
+    if (last instanceof ast.ExpressionStatement) return last.expression;
+    if (last instanceof ast.ReturnStatement) return last.returnValue;
+    return last;
   }
 
   _isDefinitelyInteger(node) {
