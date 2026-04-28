@@ -217,3 +217,50 @@ describe('WASM strings — through variables (type inference)', () => {
     `), 1);
   });
 });
+
+describe('WASM strings — function parameter type inference', () => {
+  it('string concat through function', async () => {
+    assert.equal(await runStr(`
+      let a = "hello";
+      let b = " world";
+      let concat = fn(x, y) { x + y };
+      concat(a, b)
+    `), 'hello world');
+  });
+
+  it('string comparison through function', async () => {
+    assert.equal(await run(`
+      let check = fn(s, target) { s == target };
+      let a = "hello";
+      let b = "hello";
+      check(a, b)
+    `), 1);
+  });
+
+  it('string function returning concat result', async () => {
+    assert.equal(await run(`
+      let greet = fn(name) { "Hello, " + name };
+      let result = greet("world");
+      len(result)
+    `), 12);
+  });
+
+  it('string function with comparison in if', async () => {
+    assert.equal(await run(`
+      let isHello = fn(s) {
+        if (s == "hello") { 1 } else { 0 }
+      };
+      let word = "hello";
+      isHello(word)
+    `), 1);
+  });
+
+  it('multiple string function calls', async () => {
+    assert.equal(await run(`
+      let add_prefix = fn(prefix, s) { prefix + s };
+      let a = add_prefix("hello", " world");
+      let b = add_prefix("foo", "bar");
+      len(a) + len(b)
+    `), 11 + 6);
+  });
+});

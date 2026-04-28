@@ -2692,6 +2692,7 @@ var WasmCompiler = class {
     }
     this._processGlobals(program.statements);
     this._collectFunctions(program.statements);
+    this._inferCallSiteTypes(program.statements);
     for (const stmt of program.statements) {
       if (stmt instanceof LetStatement && stmt.value instanceof FunctionLiteral) {
         this._compileFunction(stmt.name.value, stmt.value);
@@ -3340,12 +3341,98 @@ var WasmCompiler = class {
   _isStringExpr(expr) {
     return this._inferExprType(expr) === "string";
   }
+  // Heuristic type inference for function parameters.
+  // Scans the function body for patterns that reveal parameter types.
+  _inferParamTypes(fnLit) {
+    const paramNames = new Set(fnLit.parameters.map((p) => p.value));
+    if (paramNames.size === 0) return;
+    const self = this;
+    function scan(node) {
+      if (!node) return;
+      if (node instanceof InfixExpression && node.operator === "+") {
+        if (node.left instanceof Identifier && paramNames.has(node.left.value) && self._inferExprType(node.right) === "string") {
+          self.currentVarTypes.set(node.left.value, "string");
+        }
+        if (node.right instanceof Identifier && paramNames.has(node.right.value) && self._inferExprType(node.left) === "string") {
+          self.currentVarTypes.set(node.right.value, "string");
+        }
+      }
+      if (node instanceof InfixExpression && (node.operator === "==" || node.operator === "!=")) {
+        if (node.left instanceof Identifier && paramNames.has(node.left.value) && self._inferExprType(node.right) === "string") {
+          self.currentVarTypes.set(node.left.value, "string");
+        }
+        if (node.right instanceof Identifier && paramNames.has(node.right.value) && self._inferExprType(node.left) === "string") {
+          self.currentVarTypes.set(node.right.value, "string");
+        }
+      }
+      for (const key of Object.keys(node)) {
+        if (key === "token") continue;
+        const val = node[key];
+        if (val && typeof val === "object") {
+          if (Array.isArray(val)) {
+            for (const item of val) {
+              if (item && typeof item === "object") scan(item);
+            }
+          } else if (val.constructor && !val.constructor.name.startsWith("Token")) {
+            scan(val);
+          }
+        }
+      }
+    }
+    scan(fnLit.body);
+  }
+  // Infer function parameter types from call sites in the program.
+  // If greet(a, b) is called and a is known to be string, mark greet's first param as string.
+  _inferCallSiteTypes(statements) {
+    const funcParams = /* @__PURE__ */ new Map();
+    for (const stmt of statements) {
+      if (stmt instanceof LetStatement && stmt.value instanceof FunctionLiteral) {
+        funcParams.set(stmt.name.value, stmt.value.parameters.map((p) => p.value));
+      }
+    }
+    const self = this;
+    function scanForCalls(node) {
+      if (!node) return;
+      if (node instanceof CallExpression && node.function instanceof Identifier) {
+        const funcName = node.function.value;
+        const params = funcParams.get(funcName);
+        if (params && node.arguments) {
+          for (let i = 0; i < Math.min(params.length, node.arguments.length); i++) {
+            const argType = self._inferExprType(node.arguments[i]);
+            if (argType === "string") {
+              if (!self._funcParamTypes) self._funcParamTypes = /* @__PURE__ */ new Map();
+              const key = `${funcName}:${params[i]}`;
+              self._funcParamTypes.set(key, "string");
+            }
+          }
+        }
+      }
+      for (const key of Object.keys(node)) {
+        if (key === "token") continue;
+        const val = node[key];
+        if (val && typeof val === "object") {
+          if (Array.isArray(val)) {
+            for (const item of val) {
+              if (item && typeof item === "object") scanForCalls(item);
+            }
+          } else {
+            scanForCalls(val);
+          }
+        }
+      }
+    }
+    for (const stmt of statements) {
+      scanForCalls(stmt);
+    }
+  }
   _processGlobals(statements) {
     for (const stmt of statements) {
       if (stmt instanceof LetStatement && !(stmt.value instanceof FunctionLiteral)) {
         const name = stmt.name.value;
         const idx = this.module.addGlobal(this.numType, true, 0);
         this.globals.set(name, { index: idx, mutable: true });
+        const inferredType = this._inferExprType(stmt.value);
+        this.varTypes.set(name, inferredType);
       }
     }
   }
@@ -3453,6 +3540,16 @@ var WasmCompiler = class {
     for (let i = 0; i < fnLit.parameters.length; i++) {
       this.currentLocals.set(fnLit.parameters[i].value, i);
     }
+    if (this._funcParamTypes) {
+      for (let i = 0; i < fnLit.parameters.length; i++) {
+        const paramName = fnLit.parameters[i].value;
+        const key = `${name}:${paramName}`;
+        if (this._funcParamTypes.has(key)) {
+          this.currentVarTypes.set(paramName, this._funcParamTypes.get(key));
+        }
+      }
+    }
+    this._inferParamTypes(fnLit);
     const body = [];
     const stmts = fnLit.body.statements;
     if (stmts.length === 0) {
