@@ -120,6 +120,9 @@ export class WasmCompiler {
   }
 
   compile(input) {
+    if (typeof input !== 'string') {
+      throw new TypeError(`WasmCompiler.compile() expects a string, got ${typeof input}. Use compileProgram() for AST objects.`);
+    }
     const lexer = new Lexer(input);
     const parser = new Parser(lexer);
     const program = parser.parseProgram();
@@ -5261,6 +5264,9 @@ function _hashString(str) {
 }
 
 export async function compileAndRun(input, options = {}) {
+  if (typeof input !== 'string') {
+    throw new TypeError(`compileAndRun() expects a string, got ${typeof input}`);
+  }
   const timings = {};
   const t0 = performance.now();
 
