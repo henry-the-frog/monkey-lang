@@ -645,6 +645,7 @@ class WasmCompiler {
         if (name === 'len') return 'int';
         if (name === 'push') return 'int';
         if (name === 'map' || name === 'filter') return 'array';
+        if (name === 'charAt' || name === 'substring') return 'string';
       }
       return 'unknown';
     }
@@ -1111,6 +1112,143 @@ class WasmCompiler {
     body.push(WasmOp.br, 0);          // br to loop start (continue)
     body.push(WasmOp.end);            // end loop
     body.push(WasmOp.end);            // end block
+  }
+
+  // charAt(str, idx) → returns a new 1-character string
+  _compileCharAt(strExpr, idxExpr, body) {
+    const allocIdx = this._getAllocFunc();
+    
+    // Temp locals
+    const strPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const idxLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const newPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    
+    // Evaluate string pointer
+    this._compileExpr(strExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(strPtrLocal));
+    
+    // Evaluate index
+    this._compileExpr(idxExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(idxLocal));
+    
+    // Allocate new string: 4 (len header) + 1 (byte)
+    body.push(WasmOp.i32_const, 5);
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(newPtrLocal));
+    
+    // Store length = 1
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_store, 2, 0);
+    
+    // Copy byte: newPtr[4] = strPtr[4 + idx]
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(strPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(idxLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.i32_store8, 0, 0);
+    
+    // Return new string pointer
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+  }
+  
+  // substring(str, start, end) → returns new string from start to end (exclusive)
+  _compileSubstring(strExpr, startExpr, endExpr, body) {
+    const allocIdx = this._getAllocFunc();
+    
+    // Temp locals
+    const strPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const startLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const endLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const newPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const newLenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const iLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    
+    // Evaluate args
+    this._compileExpr(strExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(strPtrLocal));
+    
+    this._compileExpr(startExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(startLocal));
+    
+    this._compileExpr(endExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(endLocal));
+    
+    // newLen = end - start
+    body.push(WasmOp.local_get, ...encodeULEB128(endLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_sub);
+    body.push(WasmOp.local_set, ...encodeULEB128(newLenLocal));
+    
+    // Allocate: 4 + newLen
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.local_get, ...encodeULEB128(newLenLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(newPtrLocal));
+    
+    // Store length
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(newLenLocal));
+    body.push(WasmOp.i32_store, 2, 0);
+    
+    // Copy bytes: loop i = 0..newLen
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(iLocal));
+    body.push(WasmOp.block, 0x40);
+    body.push(WasmOp.loop, 0x40);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(newLenLocal));
+    body.push(WasmOp.i32_ge_u);
+    body.push(WasmOp.br_if, 1);
+    
+    // newPtr[4+i] = strPtr[4+start+i]
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(strPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.i32_store8, 0, 0);
+    
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(iLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    
+    // Return new string pointer
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
   }
 
   // Compile push(array, value) — with reallocation support
@@ -1734,6 +1872,18 @@ class WasmCompiler {
       // Built-in: reduce(array, fn, init) — fold array with fn(acc, elem) starting from init
       if (funcName === 'reduce' && expr.arguments.length === 3) {
         this._compileArrayReduce(expr.arguments[0], expr.arguments[1], expr.arguments[2], body);
+        return;
+      }
+      
+      // Built-in: charAt(string, index) — returns single-character string
+      if (funcName === 'charAt' && expr.arguments.length === 2) {
+        this._compileCharAt(expr.arguments[0], expr.arguments[1], body);
+        return;
+      }
+      
+      // Built-in: substring(string, start, end) — returns substring
+      if (funcName === 'substring' && expr.arguments.length === 3) {
+        this._compileSubstring(expr.arguments[0], expr.arguments[1], expr.arguments[2], body);
         return;
       }
       
