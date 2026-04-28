@@ -73,6 +73,11 @@ export class WasmCompiler {
     this._classRegistry = new Map(); // className -> { fields, methods: [{name, tableSlot, paramCount}], ctorFuncIdx }
     this._currentClassName = null; // set during class method compilation
 
+    // Box/cell tracking for mutable closure captures
+    this._boxedVars = new Map(); // scopeId → Set<varName> — filled by _analyzeBoxedVariables
+    this._scopeIdStack = ['top']; // tracks current scope ID for box lookups
+    this._boxedLocals = new Map(); // varName → localIdx of box pointer (per current scope)
+
     // Compilation statistics
     this.stats = {
       constantsFolded: 0,
@@ -955,15 +960,36 @@ export class WasmCompiler {
     const localIdx = this.nextLocalIndex++;
     this.currentBody.addLocal(ValType.i32);
     const isInt = stmt.value ? this._isDefinitelyInteger(stmt.value) : false;
-    this.currentScope.define(name, localIdx, ValType.i32, isInt);
-    if (stmt.isConst) {
-      if (!this._constVars) this._constVars = new Set();
-      this._constVars.add(name);
-    }
+    
+    // Check if this variable needs boxing (heap-allocated cell)
+    if (this._isBoxedVar(name)) {
+      // Allocate a 4-byte box on the heap
+      this.currentBody.i32Const(4);
+      this.currentBody.call(this._runtimeFuncs.alloc);
+      this.currentBody.localSet(localIdx); // local holds box pointer
+      
+      // Mark as boxed in scope (so compileIdentifier/compileAssignExpression know)
+      this.currentScope.define(name, localIdx, ValType.i32, isInt);
+      this.currentScope.vars.get(name).boxed = true;
+      
+      if (stmt.value) {
+        // Store value into the box: i32.store(box_ptr, value)
+        // Stack order: [addr, value]
+        this.currentBody.localGet(localIdx); // box_ptr (addr)
+        this.compileNode(stmt.value);        // value
+        this.currentBody.i32Store();
+      }
+    } else {
+      this.currentScope.define(name, localIdx, ValType.i32, isInt);
+      if (stmt.isConst) {
+        if (!this._constVars) this._constVars = new Set();
+        this._constVars.add(name);
+      }
 
-    if (stmt.value) {
-      this.compileNode(stmt.value);
-      this.currentBody.localSet(localIdx);
+      if (stmt.value) {
+        this.compileNode(stmt.value);
+        this.currentBody.localSet(localIdx);
+      }
     }
   }
 
@@ -1151,6 +1177,11 @@ export class WasmCompiler {
       if (binding.type === 'func') {
         // Wrap named function as a closure value
         this._wrapFunctionAsClosure(name, binding.index);
+      } else if (binding.boxed) {
+        // Boxed variable: local holds a pointer to a 4-byte cell
+        // Dereference: i32.load(local) → value
+        this.currentBody.localGet(binding.index);
+        this.currentBody.i32Load();
       } else {
         this.currentBody.localGet(binding.index);
       }
@@ -1961,8 +1992,22 @@ export class WasmCompiler {
 
     const binding = this.currentScope.resolve(name);
     if (binding) {
-      this.compileNode(node.value);
-      this.currentBody.localTee(binding.index); // assign and leave value on stack
+      if (binding.boxed) {
+        // Boxed variable: store through the box pointer
+        // Stack for i32.store: [addr, value] (addr pushed first)
+        // We also need to leave the new value on stack (assign is an expression)
+        this.currentBody.localGet(binding.index); // push box_ptr (addr)
+        this.compileNode(node.value);             // push value
+        // Save value before store consumes it
+        const tmpLocal = this.nextLocalIndex++;
+        this.currentBody.addLocal(ValType.i32);
+        this.currentBody.localTee(tmpLocal);      // save value, leave on stack
+        this.currentBody.i32Store();              // store(addr=box_ptr, value) — consumes both
+        this.currentBody.localGet(tmpLocal);      // push value back for expression result
+      } else {
+        this.compileNode(node.value);
+        this.currentBody.localTee(binding.index); // assign and leave value on stack
+      }
     } else {
       const _l4 = node?.token?.line ? ` (line ${node.token.line})` : ""; this.errors.push(`undefined variable for assignment: ${name}${_l4}`);
       this.currentBody.i32Const(0);
@@ -2241,6 +2286,13 @@ export class WasmCompiler {
       for (const stmt of funcLit.body.statements) walk(stmt);
     }
     return hasFree;
+  }
+
+  // Check if a variable needs boxing in the current scope
+  _isBoxedVar(name) {
+    const scopeId = this._scopeIdStack[this._scopeIdStack.length - 1];
+    const boxed = this._boxedVars.get(scopeId);
+    return boxed ? boxed.has(name) : false;
   }
 
   // Analyze AST to determine which variables need heap boxing.
