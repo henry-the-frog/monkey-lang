@@ -464,48 +464,7 @@ updateCharCount();
 setTimeout(() => run(), 100);
 
 // --- String runtime for WASM ---
-function createStringRuntime() {
-  let memory = null;  // Set after instantiation
-  let heapPtr = 0;
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-
-  function readString(ptr) {
-    const mem = new Uint8Array(memory.buffer);
-    const len = mem[ptr] | (mem[ptr+1] << 8) | (mem[ptr+2] << 16) | (mem[ptr+3] << 24);
-    return decoder.decode(mem.slice(ptr + 4, ptr + 4 + len));
-  }
-
-  function allocString(str) {
-    const encoded = encoder.encode(str);
-    const totalLen = 4 + encoded.length;
-    const ptr = heapPtr;
-    const mem = new Uint8Array(memory.buffer);
-    mem[ptr] = encoded.length & 0xFF;
-    mem[ptr+1] = (encoded.length >> 8) & 0xFF;
-    mem[ptr+2] = (encoded.length >> 16) & 0xFF;
-    mem[ptr+3] = (encoded.length >> 24) & 0xFF;
-    mem.set(encoded, ptr + 4);
-    heapPtr = (ptr + totalLen + 3) & ~3;
-    return ptr;
-  }
-
-  return {
-    readString,
-    setMemory(mem, dataEndOffset) {
-      memory = mem;
-      // Start heap after data segments with padding
-      heapPtr = (dataEndOffset + 255) & ~255;
-    },
-    env: {
-      __str_concat(a, b) {
-        const sa = readString(a);
-        const sb = readString(b);
-        return allocString(sa + sb);
-      }
-    }
-  };
-}
+// String concat is now handled internally in WASM (no host imports needed)
 
 // --- Compile & Run ---
 async function compileAndRun(source) {
@@ -515,25 +474,8 @@ async function compileAndRun(source) {
 
   const module = await WebAssembly.compile(binary);
   
-  // Check if module needs string imports
-  const imports = WebAssembly.Module.imports(module);
-  const needsStringRuntime = imports.some(i => i.name === '__str_concat');
-  
-  let importObject = {};
-  let stringRuntime = null;
-  
-  if (needsStringRuntime) {
-    stringRuntime = createStringRuntime();
-    importObject = { env: stringRuntime.env };
-  }
-  
   const t1 = performance.now();
-  const instance = await WebAssembly.instantiate(module, importObject);
-  
-  // Bind exported memory to string runtime BEFORE calling main()
-  if (stringRuntime && instance.exports.memory) {
-    stringRuntime.setMemory(instance.exports.memory, 4096);
-  }
+  const instance = await WebAssembly.instantiate(module, {});
   
   let result;
   if (instance.exports.main) {
@@ -552,20 +494,24 @@ async function compileAndRun(source) {
     var realExecTime = execTime;
   }
 
-  // If the result is a string pointer, try to read it
+  // If the result is a string pointer, try to read it from WASM memory
   let displayResult = result;
-      // Try to detect string results (only if source contains string literals)
-    const hasStrings = /["']/.test(source);
-    if (hasStrings && instance.exports.memory && typeof result === 'number') {
+  const hasStrings = /["']/.test(source);
+  if (hasStrings && instance.exports.memory && typeof result === 'number') {
     try {
-      const rt = createStringRuntime();
-      rt.setMemory(instance.exports.memory, 0);
-      const str = rt.readString(result);
-      if (str && str.length > 0 && str.length < 10000 && !/[\x00-\x08\x0e-\x1f]/.test(str)) {
-        displayResult = `"${str}"`;
+      const mem = new Uint8Array(instance.exports.memory.buffer);
+      const ptr = result;
+      if (ptr >= 0 && ptr < mem.length - 4) {
+        const len = mem[ptr] | (mem[ptr+1] << 8) | (mem[ptr+2] << 16) | (mem[ptr+3] << 24);
+        if (len > 0 && len < 10000 && ptr + 4 + len <= mem.length) {
+          const str = new TextDecoder().decode(mem.slice(ptr + 4, ptr + 4 + len));
+          if (!/[\x00-\x08\x0e-\x1f]/.test(str)) {
+            displayResult = `"${str}"`;
+          }
+        }
       }
     } catch (e) {
-      // Not a string pointer
+      // Not a string pointer, use numeric result
     }
   }
   
