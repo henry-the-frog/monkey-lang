@@ -2724,6 +2724,69 @@ describe('Inline HOF Optimization', () => {
     });
   });
 
+  describe('inline reduce (no captures)', () => {
+    it('sum with initial value', async () => {
+      assert.strictEqual(await compileAndRun('reduce([1, 2, 3, 4, 5], fn(a, b) { a + b }, 0)'), 15);
+    });
+
+    it('product with initial value', async () => {
+      assert.strictEqual(await compileAndRun('reduce([1, 2, 3, 4, 5], fn(a, b) { a * b }, 1)'), 120);
+    });
+
+    it('sum without initial value (2-arg)', async () => {
+      assert.strictEqual(await compileAndRun('reduce([1, 2, 3, 4, 5], fn(a, b) { a + b })'), 15);
+    });
+
+    it('max via reduce', async () => {
+      assert.strictEqual(await compileAndRun('reduce([3, 7, 2, 9, 1, 8], fn(a, b) { if (b > a) { b } else { a } }, 0)'), 9);
+    });
+
+    it('single element array', async () => {
+      assert.strictEqual(await compileAndRun('reduce([42], fn(a, b) { a + b }, 0)'), 42);
+    });
+
+    it('large array sum', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let arr = [];
+        let i = 1;
+        while (i <= 100) { arr = push(arr, i); i = i + 1; }
+        reduce(arr, fn(a, b) { a + b }, 0)
+      `), 5050);
+    });
+
+    it('inline vs runtime equivalence', async () => {
+      const inline = await compileAndRun('reduce([1,2,3,4,5], fn(a, b) { a + b }, 0)');
+      const runtime = await compileAndRun('let f = 1; reduce([1,2,3,4,5], fn(a, b) { a + b * f }, 0)');
+      assert.strictEqual(inline, runtime);
+    });
+
+    it('chained map → inline reduce', async () => {
+      assert.strictEqual(await compileAndRun(`
+        reduce(map([1,2,3,4,5], fn(x) { x * x }), fn(a,b) { a + b }, 0)
+      `), 55);
+    });
+
+    it('chained filter → inline reduce', async () => {
+      assert.strictEqual(await compileAndRun(`
+        reduce(filter([1,2,3,4,5,6,7,8,9,10], fn(x) { x % 2 == 0 }), fn(a,b) { a + b }, 0)
+      `), 30);
+    });
+
+    it('pipe → reduce', async () => {
+      assert.strictEqual(await compileAndRun(`
+        [1, 2, 3, 4, 5] |> reduce(fn(a, b) { a + b }, 0)
+      `), 15);
+    });
+
+    it('reduce with subtraction', async () => {
+      assert.strictEqual(await compileAndRun('reduce([10, 3, 2, 1], fn(a, b) { a - b }, 0)'), -16);
+    });
+
+    it('reduce counting (using acc as counter)', async () => {
+      assert.strictEqual(await compileAndRun('reduce([1,1,1,1,1,1,1], fn(a, b) { a + 1 }, 0)'), 7);
+    });
+  });
+
   describe('chained inline HOFs', () => {
     it('filter then map (both inline)', async () => {
       assert.strictEqual(
