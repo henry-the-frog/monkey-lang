@@ -2645,3 +2645,61 @@ describe('Array Push Performance', () => {
     assert.strictEqual(result, 198);
   });
 });
+
+// Hash-stored Closures + Deep Nesting Regression Tests (Apr 28, 2026)
+describe('Box/Cell Advanced Patterns', () => {
+  it('counter object pattern with hash', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let make = fn() {
+        let count = 10;
+        { "inc": fn() { count = count + 1; count }, "get": fn() { count } }
+      };
+      let c = make();
+      c["inc"](); c["inc"](); c["get"]()
+    `), 12);
+  });
+
+  it('counter with inc/dec/get via hash', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let makeCounter = fn(start) {
+        let count = start;
+        {
+          "inc": fn() { count = count + 1; count },
+          "dec": fn() { count = count - 1; count },
+          "get": fn() { count }
+        }
+      };
+      let c = makeCounter(0);
+      c["inc"](); c["inc"](); c["inc"](); c["dec"](); c["get"]()
+    `), 2);
+  });
+
+  it('deep nesting: 3-level closure captures', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let make = fn() {
+        let x = 0;
+        let level1 = fn() {
+          let level2 = fn() { x = x + 1; x };
+          level2
+        };
+        let f = level1();
+        f(); f(); f()
+      };
+      make()
+    `), 3);
+  });
+
+  it('deep nesting: capture + return through multiple levels', async () => {
+    assert.strictEqual(await compileAndRun(`
+      let outer = fn() {
+        let val = 42;
+        let mid = fn() {
+          let inner = fn() { val };
+          inner
+        };
+        mid()()
+      };
+      outer()
+    `), 42);
+  });
+});
