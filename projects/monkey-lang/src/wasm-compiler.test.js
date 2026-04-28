@@ -2596,3 +2596,53 @@ describe('Higher-Order Function Builtins', () => {
     });
   });
 });
+
+// Array Push Stress Tests (Apr 28, 2026)
+describe('Array Push Performance', () => {
+  it('push 5000 elements without crashing (was O(N²), crashed at 3-5K)', async () => {
+    const result = await compileAndRun(`
+      let arr = [];
+      let i = 0;
+      let loop = fn() {
+        if (i < 5000) {
+          arr = push(arr, i);
+          i = i + 1;
+          loop()
+        } else {
+          len(arr)
+        }
+      };
+      loop()
+    `);
+    assert.strictEqual(result, 5000);
+  });
+
+  it('push preserves element order and values', async () => {
+    const result = await compileAndRun(`
+      let arr = [];
+      arr = push(arr, 10);
+      arr = push(arr, 20);
+      arr = push(arr, 30);
+      arr[0] * 100 + arr[1] * 10 + arr[2]
+    `);
+    assert.strictEqual(result, 1230);
+  });
+
+  it('push + access last element after many pushes', async () => {
+    const result = await compileAndRun(`
+      let arr = [];
+      let i = 0;
+      let loop = fn() {
+        if (i < 100) {
+          arr = push(arr, i * 2);
+          i = i + 1;
+          loop()
+        } else {
+          arr[99]
+        }
+      };
+      loop()
+    `);
+    assert.strictEqual(result, 198);
+  });
+});
