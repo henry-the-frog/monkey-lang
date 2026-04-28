@@ -91,6 +91,11 @@ class WasmCompiler {
     // Pass 0: Process import statements (creates WASM imports)
     this._processImports(program.statements);
 
+    // Pass 0.25: Scan for arrays/memory needs and set up allocator early
+    if (this._programNeedsMemory(program)) {
+      this._getAllocFunc(); // adds __alloc function before any user functions
+    }
+
     // Pass 0.5: Process top-level let bindings as globals (non-function values)
     this._processGlobals(program.statements);
 
@@ -123,6 +128,54 @@ class WasmCompiler {
     }
     
     return this.module.encode();
+  }
+
+  // Scan AST to see if any arrays are used (need memory + allocator)
+  _programNeedsMemory(program) {
+    const scan = (node) => {
+      if (!node) return false;
+      if (node instanceof ast.ArrayLiteral) return true;
+      if (node instanceof ast.IndexExpression) return true;
+      // Check common node types
+      if (node.statements) return node.statements.some(s => scan(s));
+      if (node.expression) return scan(node.expression);
+      if (node.value) return scan(node.value);
+      if (node.returnValue) return scan(node.returnValue);
+      if (node.consequence) {
+        if (scan(node.consequence)) return true;
+      }
+      if (node.alternative) {
+        if (scan(node.alternative)) return true;
+      }
+      if (node.body) return scan(node.body);
+      if (node.left) {
+        if (scan(node.left)) return true;
+      }
+      if (node.right) {
+        if (scan(node.right)) return true;
+      }
+      if (node.arguments) {
+        if (node.arguments.some(a => scan(a))) return true;
+      }
+      if (node.elements) {
+        if (node.elements.some(e => scan(e))) return true;
+      }
+      if (node.parameters) return false; // parameters are identifiers, skip
+      if (node.condition) {
+        if (scan(node.condition)) return true;
+      }
+      if (node.init) {
+        if (scan(node.init)) return true;
+      }
+      if (node.update) {
+        if (scan(node.update)) return true;
+      }
+      if (node.index) {
+        if (scan(node.index)) return true;
+      }
+      return false;
+    };
+    return program.statements.some(s => scan(s));
   }
 
   // Lazily add the __str_concat import when string concatenation is first used
@@ -276,9 +329,8 @@ class WasmCompiler {
           new Array(paramCount).fill(this.numType),
           [this.numType]
         );
-        // Reserve function index (body filled in pass 2)
-        // addFunction accounts for imports in the index space
-        const funcIdx = this.module.imports.length + this._localFunctionCount();
+        // Reserve function index: imports + internal funcs (__alloc etc) + user funcs so far
+        const funcIdx = this.module.imports.length + this.module.functions.length + this._localFunctionCount();
         // Add to table for indirect calling (higher-order functions)
         const tableIdx = this.module.addTableElement(funcIdx);
         this.functions.set(name, { index: funcIdx, params: paramCount, typeIdx, tableIdx });
@@ -367,6 +419,29 @@ class WasmCompiler {
         body.push(WasmOp.local_get, ...encodeULEB128(localIdx));
       }
     } else if (stmt instanceof ast.SetStatement) {
+      // Array/indexed assignment: set arr[i] = value
+      if (stmt.name instanceof ast.IndexExpression) {
+        // Compute: addr = ptr + 8 + idx * 4, then i32.store
+        this._compileExpr(stmt.name.left, body);  // array pointer
+        if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+        body.push(WasmOp.i32_const, 8); // skip header
+        body.push(WasmOp.i32_add);
+        this._compileExpr(stmt.name.index, body);  // index
+        if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+        body.push(WasmOp.i32_const, 4);
+        body.push(WasmOp.i32_mul);
+        body.push(WasmOp.i32_add);
+        // Value to store
+        this._compileExpr(stmt.value, body);
+        if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+        body.push(WasmOp.i32_store, 2, 0);
+        if (isLast) {
+          // Return the stored value
+          this._compileExpr(stmt.value, body);
+        }
+        return;
+      }
+      
       // Variable reassignment: set x = value
       const name = stmt.name?.value || (stmt.target?.left?.value);
       const localIdx = this.currentLocals?.get(name);

@@ -315,6 +315,57 @@ let isOdd = fn(n) {
 isEven(100)  // 1`
   },
   {
+    name: 'Arrays',
+    code: `// Arrays with push and index access
+let data = [10, 20, 30, 40, 50];
+
+// Sum all elements
+let total = 0;
+let i = 0;
+while (i < len(data)) {
+  set total = total + data[i];
+  set i = i + 1;
+};
+
+// Push new elements
+push(data, 60);
+push(data, 70);
+
+total + data[5] + data[6]  // 150 + 60 + 70 = 280`
+  },
+  {
+    name: 'Sieve',
+    code: `// Count primes up to 10,000 (Sieve of Eratosthenes)
+let sieve = fn(n) {
+  let is_prime = [];
+  let i = 0;
+  while (i <= n) { push(is_prime, 1); set i = i + 1 };
+  set is_prime[0] = 0;
+  set is_prime[1] = 0;
+
+  let p = 2;
+  while (p * p <= n) {
+    if (is_prime[p] == 1) {
+      let j = p * p;
+      while (j <= n) {
+        set is_prime[j] = 0;
+        set j = j + p;
+      };
+    };
+    set p = p + 1;
+  };
+
+  let count = 0;
+  set i = 2;
+  while (i <= n) {
+    set count = count + is_prime[i];
+    set i = i + 1;
+  };
+  count
+};
+sieve(10000)  // 1229 primes`
+  },
+  {
     name: 'Nested Loops',
     code: `// 1000×1000 nested loop — pure WASM speed
 let nested = fn(n) {
