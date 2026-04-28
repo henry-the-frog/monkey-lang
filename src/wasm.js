@@ -132,6 +132,10 @@ const WasmOp = {
   i32_mul: 0x6C,
   i32_div_s: 0x6D,
   i32_rem_s: 0x6F,
+  i32_and: 0x71,
+  i32_or: 0x72,
+  i32_shl: 0x74,
+  i32_shr_s: 0x75,
 
   // i64 operations
   i64_const: 0x42,
@@ -170,6 +174,16 @@ const WasmOp = {
 
   // Drop
   drop: 0x1A,
+
+  // Memory operations
+  i32_load: 0x28,
+  i64_load: 0x29,
+  f64_load: 0x2B,
+  i32_store: 0x36,
+  i64_store: 0x37,
+  f64_store: 0x39,
+  memory_size: 0x3F,
+  memory_grow: 0x40,
 };
 
 // --- WASM Module Builder ---

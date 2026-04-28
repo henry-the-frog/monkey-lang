@@ -49,6 +49,8 @@ class WasmCompiler {
     this.importSignatures = options.importSignatures || null;
     this._strConcatImport = null; // lazily added on first string concat
     this._heapBaseGlobal = null; // global for heap pointer (bump allocator)
+    this._allocFuncIdx = null; // lazily added __alloc function
+    this._needsMemory = false; // set when arrays or dynamic allocation needed
   }
 
   // Count local (non-imported) functions in the map
@@ -114,8 +116,9 @@ class WasmCompiler {
       this._compileMainBlock(mainStatements);
     }
     
-    // Export memory if data segments were added (strings)
-    if (this.module.dataSegments.length > 0) {
+    // Export memory if data segments were added (strings) or arrays used
+    if (this.module.dataSegments.length > 0 || this._needsMemory) {
+      this._ensureMemory();
       this.module.exportMemory();
     }
     
@@ -131,6 +134,68 @@ class WasmCompiler {
       );
     }
     return this._strConcatImport;
+  }
+
+  // Ensure memory exists and heap pointer global is initialized
+  _ensureMemory() {
+    if (this._needsMemory) return;
+    this._needsMemory = true;
+    if (!this.module.memory) {
+      this.module.addMemory(1); // 1 page = 64KB
+    }
+  }
+
+  // Get the heap base global index (lazily created)
+  _getHeapBaseGlobal() {
+    if (this._heapBaseGlobal === null) {
+      this._ensureMemory();
+      // Heap starts at 4096 (leave room for data segments below)
+      // We'll fix this up later based on actual data segment usage
+      this._heapBaseGlobal = this.module.addGlobal(WASM_TYPE.I32, true, 4096);
+    }
+    return this._heapBaseGlobal;
+  }
+
+  // Get the __alloc function index (bump allocator)
+  // __alloc(size: i32) -> ptr: i32
+  // Bumps heap pointer by size (aligned to 4), returns old pointer
+  _getAllocFunc() {
+    if (this._allocFuncIdx !== null) return this._allocFuncIdx;
+    
+    const heapGlobal = this._getHeapBaseGlobal();
+    const typeIdx = this.module.addType([WASM_TYPE.I32], [WASM_TYPE.I32]);
+    
+    // Function body:
+    //   local $ptr i32
+    //   global.get $heap_base    ;; ptr = heap_base
+    //   local.set $ptr
+    //   global.get $heap_base
+    //   local.get 0              ;; size param
+    //   i32.add
+    //   i32.const 3
+    //   i32.add
+    //   i32.const -4             ;; ~3 = 0xFFFFFFFC
+    //   i32.and                  ;; align to 4 bytes
+    //   global.set $heap_base
+    //   local.get $ptr           ;; return old pointer
+    const body = [
+      WasmOp.global_get, ...encodeULEB128(heapGlobal),
+      WasmOp.local_set, 1, // local 1 = $ptr (local 0 is the size param)
+      WasmOp.global_get, ...encodeULEB128(heapGlobal),
+      WasmOp.local_get, 0, // size
+      WasmOp.i32_add,
+      WasmOp.i32_const, 3,
+      WasmOp.i32_add,
+      WasmOp.i32_const, ...encodeSLEB128(-4), // 0xFFFFFFFC
+      WasmOp.i32_and,
+      WasmOp.global_set, ...encodeULEB128(heapGlobal),
+      WasmOp.local_get, 1, // return ptr
+    ];
+    
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [{ count: 1, type: WASM_TYPE.I32 }], body);
+    this._allocFuncIdx = funcIdx;
+    return funcIdx;
   }
 
   _processGlobals(statements) {
@@ -374,6 +439,51 @@ class WasmCompiler {
     body.push(WasmOp.end);            // end block
   }
 
+  // Compile push(array, value) — inline, no reallocation (uses pre-allocated capacity)
+  // Returns new length
+  _compileArrayPush(arrExpr, valExpr, body) {
+    // Get array pointer into a temp local
+    const ptrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const lenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+
+    // Load array pointer
+    this._compileExpr(arrExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(ptrLocal));
+
+    // Read current length
+    body.push(WasmOp.local_get, ...encodeULEB128(ptrLocal));
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(lenLocal));
+
+    // Store value at ptr + 8 + len * 4
+    body.push(WasmOp.local_get, ...encodeULEB128(ptrLocal));
+    body.push(WasmOp.i32_const, 8);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(lenLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_mul);
+    body.push(WasmOp.i32_add);
+    // Value to store
+    this._compileExpr(valExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.i32_store, 2, 0);
+
+    // Increment length: store len+1 at ptr+0
+    body.push(WasmOp.local_get, ...encodeULEB128(ptrLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(lenLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_store, 2, 0);
+
+    // Return new length
+    body.push(WasmOp.local_get, ...encodeULEB128(ptrLocal));
+    body.push(WasmOp.i32_load, 2, 0);
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+  }
+
   _compileExpr(expr, body) {
     if (!expr) {
       this._emitConst(body, 0);
@@ -549,6 +659,22 @@ class WasmCompiler {
     // Call expression
     if (expr instanceof ast.CallExpression) {
       const funcName = expr.function.value;
+      
+      // Built-in: len(array) — read length from array header
+      if (funcName === 'len' && expr.arguments.length === 1) {
+        this._compileExpr(expr.arguments[0], body);
+        if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+        body.push(WasmOp.i32_load, 2, 0); // load len at offset 0
+        if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+        return;
+      }
+
+      // Built-in: push(array, value) — append value, return new length
+      if (funcName === 'push' && expr.arguments.length === 2) {
+        this._compileArrayPush(expr.arguments[0], expr.arguments[1], body);
+        return;
+      }
+      
       const funcInfo = this.functions.get(funcName);
       
       if (funcInfo) {
@@ -645,6 +771,68 @@ class WasmCompiler {
       }
       this._compileWhile(expr.condition, { statements: augmentedStmts }, body);
       this._emitConst(body, 0); // for returns 0
+      return;
+    }
+
+    // Array literal: [expr1, expr2, ...]
+    // Memory layout: [len:i32][cap:i32][elem0:i32][elem1:i32]...
+    // Returns pointer to the array header
+    if (expr instanceof ast.ArrayLiteral) {
+      const len = expr.elements.length;
+      const cap = Math.max(len, 4); // minimum capacity of 4
+      const headerSize = 8; // len (4) + cap (4)
+      const totalSize = headerSize + cap * 4;
+      
+      // Allocate: __alloc(totalSize)
+      const allocIdx = this._getAllocFunc();
+      body.push(WasmOp.i32_const, ...encodeSLEB128(totalSize));
+      body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+      
+      // Save pointer in a temp local
+      const ptrLocal = this.currentLocalCount + this.currentExtraLocals;
+      this.currentExtraLocals++;
+      body.push(WasmOp.local_set, ...encodeULEB128(ptrLocal));
+      
+      // Store length at ptr+0
+      body.push(WasmOp.local_get, ...encodeULEB128(ptrLocal));
+      body.push(WasmOp.i32_const, ...encodeSLEB128(len));
+      body.push(WasmOp.i32_store, 2, 0); // align=4, offset=0
+      
+      // Store capacity at ptr+4
+      body.push(WasmOp.local_get, ...encodeULEB128(ptrLocal));
+      body.push(WasmOp.i32_const, ...encodeSLEB128(cap));
+      body.push(WasmOp.i32_store, 2, 4); // align=4, offset=4
+      
+      // Store each element at ptr+8+i*4
+      for (let i = 0; i < len; i++) {
+        body.push(WasmOp.local_get, ...encodeULEB128(ptrLocal));
+        this._compileExpr(expr.elements[i], body);
+        if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+        if (this.useF64) { /* TODO: f64 arrays need f64_store */ }
+        body.push(WasmOp.i32_store, 2, ...encodeULEB128(8 + i * 4)); // align=4, offset=8+i*4
+      }
+      
+      // Push pointer as the result
+      body.push(WasmOp.local_get, ...encodeULEB128(ptrLocal));
+      if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+      return;
+    }
+
+    // Index expression: arr[idx]
+    // Reads from memory: i32.load(ptr + 8 + idx * 4)
+    if (expr instanceof ast.IndexExpression) {
+      // Compute base address: ptr + 8 + idx * 4
+      this._compileExpr(expr.left, body);  // array pointer
+      if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+      body.push(WasmOp.i32_const, 8); // skip header (len + cap)
+      body.push(WasmOp.i32_add);
+      this._compileExpr(expr.index, body); // index
+      if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+      body.push(WasmOp.i32_const, 4);
+      body.push(WasmOp.i32_mul);
+      body.push(WasmOp.i32_add);
+      body.push(WasmOp.i32_load, 2, 0); // align=4, offset=0
+      if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
       return;
     }
     
