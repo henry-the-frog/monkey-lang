@@ -113,6 +113,9 @@ class WasmCompiler {
     // Pass 1: Collect all function definitions and their signatures
     this._collectFunctions(program.statements);
     
+    // Pass 1.5: Infer function parameter types from call sites
+    this._inferCallSiteTypes(program.statements);
+    
     // Pass 2: Compile function bodies
     for (const stmt of program.statements) {
       if (stmt instanceof ast.LetStatement && stmt.value instanceof ast.FunctionLiteral) {
@@ -661,6 +664,112 @@ class WasmCompiler {
     return this._inferExprType(expr) === 'string';
   }
 
+  // Heuristic type inference for function parameters.
+  // Scans the function body for patterns that reveal parameter types.
+  _inferParamTypes(fnLit) {
+    const paramNames = new Set(fnLit.parameters.map(p => p.value));
+    if (paramNames.size === 0) return;
+    
+    const self = this;
+    function scan(node) {
+      if (!node) return;
+      
+      // Pattern: param + "string" or "string" + param → param is string
+      if (node instanceof ast.InfixExpression && node.operator === '+') {
+        if (node.left instanceof ast.Identifier && paramNames.has(node.left.value) &&
+            self._inferExprType(node.right) === 'string') {
+          self.currentVarTypes.set(node.left.value, 'string');
+        }
+        if (node.right instanceof ast.Identifier && paramNames.has(node.right.value) &&
+            self._inferExprType(node.left) === 'string') {
+          self.currentVarTypes.set(node.right.value, 'string');
+        }
+      }
+      
+      // Pattern: param == "string" or "string" == param → param is string
+      if (node instanceof ast.InfixExpression && (node.operator === '==' || node.operator === '!=')) {
+        if (node.left instanceof ast.Identifier && paramNames.has(node.left.value) &&
+            self._inferExprType(node.right) === 'string') {
+          self.currentVarTypes.set(node.left.value, 'string');
+        }
+        if (node.right instanceof ast.Identifier && paramNames.has(node.right.value) &&
+            self._inferExprType(node.left) === 'string') {
+          self.currentVarTypes.set(node.right.value, 'string');
+        }
+      }
+      
+      // Recursively scan all child nodes
+      for (const key of Object.keys(node)) {
+        if (key === 'token') continue; // skip token objects
+        const val = node[key];
+        if (val && typeof val === 'object') {
+          if (Array.isArray(val)) {
+            for (const item of val) {
+              if (item && typeof item === 'object') scan(item);
+            }
+          } else if (val.constructor && !val.constructor.name.startsWith('Token')) {
+            scan(val);
+          }
+        }
+      }
+    }
+    
+    scan(fnLit.body);
+  }
+
+  // Infer function parameter types from call sites in the program.
+  // If greet(a, b) is called and a is known to be string, mark greet's first param as string.
+  _inferCallSiteTypes(statements) {
+    // Map function names to their parameter lists
+    const funcParams = new Map(); // funcName → [paramName, ...]
+    for (const stmt of statements) {
+      if (stmt instanceof ast.LetStatement && stmt.value instanceof ast.FunctionLiteral) {
+        funcParams.set(stmt.name.value, stmt.value.parameters.map(p => p.value));
+      }
+    }
+    
+    // Scan all statements for call expressions
+    const self = this;
+    function scanForCalls(node) {
+      if (!node) return;
+      
+      if (node instanceof ast.CallExpression && node.function instanceof ast.Identifier) {
+        const funcName = node.function.value;
+        const params = funcParams.get(funcName);
+        if (params && node.arguments) {
+          for (let i = 0; i < Math.min(params.length, node.arguments.length); i++) {
+            const argType = self._inferExprType(node.arguments[i]);
+            if (argType === 'string') {
+              // Store inferred parameter type on the function's info
+              if (!self._funcParamTypes) self._funcParamTypes = new Map();
+              const key = `${funcName}:${params[i]}`;
+              self._funcParamTypes.set(key, 'string');
+            }
+          }
+        }
+      }
+      
+      // Recurse
+      for (const key of Object.keys(node)) {
+        if (key === 'token') continue;
+        const val = node[key];
+        if (val && typeof val === 'object') {
+          if (Array.isArray(val)) {
+            for (const item of val) {
+              if (item && typeof item === 'object') scanForCalls(item);
+            }
+          } else {
+            scanForCalls(val);
+          }
+        }
+      }
+    }
+    
+    for (const stmt of statements) {
+      scanForCalls(stmt);
+    }
+  }
+
   _processGlobals(statements) {
     for (const stmt of statements) {
       if (stmt instanceof ast.LetStatement && !(stmt.value instanceof ast.FunctionLiteral)) {
@@ -668,6 +777,9 @@ class WasmCompiler {
         // Create a mutable global for this variable
         const idx = this.module.addGlobal(this.numType, true, 0);
         this.globals.set(name, { index: idx, mutable: true });
+        // Pre-record variable type for call-site analysis
+        const inferredType = this._inferExprType(stmt.value);
+        this.varTypes.set(name, inferredType);
       }
     }
   }
@@ -808,6 +920,20 @@ class WasmCompiler {
     for (let i = 0; i < fnLit.parameters.length; i++) {
       this.currentLocals.set(fnLit.parameters[i].value, i);
     }
+    
+    // Heuristic type inference for parameters:
+    // 1. From call-site analysis (pass 1.5)
+    if (this._funcParamTypes) {
+      for (let i = 0; i < fnLit.parameters.length; i++) {
+        const paramName = fnLit.parameters[i].value;
+        const key = `${name}:${paramName}`;
+        if (this._funcParamTypes.has(key)) {
+          this.currentVarTypes.set(paramName, this._funcParamTypes.get(key));
+        }
+      }
+    }
+    // 2. From body usage patterns (heuristic scan)
+    this._inferParamTypes(fnLit);
     
     // Compile function body
     const body = [];
