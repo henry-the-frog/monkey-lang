@@ -147,6 +147,7 @@ class WasmCompiler {
       if (!node) return false;
       if (node instanceof ast.ArrayLiteral) return true;
       if (node instanceof ast.IndexExpression) return true;
+      if (node instanceof ast.ForInExpression) return true;
       // Check common node types
       if (node.statements) return node.statements.some(s => scan(s));
       if (node.expression) return scan(node.expression);
@@ -1443,6 +1444,80 @@ class WasmCompiler {
       }
       this._compileWhile(expr.condition, { statements: augmentedStmts }, body);
       this._emitConst(body, 0); // for returns 0
+      return;
+    }
+
+    // for-in loop: for (x in arr) { body }
+    // Compiles to: ptr = arr, len = load(ptr), i = 0; while (i < len) { x = load(ptr+8+i*4); body; i++ }
+    if (expr instanceof ast.ForInExpression) {
+      // Allocate temp locals: arrPtr, arrLen, idxVar, elemVar
+      const arrPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+      this.currentExtraLocals++;
+      const arrLenLocal = this.currentLocalCount + this.currentExtraLocals;
+      this.currentExtraLocals++;
+      const idxLocal = this.currentLocalCount + this.currentExtraLocals;
+      this.currentExtraLocals++;
+      
+      // The loop variable — register as a named local
+      const elemLocal = this.currentLocalCount + this.currentExtraLocals;
+      this.currentExtraLocals++;
+      this.currentLocals.set(expr.variable, elemLocal);
+      
+      // Evaluate iterable → array pointer
+      this._compileExpr(expr.iterable, body);
+      if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+      body.push(WasmOp.local_set, ...encodeULEB128(arrPtrLocal));
+      
+      // Load array length
+      body.push(WasmOp.local_get, ...encodeULEB128(arrPtrLocal));
+      body.push(WasmOp.i32_load, 2, 0);
+      body.push(WasmOp.local_set, ...encodeULEB128(arrLenLocal));
+      
+      // i = 0
+      body.push(WasmOp.i32_const, 0);
+      body.push(WasmOp.local_set, ...encodeULEB128(idxLocal));
+      
+      // while (i < len)
+      body.push(WasmOp.block, 0x40);
+      body.push(WasmOp.loop, 0x40);
+      
+      // break if i >= len
+      body.push(WasmOp.local_get, ...encodeULEB128(idxLocal));
+      body.push(WasmOp.local_get, ...encodeULEB128(arrLenLocal));
+      body.push(WasmOp.i32_ge_s);
+      body.push(WasmOp.br_if, 1);
+      
+      // elem = arr[i] → load from ptr + 8 + i * 4
+      body.push(WasmOp.local_get, ...encodeULEB128(arrPtrLocal));
+      body.push(WasmOp.i32_const, 8);
+      body.push(WasmOp.i32_add);
+      body.push(WasmOp.local_get, ...encodeULEB128(idxLocal));
+      body.push(WasmOp.i32_const, 4);
+      body.push(WasmOp.i32_mul);
+      body.push(WasmOp.i32_add);
+      body.push(WasmOp.i32_load, 2, 0);
+      if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+      body.push(WasmOp.local_set, ...encodeULEB128(elemLocal));
+      
+      // Compile body
+      if (expr.body) {
+        const stmts = expr.body.statements;
+        for (let i = 0; i < stmts.length; i++) {
+          this._compileStatement(stmts[i], body, false);
+        }
+      }
+      
+      // i++
+      body.push(WasmOp.local_get, ...encodeULEB128(idxLocal));
+      body.push(WasmOp.i32_const, 1);
+      body.push(WasmOp.i32_add);
+      body.push(WasmOp.local_set, ...encodeULEB128(idxLocal));
+      
+      body.push(WasmOp.br, 0); // continue loop
+      body.push(WasmOp.end);   // end loop
+      body.push(WasmOp.end);   // end block
+      
+      this._emitConst(body, 0); // for-in returns 0
       return;
     }
 
