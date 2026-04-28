@@ -48,6 +48,8 @@ class WasmCompiler {
     this.useF64 = options.useF64 || false;
     this.importSignatures = options.importSignatures || null;
     // (removed: _strConcatImport — now using internal WASM functions)
+    this.varTypes = new Map(); // variable name → 'string' | 'int' | 'array' | 'unknown'
+    this.currentVarTypes = null; // per-function local type map
     this._heapBaseGlobal = null; // global for heap pointer (bump allocator)
     this._allocFuncIdx = null; // lazily added __alloc function
     this._ensureCapFuncIdx = null; // lazily added __array_ensure_cap function
@@ -605,6 +607,60 @@ class WasmCompiler {
     return funcIdx;
   }
 
+  // Infer the type of an expression at compile time
+  _inferExprType(expr) {
+    if (!expr) return 'unknown';
+    if (expr instanceof ast.StringLiteral) return 'string';
+    if (expr instanceof ast.IntegerLiteral) return 'int';
+    if (expr instanceof ast.FloatLiteral) return 'int'; // treated as numeric
+    if (expr instanceof ast.BooleanLiteral) return 'int';
+    if (expr instanceof ast.ArrayLiteral) return 'array';
+    if (expr instanceof ast.ArrayComprehension) return 'array';
+    if (expr instanceof ast.Identifier) {
+      // Check local type map first, then global
+      const localType = this.currentVarTypes?.get(expr.value);
+      if (localType) return localType;
+      const globalType = this.varTypes.get(expr.value);
+      if (globalType) return globalType;
+      return 'unknown';
+    }
+    if (expr instanceof ast.InfixExpression) {
+      if (expr.operator === '+') {
+        const leftType = this._inferExprType(expr.left);
+        const rightType = this._inferExprType(expr.right);
+        if (leftType === 'string' || rightType === 'string') return 'string';
+        return 'int';
+      }
+      // Comparison operators return int
+      if ('== != < > <= >='.includes(expr.operator)) return 'int';
+      return 'int';
+    }
+    if (expr instanceof ast.CallExpression) {
+      // Built-in functions that return known types
+      if (expr.function instanceof ast.Identifier) {
+        const name = expr.function.value;
+        if (name === 'len') return 'int';
+        if (name === 'push') return 'int';
+        if (name === 'map' || name === 'filter') return 'array';
+      }
+      return 'unknown';
+    }
+    if (expr instanceof ast.IfExpression) {
+      // Could be either type — check consequence
+      if (expr.consequence?.statements?.length > 0) {
+        const lastStmt = expr.consequence.statements[expr.consequence.statements.length - 1];
+        if (lastStmt.expression) return this._inferExprType(lastStmt.expression);
+      }
+      return 'unknown';
+    }
+    return 'unknown';
+  }
+
+  // Check if an expression is known to produce a string value
+  _isStringExpr(expr) {
+    return this._inferExprType(expr) === 'string';
+  }
+
   _processGlobals(statements) {
     for (const stmt of statements) {
       if (stmt instanceof ast.LetStatement && !(stmt.value instanceof ast.FunctionLiteral)) {
@@ -622,6 +678,7 @@ class WasmCompiler {
 
     // Set up context for expression compilation
     this.currentLocals = new Map();
+    this.currentVarTypes = new Map();
     this.currentLocalCount = 0;
     this.currentExtraLocals = 0;
 
@@ -743,6 +800,7 @@ class WasmCompiler {
     
     // Set up local scope
     this.currentLocals = new Map();
+    this.currentVarTypes = new Map();
     this.currentLocalCount = fnLit.parameters.length;
     this.currentExtraLocals = 0;
     
@@ -780,6 +838,7 @@ class WasmCompiler {
   _compileMainBlock(statements) {
     const typeIdx = this.module.addType([], [this.numType]);
     this.currentLocals = new Map();
+    this.currentVarTypes = new Map();
     this.currentLocalCount = 0;
     this.currentExtraLocals = 0;
     
@@ -804,6 +863,13 @@ class WasmCompiler {
       body.push(WasmOp.return_);
     } else if (stmt instanceof ast.LetStatement) {
       const name = stmt.name.value;
+      // Track variable type
+      const inferredType = this._inferExprType(stmt.value);
+      if (this.globals.has(name)) {
+        this.varTypes.set(name, inferredType);
+      } else if (this.currentVarTypes) {
+        this.currentVarTypes.set(name, inferredType);
+      }
       // Check if this is a global variable (top-level let)
       if (this.globals.has(name)) {
         this._compileExpr(stmt.value, body);
@@ -1389,7 +1455,7 @@ class WasmCompiler {
       switch (expr.operator) {
         case '+': {
           // If either operand is a string, use string concatenation
-          if (expr.left instanceof ast.StringLiteral || expr.right instanceof ast.StringLiteral) {
+          if (this._isStringExpr(expr.left) || this._isStringExpr(expr.right)) {
             this._ensureMemory();
             const concatIdx = this._getStrConcatFunc();
             // Both operands are on stack as i32 pointers
@@ -1417,7 +1483,7 @@ class WasmCompiler {
         case '<': body.push(this.cop("lt")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
         case '>': body.push(this.cop("gt")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
         case '==': {
-          if (expr.left instanceof ast.StringLiteral || expr.right instanceof ast.StringLiteral) {
+          if (this._isStringExpr(expr.left) || this._isStringExpr(expr.right)) {
             // String comparison: call __str_eq
             this._ensureMemory();
             const eqIdx = this._getStrEqFunc();
@@ -1440,7 +1506,7 @@ class WasmCompiler {
           break;
         }
         case '!=': {
-          if (expr.left instanceof ast.StringLiteral || expr.right instanceof ast.StringLiteral) {
+          if (this._isStringExpr(expr.left) || this._isStringExpr(expr.right)) {
             // String comparison: call __str_eq and negate
             this._ensureMemory();
             const eqIdx = this._getStrEqFunc();
