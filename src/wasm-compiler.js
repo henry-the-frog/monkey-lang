@@ -148,6 +148,7 @@ class WasmCompiler {
       if (node instanceof ast.ArrayLiteral) return true;
       if (node instanceof ast.IndexExpression) return true;
       if (node instanceof ast.ForInExpression) return true;
+      if (node instanceof ast.ArrayComprehension) return true;
       // Check common node types
       if (node.statements) return node.statements.some(s => scan(s));
       if (node.expression) return scan(node.expression);
@@ -1518,6 +1519,173 @@ class WasmCompiler {
       body.push(WasmOp.end);   // end block
       
       this._emitConst(body, 0); // for-in returns 0
+      return;
+    }
+
+    // Array comprehension: [body for var in iterable if condition]
+    // Creates a new array with elements generated from iterating the source array
+    if (expr instanceof ast.ArrayComprehension) {
+      const allocIdx = this._getAllocFunc();
+      const ensureCapIdx = this._getArrayEnsureCapFunc();
+      
+      // Temp locals
+      const srcPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+      this.currentExtraLocals++;
+      const srcLenLocal = this.currentLocalCount + this.currentExtraLocals;
+      this.currentExtraLocals++;
+      const idxLocal = this.currentLocalCount + this.currentExtraLocals;
+      this.currentExtraLocals++;
+      const dstPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+      this.currentExtraLocals++;
+      const dstLenLocal = this.currentLocalCount + this.currentExtraLocals;
+      this.currentExtraLocals++;
+      
+      // Loop variable
+      const varName = typeof expr.variable === 'string' ? expr.variable : expr.variable.value;
+      const elemLocal = this.currentLocalCount + this.currentExtraLocals;
+      this.currentExtraLocals++;
+      this.currentLocals.set(varName, elemLocal);
+      
+      // Evaluate source iterable
+      this._compileExpr(expr.iterable, body);
+      if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+      body.push(WasmOp.local_set, ...encodeULEB128(srcPtrLocal));
+      
+      // Read source length
+      body.push(WasmOp.local_get, ...encodeULEB128(srcPtrLocal));
+      body.push(WasmOp.i32_load, 2, 0);
+      body.push(WasmOp.local_set, ...encodeULEB128(srcLenLocal));
+      
+      // Allocate result array with capacity = source length (or min 8)
+      // Size: 8 + max(srcLen, 8) * 4
+      body.push(WasmOp.local_get, ...encodeULEB128(srcLenLocal));
+      body.push(WasmOp.i32_const, 8);
+      body.push(WasmOp.i32_gt_s);
+      body.push(WasmOp.if_, 0x7F); // if -> i32
+        body.push(WasmOp.local_get, ...encodeULEB128(srcLenLocal));
+      body.push(WasmOp.else_);
+        body.push(WasmOp.i32_const, 8);
+      body.push(WasmOp.end);
+      // Stack: capacity
+      // Compute 8 + capacity * 4
+      const capLocal = this.currentLocalCount + this.currentExtraLocals;
+      this.currentExtraLocals++;
+      body.push(WasmOp.local_tee, ...encodeULEB128(capLocal));
+      body.push(WasmOp.i32_const, 4);
+      body.push(WasmOp.i32_mul);
+      body.push(WasmOp.i32_const, 8);
+      body.push(WasmOp.i32_add);
+      body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+      body.push(WasmOp.local_set, ...encodeULEB128(dstPtrLocal));
+      
+      // Store initial length 0 and capacity
+      body.push(WasmOp.local_get, ...encodeULEB128(dstPtrLocal));
+      body.push(WasmOp.i32_const, 0);
+      body.push(WasmOp.i32_store, 2, 0); // len = 0
+      body.push(WasmOp.local_get, ...encodeULEB128(dstPtrLocal));
+      body.push(WasmOp.local_get, ...encodeULEB128(capLocal));
+      body.push(WasmOp.i32_store, 2, 4); // cap = srcLen or 8
+      
+      // i = 0
+      body.push(WasmOp.i32_const, 0);
+      body.push(WasmOp.local_set, ...encodeULEB128(idxLocal));
+      
+      // dstLen = 0
+      body.push(WasmOp.i32_const, 0);
+      body.push(WasmOp.local_set, ...encodeULEB128(dstLenLocal));
+      
+      // Loop: while (i < srcLen)
+      body.push(WasmOp.block, 0x40);
+      body.push(WasmOp.loop, 0x40);
+      
+      // break if i >= srcLen
+      body.push(WasmOp.local_get, ...encodeULEB128(idxLocal));
+      body.push(WasmOp.local_get, ...encodeULEB128(srcLenLocal));
+      body.push(WasmOp.i32_ge_s);
+      body.push(WasmOp.br_if, 1);
+      
+      // elem = src[i]
+      body.push(WasmOp.local_get, ...encodeULEB128(srcPtrLocal));
+      body.push(WasmOp.i32_const, 8);
+      body.push(WasmOp.i32_add);
+      body.push(WasmOp.local_get, ...encodeULEB128(idxLocal));
+      body.push(WasmOp.i32_const, 4);
+      body.push(WasmOp.i32_mul);
+      body.push(WasmOp.i32_add);
+      body.push(WasmOp.i32_load, 2, 0);
+      if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+      body.push(WasmOp.local_set, ...encodeULEB128(elemLocal));
+      
+      // Optional condition check
+      if (expr.condition) {
+        this._compileExpr(expr.condition, body);
+        if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+        if (this.useF64) {
+          this._emitF64Const(body, 0.0);
+          body.push(WasmOp.f64_eq);
+        } else {
+          body.push(WasmOp.i32_eqz);
+        }
+        // If condition is false (eqz → 1), skip this element
+        body.push(WasmOp.if_, 0x40);
+          // Skip: just increment i and continue
+          body.push(WasmOp.local_get, ...encodeULEB128(idxLocal));
+          body.push(WasmOp.i32_const, 1);
+          body.push(WasmOp.i32_add);
+          body.push(WasmOp.local_set, ...encodeULEB128(idxLocal));
+          body.push(WasmOp.br, 1); // continue loop
+        body.push(WasmOp.end);
+      }
+      
+      // Ensure capacity on result array
+      body.push(WasmOp.local_get, ...encodeULEB128(dstPtrLocal));
+      body.push(WasmOp.call, ...encodeULEB128(ensureCapIdx));
+      body.push(WasmOp.local_set, ...encodeULEB128(dstPtrLocal));
+      
+      // Evaluate body expression
+      this._compileExpr(expr.body, body);
+      if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+      
+      // Store result: dst[dstLen] = body_value
+      // Address: dstPtr + 8 + dstLen * 4
+      const valLocal = this.currentLocalCount + this.currentExtraLocals;
+      this.currentExtraLocals++;
+      body.push(WasmOp.local_set, ...encodeULEB128(valLocal));
+      
+      body.push(WasmOp.local_get, ...encodeULEB128(dstPtrLocal));
+      body.push(WasmOp.i32_const, 8);
+      body.push(WasmOp.i32_add);
+      body.push(WasmOp.local_get, ...encodeULEB128(dstLenLocal));
+      body.push(WasmOp.i32_const, 4);
+      body.push(WasmOp.i32_mul);
+      body.push(WasmOp.i32_add);
+      body.push(WasmOp.local_get, ...encodeULEB128(valLocal));
+      body.push(WasmOp.i32_store, 2, 0);
+      
+      // dstLen++
+      body.push(WasmOp.local_get, ...encodeULEB128(dstLenLocal));
+      body.push(WasmOp.i32_const, 1);
+      body.push(WasmOp.i32_add);
+      body.push(WasmOp.local_set, ...encodeULEB128(dstLenLocal));
+      
+      // Update dst array length header
+      body.push(WasmOp.local_get, ...encodeULEB128(dstPtrLocal));
+      body.push(WasmOp.local_get, ...encodeULEB128(dstLenLocal));
+      body.push(WasmOp.i32_store, 2, 0);
+      
+      // i++
+      body.push(WasmOp.local_get, ...encodeULEB128(idxLocal));
+      body.push(WasmOp.i32_const, 1);
+      body.push(WasmOp.i32_add);
+      body.push(WasmOp.local_set, ...encodeULEB128(idxLocal));
+      
+      body.push(WasmOp.br, 0); // continue loop
+      body.push(WasmOp.end);   // end loop
+      body.push(WasmOp.end);   // end block
+      
+      // Return result array pointer (as numType)
+      body.push(WasmOp.local_get, ...encodeULEB128(dstPtrLocal));
+      if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
       return;
     }
 
