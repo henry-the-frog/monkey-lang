@@ -2683,7 +2683,13 @@ export class WasmCompiler {
                     captures.add(name);
                   }
                 }
-                if (nn instanceof ast.FunctionLiteral) return; // stop at deeper nesting
+                if (nn instanceof ast.FunctionLiteral) {
+                  // Recurse into deeper nested functions — they may also capture outer vars
+                  if (nn.body && nn.body.statements) {
+                    for (const s of nn.body.statements) findNestedCaptures(s);
+                  }
+                  return;
+                }
                 if (nn.left) findNestedCaptures(nn.left);
                 if (nn.right) findNestedCaptures(nn.right);
                 if (nn.condition) findNestedCaptures(nn.condition);
@@ -2698,6 +2704,7 @@ export class WasmCompiler {
                 if (nn.statements) for (const s of nn.statements) findNestedCaptures(s);
                 if (nn.arguments) for (const a of nn.arguments) findNestedCaptures(a);
                 if (nn.elements) for (const e of nn.elements) findNestedCaptures(e);
+                if (nn.pairs) for (const [k, v] of nn.pairs) { findNestedCaptures(k); findNestedCaptures(v); }
               };
               if (n.body && n.body.statements) {
                 for (const s of n.body.statements) findNestedCaptures(s);
@@ -2724,6 +2731,7 @@ export class WasmCompiler {
             if (n.statements) for (const s of n.statements) findCaptures(s);
             if (n.arguments) for (const a of n.arguments) findCaptures(a);
             if (n.elements) for (const e of n.elements) findCaptures(e);
+            if (n.pairs) for (const [k, v] of n.pairs) { findCaptures(k); findCaptures(v); }
           };
           
           if (node.body && node.body.statements) {
@@ -2752,6 +2760,7 @@ export class WasmCompiler {
             if (n.statements) for (const s of n.statements) findInnerAssigns(s);
             if (n.arguments) for (const a of n.arguments) findInnerAssigns(a);
             if (n.elements) for (const e of n.elements) findInnerAssigns(e);
+            if (n.pairs) for (const [k, v] of n.pairs) findInnerAssigns(v);
           };
           if (node.body && node.body.statements) {
             for (const s of node.body.statements) findInnerAssigns(s);
@@ -2792,6 +2801,13 @@ export class WasmCompiler {
         }
         if (node.arguments) for (const a of node.arguments) walkExpr(a, currentScopeDefs);
         if (node.elements) for (const e of node.elements) walkExpr(e, currentScopeDefs);
+        // Hash literal pairs: traverse values (keys are typically strings/ints)
+        if (node.pairs) {
+          for (const [key, value] of node.pairs) {
+            walkExpr(key, currentScopeDefs);
+            walkExpr(value, currentScopeDefs);
+          }
+        }
       };
       
       const walkStmt = (stmt, currentScopeDefs) => {
@@ -2821,32 +2837,57 @@ export class WasmCompiler {
       }
       
       // Determine which variables need boxing in this scope
+      // Variables may need boxing even if defined in an outer scope —
+      // in that case, propagate to the defining scope
       const boxed = new Set();
+      const localDefs = new Set(); // variables defined at THIS scope level
+      for (const stmt of statements) {
+        if (stmt instanceof ast.LetStatement && stmt.name) {
+          localDefs.add(stmt.name.value);
+        }
+      }
+      
+      const needsBoxing = new Set(); // all vars that need boxing (may be local or outer)
       for (const [name, count] of capturedBy) {
         // (a) captured AND assigned anywhere
         if (assigns.has(name)) {
-          boxed.add(name);
+          needsBoxing.add(name);
         }
         // (b) captured by 2+ closures
         if (count >= 2) {
-          boxed.add(name);
+          needsBoxing.add(name);
         }
       }
       // (c) self-referencing closures that also have OTHER captures
-      // Pure self-recursion (only captures itself) works fine as direct function.
-      // But self-ref with other captures needs boxing so the captures can access the function.
       for (const name of selfRefs) {
         if (capturedBy.has(name)) {
-          // Check if there are other captures besides the self-reference
           const otherCaptures = [...capturedBy.keys()].filter(k => k !== name);
           if (otherCaptures.length > 0) {
-            boxed.add(name);
+            needsBoxing.add(name);
+          }
+        }
+      }
+      
+      // Separate into locally-defined vars (box here) and outer vars (propagate up)
+      for (const name of needsBoxing) {
+        if (localDefs.has(name)) {
+          boxed.add(name);
+        } else {
+          // Propagate: find the parent scope that defines this variable
+          // Walk up the scope ID path to find where it's defined
+          const parts = scopeId.split('/');
+          for (let i = parts.length - 1; i >= 1; i--) {
+            const parentId = parts.slice(0, i).join('/');
+            if (!result.has(parentId)) result.set(parentId, new Set());
+            result.get(parentId).add(name);
+            break; // only propagate one level up (will cascade)
           }
         }
       }
       
       if (boxed.size > 0) {
-        result.set(scopeId, boxed);
+        if (!result.has(scopeId)) result.set(scopeId, new Set());
+        for (const name of boxed) result.get(scopeId).add(name);
       }
     };
     
@@ -2892,6 +2933,12 @@ export class WasmCompiler {
     if (node.elements) {
       for (const e of node.elements) {
         if (this._astReferencesName(e, name, excludeParams)) return true;
+      }
+    }
+    if (node.pairs) {
+      for (const [k, v] of node.pairs) {
+        if (this._astReferencesName(k, name, excludeParams)) return true;
+        if (this._astReferencesName(v, name, excludeParams)) return true;
       }
     }
     return false;
