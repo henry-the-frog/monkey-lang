@@ -882,7 +882,10 @@ export class WasmCompiler {
 
       // Bind parameters — mark as knownInt if the function only uses them
       // in integer contexts (arithmetic, comparisons, calls to returnsInt functions)
-      const intParams = func.returnsInt ? this._inferIntParams(func.funcLit) : new Set();
+      // Always run _inferIntParams, not just for returnsInt functions.
+      // Functions returning closures may still have integer parameters
+      // (e.g., let adder = fn(x) { fn(y) { x + y } } — x is an int)
+      const intParams = this._inferIntParams(func.funcLit);
       for (const param of func.funcLit.parameters) {
         const name = param.value || param.token?.literal;
         this.currentScope.define(name, this.nextParamIndex, ValType.i32, intParams.has(name));
@@ -3186,6 +3189,35 @@ export class WasmCompiler {
         // Check arguments recursively
         for (const arg of node.arguments || []) checkNode(arg);
         checkNode(node.function);
+        return;
+      }
+
+      // If a param is used in arithmetic with a float literal, it's not int
+      if (node instanceof ast.InfixExpression) {
+        const hasFloat = (n) => n instanceof ast.FloatLiteral;
+        if (hasFloat(node.left) || hasFloat(node.right)) {
+          // If a param appears in an expression with floats, mark it non-int
+          if (node.left instanceof ast.Identifier && paramNames.has(node.left.value)) {
+            nonIntParams.add(node.left.value);
+          }
+          if (node.right instanceof ast.Identifier && paramNames.has(node.right.value)) {
+            nonIntParams.add(node.right.value);
+          }
+          // Also check nested: 3.14 * r * r → the outer * has left=(3.14*r), right=r
+          const checkForParam = (n) => {
+            if (n instanceof ast.Identifier && paramNames.has(n.value)) {
+              nonIntParams.add(n.value);
+            }
+            if (n instanceof ast.InfixExpression) {
+              checkForParam(n.left);
+              checkForParam(n.right);
+            }
+          };
+          checkForParam(node.left);
+          checkForParam(node.right);
+        }
+        checkNode(node.left);
+        checkNode(node.right);
         return;
       }
 
