@@ -47,10 +47,12 @@ class WasmCompiler {
     this.useI64 = options.useI64 || false;
     this.useF64 = options.useF64 || false;
     this.importSignatures = options.importSignatures || null;
-    this._strConcatImport = null; // lazily added on first string concat
+    // (removed: _strConcatImport — now using internal WASM functions)
     this._heapBaseGlobal = null; // global for heap pointer (bump allocator)
     this._allocFuncIdx = null; // lazily added __alloc function
     this._ensureCapFuncIdx = null; // lazily added __array_ensure_cap function
+    this._strConcatFuncIdx = null; // lazily added __str_concat function
+    this._strEqFuncIdx = null; // lazily added __str_eq function
     this._needsMemory = false; // set when arrays or dynamic allocation needed
     this._anonCounter = 0; // counter for anonymous function names
     this._anonMap = new Map(); // FunctionLiteral node → name string
@@ -99,6 +101,8 @@ class WasmCompiler {
     if (this._programNeedsMemory(program)) {
       this._getAllocFunc(); // adds __alloc function before any user functions
       this._getArrayEnsureCapFunc(); // adds __array_ensure_cap before any user functions
+      this._getStrConcatFunc(); // adds __str_concat before any user functions
+      this._getStrEqFunc(); // adds __str_eq before any user functions
     }
 
     // Pass 0.5: Process top-level let bindings as globals (non-function values)
@@ -149,6 +153,7 @@ class WasmCompiler {
       if (node instanceof ast.IndexExpression) return true;
       if (node instanceof ast.ForInExpression) return true;
       if (node instanceof ast.ArrayComprehension) return true;
+      if (node instanceof ast.StringLiteral) return true;
       // Check common node types
       if (node.statements) return node.statements.some(s => scan(s));
       if (node.expression) return scan(node.expression);
@@ -192,14 +197,194 @@ class WasmCompiler {
   }
 
   // Lazily add the __str_concat import when string concatenation is first used
-  _getStrConcatImport() {
-    if (this._strConcatImport === null) {
-      this._strConcatImport = this.module.addImport(
-        'env', '__str_concat',
-        [WASM_TYPE.I32, WASM_TYPE.I32], [WASM_TYPE.I32]
-      );
-    }
-    return this._strConcatImport;
+  // Get the __str_concat function index (lazily created as internal WASM function)
+  // __str_concat(ptr1: i32, ptr2: i32) -> new_ptr: i32
+  // Allocates new string buffer, copies both strings' bytes.
+  // String layout: [len:i32][bytes...]
+  _getStrConcatFunc() {
+    if (this._strConcatFuncIdx !== null) return this._strConcatFuncIdx;
+    
+    const allocIdx = this._getAllocFunc();
+    const typeIdx = this.module.addType([WASM_TYPE.I32, WASM_TYPE.I32], [WASM_TYPE.I32]);
+    
+    // Params: 0=ptr1, 1=ptr2. Locals: 2=len1, 3=len2, 4=newPtr, 5=i
+    const body = [
+      // len1 = load(ptr1 + 0)
+      WasmOp.local_get, 0,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 2,
+      
+      // len2 = load(ptr2 + 0)
+      WasmOp.local_get, 1,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 3,
+      
+      // newPtr = __alloc(4 + len1 + len2)
+      WasmOp.i32_const, 4,
+      WasmOp.local_get, 2,
+      WasmOp.i32_add,
+      WasmOp.local_get, 3,
+      WasmOp.i32_add,
+      WasmOp.call, ...encodeULEB128(allocIdx),
+      WasmOp.local_set, 4,
+      
+      // Store newLen at newPtr+0
+      WasmOp.local_get, 4,
+      WasmOp.local_get, 2,
+      WasmOp.local_get, 3,
+      WasmOp.i32_add,
+      WasmOp.i32_store, 2, 0,
+      
+      // Copy first string bytes: ptr1+4 → newPtr+4, len1 bytes
+      WasmOp.i32_const, 0,
+      WasmOp.local_set, 5, // i = 0
+      WasmOp.block, 0x40,
+        WasmOp.loop, 0x40,
+          WasmOp.local_get, 5,
+          WasmOp.local_get, 2,
+          WasmOp.i32_ge_u,
+          WasmOp.br_if, 1,
+          // newPtr[4+i] = ptr1[4+i]
+          WasmOp.local_get, 4,
+          WasmOp.i32_const, 4,
+          WasmOp.i32_add,
+          WasmOp.local_get, 5,
+          WasmOp.i32_add,
+          WasmOp.local_get, 0,
+          WasmOp.i32_const, 4,
+          WasmOp.i32_add,
+          WasmOp.local_get, 5,
+          WasmOp.i32_add,
+          WasmOp.i32_load8_u, 0, 0,
+          WasmOp.i32_store8, 0, 0,
+          // i++
+          WasmOp.local_get, 5,
+          WasmOp.i32_const, 1,
+          WasmOp.i32_add,
+          WasmOp.local_set, 5,
+          WasmOp.br, 0,
+        WasmOp.end,
+      WasmOp.end,
+      
+      // Copy second string bytes: ptr2+4 → newPtr+4+len1, len2 bytes
+      WasmOp.i32_const, 0,
+      WasmOp.local_set, 5, // i = 0
+      WasmOp.block, 0x40,
+        WasmOp.loop, 0x40,
+          WasmOp.local_get, 5,
+          WasmOp.local_get, 3,
+          WasmOp.i32_ge_u,
+          WasmOp.br_if, 1,
+          // newPtr[4+len1+i] = ptr2[4+i]
+          WasmOp.local_get, 4,
+          WasmOp.i32_const, 4,
+          WasmOp.i32_add,
+          WasmOp.local_get, 2, // len1
+          WasmOp.i32_add,
+          WasmOp.local_get, 5,
+          WasmOp.i32_add,
+          WasmOp.local_get, 1,
+          WasmOp.i32_const, 4,
+          WasmOp.i32_add,
+          WasmOp.local_get, 5,
+          WasmOp.i32_add,
+          WasmOp.i32_load8_u, 0, 0,
+          WasmOp.i32_store8, 0, 0,
+          // i++
+          WasmOp.local_get, 5,
+          WasmOp.i32_const, 1,
+          WasmOp.i32_add,
+          WasmOp.local_set, 5,
+          WasmOp.br, 0,
+        WasmOp.end,
+      WasmOp.end,
+      
+      // return newPtr
+      WasmOp.local_get, 4,
+    ];
+    
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [
+      { count: 4, type: WASM_TYPE.I32 } // len1, len2, newPtr, i
+    ], body);
+    this._strConcatFuncIdx = funcIdx;
+    return funcIdx;
+  }
+
+  // Get the __str_eq function index (lazily created)
+  // __str_eq(ptr1: i32, ptr2: i32) -> i32 (0 or 1)
+  _getStrEqFunc() {
+    if (this._strEqFuncIdx !== null) return this._strEqFuncIdx;
+    
+    const typeIdx = this.module.addType([WASM_TYPE.I32, WASM_TYPE.I32], [WASM_TYPE.I32]);
+    
+    // Params: 0=ptr1, 1=ptr2. Locals: 2=len1, 3=len2, 4=i
+    const body = [
+      // len1 = load(ptr1)
+      WasmOp.local_get, 0,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 2,
+      
+      // len2 = load(ptr2)
+      WasmOp.local_get, 1,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 3,
+      
+      // if len1 != len2, return 0
+      WasmOp.local_get, 2,
+      WasmOp.local_get, 3,
+      WasmOp.i32_ne,
+      WasmOp.if_, 0x40,
+        WasmOp.i32_const, 0,
+        WasmOp.return_,
+      WasmOp.end,
+      
+      // Compare bytes
+      WasmOp.i32_const, 0,
+      WasmOp.local_set, 4, // i = 0
+      WasmOp.block, 0x40,
+        WasmOp.loop, 0x40,
+          WasmOp.local_get, 4,
+          WasmOp.local_get, 2,
+          WasmOp.i32_ge_u,
+          WasmOp.br_if, 1, // all bytes matched
+          // if ptr1[4+i] != ptr2[4+i], return 0
+          WasmOp.local_get, 0,
+          WasmOp.i32_const, 4,
+          WasmOp.i32_add,
+          WasmOp.local_get, 4,
+          WasmOp.i32_add,
+          WasmOp.i32_load8_u, 0, 0,
+          WasmOp.local_get, 1,
+          WasmOp.i32_const, 4,
+          WasmOp.i32_add,
+          WasmOp.local_get, 4,
+          WasmOp.i32_add,
+          WasmOp.i32_load8_u, 0, 0,
+          WasmOp.i32_ne,
+          WasmOp.if_, 0x40,
+            WasmOp.i32_const, 0,
+            WasmOp.return_,
+          WasmOp.end,
+          // i++
+          WasmOp.local_get, 4,
+          WasmOp.i32_const, 1,
+          WasmOp.i32_add,
+          WasmOp.local_set, 4,
+          WasmOp.br, 0,
+        WasmOp.end,
+      WasmOp.end,
+      
+      // All bytes match
+      WasmOp.i32_const, 1,
+    ];
+    
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [
+      { count: 3, type: WASM_TYPE.I32 } // len1, len2, i
+    ], body);
+    this._strEqFuncIdx = funcIdx;
+    return funcIdx;
   }
 
   // Ensure memory exists and heap pointer global is initialized
@@ -1205,19 +1390,21 @@ class WasmCompiler {
         case '+': {
           // If either operand is a string, use string concatenation
           if (expr.left instanceof ast.StringLiteral || expr.right instanceof ast.StringLiteral) {
-            const concatIdx = this._getStrConcatImport();
-            // Both operands already on stack as i32 pointers
+            this._ensureMemory();
+            const concatIdx = this._getStrConcatFunc();
+            // Both operands are on stack as i32 pointers
             if (this.useI64) {
-              // Wrap to i32 for the import call
-              body.push(WasmOp.i32_wrap_i64); // right
-              // Need to swap — but WASM doesn't have swap. Use locals.
-              // Actually, arguments are already on stack in order: left, right
-              // So we need left to be i32 too. Recompile with wraps.
-              body.length -= 1; // remove the wrap we just added
-              // Recompile left as i32
-              // This is getting complex — for now, only support i32 mode for strings
+              // Need i32 pointers for the function call
+              // Re-emit operands as i32
+              const tmpRight = this.currentLocalCount + this.currentExtraLocals;
+              this.currentExtraLocals++;
+              body.push(WasmOp.i32_wrap_i64);
+              body.push(WasmOp.local_set, ...encodeULEB128(tmpRight));
+              body.push(WasmOp.i32_wrap_i64);
+              body.push(WasmOp.local_get, ...encodeULEB128(tmpRight));
             }
             body.push(WasmOp.call, ...encodeULEB128(concatIdx));
+            if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
           } else {
             body.push(this.iop("add"));
           }
@@ -1229,8 +1416,53 @@ class WasmCompiler {
         case '%': if (this.useF64) throw new Error('WASM f64 does not support %'); body.push(this.iop("rem_s")); break;
         case '<': body.push(this.cop("lt")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
         case '>': body.push(this.cop("gt")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
-        case '==': body.push(this.iop("eq")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
-        case '!=': body.push(this.iop("ne")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
+        case '==': {
+          if (expr.left instanceof ast.StringLiteral || expr.right instanceof ast.StringLiteral) {
+            // String comparison: call __str_eq
+            this._ensureMemory();
+            const eqIdx = this._getStrEqFunc();
+            if (this.useI64) {
+              const tmpR = this.currentLocalCount + this.currentExtraLocals;
+              this.currentExtraLocals++;
+              body.push(WasmOp.i32_wrap_i64);
+              body.push(WasmOp.local_set, ...encodeULEB128(tmpR));
+              body.push(WasmOp.i32_wrap_i64);
+              body.push(WasmOp.local_get, ...encodeULEB128(tmpR));
+            }
+            body.push(WasmOp.call, ...encodeULEB128(eqIdx));
+            if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+            if (this.useF64) body.push(WasmOp.f64_convert_i32_s);
+          } else {
+            body.push(this.iop("eq"));
+            if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+            if (this.useF64) body.push(WasmOp.f64_convert_i32_s);
+          }
+          break;
+        }
+        case '!=': {
+          if (expr.left instanceof ast.StringLiteral || expr.right instanceof ast.StringLiteral) {
+            // String comparison: call __str_eq and negate
+            this._ensureMemory();
+            const eqIdx = this._getStrEqFunc();
+            if (this.useI64) {
+              const tmpR = this.currentLocalCount + this.currentExtraLocals;
+              this.currentExtraLocals++;
+              body.push(WasmOp.i32_wrap_i64);
+              body.push(WasmOp.local_set, ...encodeULEB128(tmpR));
+              body.push(WasmOp.i32_wrap_i64);
+              body.push(WasmOp.local_get, ...encodeULEB128(tmpR));
+            }
+            body.push(WasmOp.call, ...encodeULEB128(eqIdx));
+            body.push(WasmOp.i32_eqz); // negate
+            if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+            if (this.useF64) body.push(WasmOp.f64_convert_i32_s);
+          } else {
+            body.push(this.iop("ne"));
+            if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+            if (this.useF64) body.push(WasmOp.f64_convert_i32_s);
+          }
+          break;
+        }
         case '<=': body.push(this.cop("le")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
         case '>=': body.push(this.cop("ge")); if (this.useI64) body.push(WasmOp.i64_extend_i32_s); if (this.useF64) body.push(WasmOp.f64_convert_i32_s); break;
         default: throw new Error(`Unsupported operator in WASM: ${expr.operator}`);
