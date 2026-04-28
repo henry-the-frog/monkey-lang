@@ -1791,6 +1791,17 @@ export class WasmCompiler {
 
       // Built-in: reduce(arr, fn, init) or reduce(arr, fn)
       if (!isLocallyDefined && name === 'reduce' && (node.arguments.length === 2 || node.arguments.length === 3)) {
+        // Try inline reduce: callback must have no captures and exactly 2 params
+        if (node.arguments[1] instanceof ast.FunctionLiteral) {
+          const callback = node.arguments[1];
+          const captures = this._findCaptures(callback);
+          if (captures.length === 0 && callback.parameters.length === 2) {
+            const initExpr = node.arguments.length === 3 ? node.arguments[2] : null;
+            this._compileInlineReduce(node.arguments[0], callback, initExpr);
+            return;
+          }
+        }
+        // Fallback: runtime reduce
         this.compileNode(node.arguments[0]); // array
         this.compileNode(node.arguments[1]); // closure
         if (node.arguments.length === 3) {
@@ -4260,6 +4271,100 @@ export class WasmCompiler {
     this.currentScope = prevScope;
     
     this.currentBody.localGet(resultLocal);
+  }
+
+  // Inline reduce: compile reduce(arr, fn(acc,el){body}, init) as a WASM loop with accumulator
+  _compileInlineReduce(arrExpr, callback, initExpr) {
+    const accName = callback.parameters[0].value || callback.parameters[0].token?.literal;
+    const elemName = callback.parameters[1].value || callback.parameters[1].token?.literal;
+    
+    // Locals: arrPtr, len, i, acc
+    const arrLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    const lenLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    const iLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    const accLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    
+    // arrPtr = compile(arrExpr)
+    this.compileNode(arrExpr);
+    this.currentBody.localSet(arrLocal);
+    
+    // len = i32.load(arrPtr + 4)
+    this.currentBody.localGet(arrLocal);
+    this.currentBody.i32Const(4);
+    this.currentBody.emit(Op.i32_add);
+    this.currentBody.i32Load();
+    this.currentBody.localSet(lenLocal);
+    
+    // acc = compile(initExpr)
+    if (initExpr) {
+      this.compileNode(initExpr);
+    } else {
+      // No init: use first element and start from index 1
+      this.currentBody.localGet(arrLocal);
+      this.currentBody.i32Const(0);
+      this.currentBody.call(this._runtimeFuncs.arrayGet);
+    }
+    this.currentBody.localSet(accLocal);
+    
+    // i = initExpr ? 0 : 1
+    this.currentBody.i32Const(initExpr ? 0 : 1);
+    this.currentBody.localSet(iLocal);
+    
+    // Bind parameters in a new scope
+    const prevScope = this.currentScope;
+    this.currentScope = new Scope(prevScope);
+    const accParamLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    this.currentScope.define(accName, accParamLocal, ValType.i32);
+    const elemParamLocal = this.nextLocalIndex++;
+    this.currentBody.addLocal(ValType.i32);
+    this.currentScope.define(elemName, elemParamLocal, ValType.i32);
+    
+    // Loop
+    this.currentBody.block();
+    this.currentBody.loop();
+    
+    // if (i >= len) break
+    this.currentBody.localGet(iLocal);
+    this.currentBody.localGet(lenLocal);
+    this.currentBody.emit(Op.i32_ge_s);
+    this.currentBody.brIf(1);
+    
+    // accParam = acc
+    this.currentBody.localGet(accLocal);
+    this.currentBody.localSet(accParamLocal);
+    
+    // elemParam = array_get(arrPtr, i)
+    this.currentBody.localGet(arrLocal);
+    this.currentBody.localGet(iLocal);
+    this.currentBody.call(this._runtimeFuncs.arrayGet);
+    this.currentBody.localSet(elemParamLocal);
+    
+    // acc = compile(callback.body)
+    this._compileBlockReturning(callback.body);
+    this.currentBody.localSet(accLocal);
+    
+    // i++
+    this.currentBody.localGet(iLocal);
+    this.currentBody.i32Const(1);
+    this.currentBody.emit(Op.i32_add);
+    this.currentBody.localSet(iLocal);
+    
+    // continue
+    this.currentBody.br(0);
+    
+    this.currentBody.end(); // loop
+    this.currentBody.end(); // block
+    
+    // Restore scope
+    this.currentScope = prevScope;
+    
+    // Return accumulator
+    this.currentBody.localGet(accLocal);
   }
 }
 
