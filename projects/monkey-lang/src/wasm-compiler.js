@@ -1256,7 +1256,11 @@ export class WasmCompiler {
       // arr[start:end]
       this.compileNode(node.left);
       this.compileNode(node.start || { value: 0, constructor: ast.IntegerLiteral });
-      this.compileNode(node.end || { value: 0, constructor: ast.IntegerLiteral });
+      if (node.end) {
+        this.compileNode(node.end);
+      } else {
+        this.currentBody.i32Const(-1); // sentinel: "not specified" → use full length
+      }
       this.currentBody.call(this._runtimeFuncs.slice);
     } else if (node instanceof ast.HashLiteral) {
       this.compileHashLiteral(node);
@@ -5024,7 +5028,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const tag = view.getInt32(arrPtr, true);
         if (tag !== TAG_ARRAY) return 0;
         const len = view.getInt32(arrPtr + 4, true);
-        if (end <= 0) end = len; // default to full length
+        if (end < 0) end = len; // -1 sentinel means "use full length"
         if (start < 0) start = 0;
         if (end > len) end = len;
         const newLen = Math.max(0, end - start);
