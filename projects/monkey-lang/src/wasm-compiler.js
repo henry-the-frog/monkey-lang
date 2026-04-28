@@ -811,7 +811,12 @@ export class WasmCompiler {
       if (node instanceof ast.BooleanLiteral) return true;
       if (node instanceof ast.Identifier) return paramNames.has(node.value);
       if (node instanceof ast.InfixExpression) {
-        if (['-', '*', '/', '%', '<', '>', '<=', '>=', '==', '!='].includes(node.operator)) return true;
+        // Comparison operators always return int (boolean)
+        if (['<', '>', '<=', '>=', '==', '!='].includes(node.operator)) return true;
+        // Arithmetic operators return int only if both operands are int
+        if (['-', '*', '/', '%'].includes(node.operator)) {
+          return isIntExpr(node.left) && isIntExpr(node.right);
+        }
         if (node.operator === '+') return isIntExpr(node.left) && isIntExpr(node.right);
         return false;
       }
@@ -875,10 +880,12 @@ export class WasmCompiler {
       this.nextParamIndex = 0;
       this.nextLocalIndex = func.params.length;
 
-      // Bind parameters
+      // Bind parameters — mark as knownInt if the function only uses them
+      // in integer contexts (arithmetic, comparisons, calls to returnsInt functions)
+      const intParams = func.returnsInt ? this._inferIntParams(func.funcLit) : new Set();
       for (const param of func.funcLit.parameters) {
         const name = param.value || param.token?.literal;
-        this.currentScope.define(name, this.nextParamIndex, ValType.i32);
+        this.currentScope.define(name, this.nextParamIndex, ValType.i32, intParams.has(name));
         this.nextParamIndex++;
       }
 
@@ -3139,6 +3146,123 @@ export class WasmCompiler {
       funcNode.body.statements.forEach(scan);
     }
     
+    return intParams;
+  }
+
+  // Infer which parameters of a function are definitely integers.
+  // A parameter is definitely integer if it's only used in integer contexts:
+  // - Arithmetic operations (+, -, *, /, %)
+  // - Integer comparisons (<, >, <=, >=, ==, !=) with other int expressions
+  // - Passed to functions where the corresponding parameter is also int
+  // - Used as a direct call argument
+  _inferIntParams(funcLit) {
+    const paramNames = new Set(
+      (funcLit.parameters || []).map(p => p.value || p.token?.literal)
+    );
+    const nonIntParams = new Set();
+
+    const checkNode = (node) => {
+      if (!node) return;
+
+      if (node instanceof ast.CallExpression) {
+        // Check if the called function is a builtin that expects non-int args
+        if (node.function instanceof ast.Identifier) {
+          const name = node.function.value;
+          // Builtins that accept non-integer arguments
+          const nonIntBuiltins = ['len', 'push', 'first', 'last', 'rest', 'puts', 'str',
+            'map', 'filter', 'reduce', 'sort', 'reverse', 'join', 'split', 'contains',
+            'keys', 'values', 'type', 'range', 'zip', 'flat', 'any', 'all', 'find',
+            'count', 'sum', 'max', 'min', 'slice', 'insert', 'remove', 'concat',
+            'unique', 'groupBy', 'sortBy', 'chunks'];
+          if (nonIntBuiltins.includes(name) && !paramNames.has(name)) {
+            // If a parameter is passed as argument to a non-int builtin, it's not int
+            for (const arg of node.arguments || []) {
+              if (arg instanceof ast.Identifier && paramNames.has(arg.value)) {
+                nonIntParams.add(arg.value);
+              }
+            }
+          }
+        }
+        // Check arguments recursively
+        for (const arg of node.arguments || []) checkNode(arg);
+        checkNode(node.function);
+        return;
+      }
+
+      if (node instanceof ast.IndexExpression) {
+        // If a param is used as the object of an index expression, it's not int
+        if (node.left instanceof ast.Identifier && paramNames.has(node.left.value)) {
+          nonIntParams.add(node.left.value);
+        }
+        checkNode(node.left);
+        checkNode(node.index);
+        return;
+      }
+
+      if (node instanceof ast.IfExpression) {
+        checkNode(node.condition);
+        if (node.consequence) checkBlock(node.consequence);
+        if (node.alternative) checkBlock(node.alternative);
+        return;
+      }
+
+      if (node instanceof ast.InfixExpression) {
+        checkNode(node.left);
+        checkNode(node.right);
+        return;
+      }
+
+      if (node instanceof ast.PrefixExpression) {
+        checkNode(node.right);
+        return;
+      }
+
+      if (node instanceof ast.LetStatement) {
+        checkNode(node.value);
+        return;
+      }
+
+      if (node instanceof ast.ExpressionStatement) {
+        checkNode(node.expression);
+        return;
+      }
+
+      if (node instanceof ast.ReturnStatement) {
+        checkNode(node.returnValue);
+        return;
+      }
+
+      if (node instanceof ast.WhileExpression || node instanceof ast.DoWhileExpression) {
+        checkNode(node.condition);
+        if (node.body) checkBlock(node.body);
+        return;
+      }
+
+      if (node instanceof ast.ForExpression) {
+        checkNode(node.init);
+        checkNode(node.condition);
+        checkNode(node.update);
+        if (node.body) checkBlock(node.body);
+        return;
+      }
+
+      if (node instanceof ast.BlockStatement) {
+        checkBlock(node);
+        return;
+      }
+    };
+
+    const checkBlock = (block) => {
+      for (const stmt of (block.statements || [])) checkNode(stmt);
+    };
+
+    if (funcLit.body) checkBlock(funcLit.body);
+
+    // Return the set of params that are NOT in nonIntParams
+    const intParams = new Set();
+    for (const name of paramNames) {
+      if (!nonIntParams.has(name)) intParams.add(name);
+    }
     return intParams;
   }
 
