@@ -211,3 +211,102 @@ describe('WASM arrays — mixed with other features', () => {
     `), 150);
   });
 });
+
+describe('WASM arrays — reallocation (growth beyond capacity)', () => {
+  it('grow empty array past initial capacity (256→512)', async () => {
+    assert.equal(await run(`
+      let a = [];
+      let i = 0;
+      while (i < 300) { push(a, i); set i = i + 1 };
+      len(a)
+    `), 300);
+  });
+
+  it('grow to 1000 elements', async () => {
+    assert.equal(await run(`
+      let a = [];
+      let i = 0;
+      while (i < 1000) { push(a, i); set i = i + 1 };
+      a[999]
+    `), 999);
+  });
+
+  it('grow to 5000 elements (multiple reallocations)', async () => {
+    assert.equal(await run(`
+      let a = [];
+      let i = 0;
+      while (i < 5000) { push(a, i * 2); set i = i + 1 };
+      a[4999]
+    `), 9998);
+  });
+
+  it('data integrity after reallocation', async () => {
+    // Push 500 elements, verify first, middle, and last
+    assert.equal(await run(`
+      let a = [];
+      let i = 0;
+      while (i < 500) { push(a, i * 3); set i = i + 1 };
+      a[0] + a[250] + a[499]
+    `), 0 + 750 + 1497);
+  });
+
+  it('multiple arrays growing independently', async () => {
+    assert.equal(await run(`
+      let a = [];
+      let b = [];
+      let i = 0;
+      while (i < 300) {
+        push(a, i);
+        push(b, i * 10);
+        set i = i + 1
+      };
+      a[299] + b[299]
+    `), 299 + 2990);
+  });
+
+  it('grow array in function', async () => {
+    assert.equal(await run(`
+      let buildArr = fn(n) {
+        let a = [];
+        let i = 0;
+        while (i < n) { push(a, i); set i = i + 1 };
+        a
+      };
+      let arr = buildArr(400);
+      arr[399]
+    `), 399);
+  });
+
+  it('memory.grow triggers (>64KB allocation)', async () => {
+    // 16384 elements * 4 bytes = 64KB of data, plus headers
+    assert.equal(await run(`
+      let a = [];
+      let i = 0;
+      while (i < 20000) { push(a, i); set i = i + 1 };
+      a[19999]
+    `), 19999);
+  });
+
+  it('grow from pre-sized array', async () => {
+    // Array starts with cap=10 (5 elements * 2), grows past it
+    assert.equal(await run(`
+      let a = [1, 2, 3, 4, 5];
+      let i = 0;
+      while (i < 20) { push(a, i + 6); set i = i + 1 };
+      len(a)
+    `), 25);
+  });
+
+  it('sum large grown array', async () => {
+    // Sum of 0..999 = 499500
+    assert.equal(await run(`
+      let a = [];
+      let i = 0;
+      while (i < 1000) { push(a, i); set i = i + 1 };
+      let sum = 0;
+      set i = 0;
+      while (i < 1000) { set sum = sum + a[i]; set i = i + 1 };
+      sum
+    `), 499500);
+  });
+});
