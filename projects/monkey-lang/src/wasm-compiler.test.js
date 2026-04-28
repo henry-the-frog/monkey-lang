@@ -2597,6 +2597,99 @@ describe('Higher-Order Function Builtins', () => {
 });
 
 // Array Push Stress Tests (Apr 28, 2026)
+describe('Inline HOF Optimization', () => {
+  // These tests specifically exercise the inline compilation path
+  // (callback with no captures and 1 parameter → compiled as WASM loop, not runtime call)
+  async function run(code) {
+    const outputLines = [];
+    const result = await compileAndRun(code, { outputLines });
+    return outputLines.length > 0 ? outputLines.join(', ') : String(result);
+  }
+
+  describe('inline map (no captures)', () => {
+    it('arithmetic expression', async () => {
+      assert.strictEqual(await run('map([1, 2, 3], fn(x) { x * 3 + 1 })'), '[4, 7, 10]');
+    });
+
+    it('nested arithmetic', async () => {
+      assert.strictEqual(await run('map([2, 3, 4], fn(x) { (x + 1) * (x - 1) })'), '[3, 8, 15]');
+    });
+
+    it('boolean result', async () => {
+      assert.strictEqual(await run('map([1, 2, 3, 4, 5], fn(x) { x > 3 })'), '[0, 0, 0, 1, 1]');
+    });
+
+    it('identity function', async () => {
+      assert.strictEqual(await run('map([10, 20, 30], fn(x) { x })'), '[10, 20, 30]');
+    });
+
+    it('large array', async () => {
+      assert.strictEqual(await compileAndRun(`
+        let a = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20];
+        reduce(map(a, fn(x) { x * 2 }), fn(a,b) { a + b }, 0)
+      `), 420);
+    });
+  });
+
+  describe('inline filter (no captures)', () => {
+    it('modulo filter', async () => {
+      assert.strictEqual(await run('filter([1,2,3,4,5,6,7,8,9,10], fn(x) { x % 3 == 0 })'), '[3, 6, 9]');
+    });
+
+    it('comparison filter', async () => {
+      assert.strictEqual(await run('filter([10, 5, 20, 3, 15], fn(x) { x >= 10 })'), '[10, 20, 15]');
+    });
+
+    it('all filtered out', async () => {
+      assert.strictEqual(await run('filter([1, 2, 3], fn(x) { x > 100 })'), '[]');
+    });
+
+    it('none filtered out', async () => {
+      assert.strictEqual(await run('filter([1, 2, 3], fn(x) { x > 0 })'), '[1, 2, 3]');
+    });
+  });
+
+  describe('inline vs runtime path equivalence', () => {
+    // Inline path: no captures → compiled as loop
+    // Runtime path: has captures → uses runtime function call
+    it('map: inline and runtime produce same result', async () => {
+      // Inline (no captures)
+      const inline = await run('map([1, 2, 3, 4, 5], fn(x) { x * 2 })');
+      // Runtime (captures variable)
+      const runtime = await run('let f = 2; map([1, 2, 3, 4, 5], fn(x) { x * f })');
+      assert.strictEqual(inline, runtime);
+    });
+
+    it('filter: inline and runtime produce same result', async () => {
+      const inline = await run('filter([1, 2, 3, 4, 5, 6], fn(x) { x > 3 })');
+      const runtime = await run('let t = 3; filter([1, 2, 3, 4, 5, 6], fn(x) { x > t })');
+      assert.strictEqual(inline, runtime);
+    });
+  });
+
+  describe('chained inline HOFs', () => {
+    it('filter then map (both inline)', async () => {
+      assert.strictEqual(
+        await run('map(filter([1,2,3,4,5,6,7,8,9,10], fn(x) { x % 2 == 0 }), fn(x) { x * x })'),
+        '[4, 16, 36, 64, 100]'
+      );
+    });
+
+    it('map then filter then reduce', async () => {
+      assert.strictEqual(await compileAndRun(`
+        reduce(filter(map([1,2,3,4,5], fn(x) { x * 2 }), fn(x) { x > 4 }), fn(a,b) { a + b }, 0)
+      `), 24);
+    });
+
+    it('double map', async () => {
+      assert.strictEqual(
+        await run('map(map([1, 2, 3], fn(x) { x + 10 }), fn(x) { x * 2 })'),
+        '[22, 24, 26]'
+      );
+    });
+  });
+});
+
 describe('Array Push Performance', () => {
   it('push 5000 elements without crashing (was O(N²), crashed at 3-5K)', async () => {
     const result = await compileAndRun(`
