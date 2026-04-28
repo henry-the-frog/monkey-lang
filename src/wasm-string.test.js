@@ -133,3 +133,87 @@ describe('WASM strings — in expressions', () => {
     assert.equal(result, 11); // len works because it reads the i32 at ptr+0
   });
 });
+
+describe('WASM strings — through variables (type inference)', () => {
+  it('concat via string variables', async () => {
+    assert.equal(await runStr(`
+      let a = "hello";
+      let b = " world";
+      a + b
+    `), 'hello world');
+  });
+
+  it('len of variable concat', async () => {
+    assert.equal(await run(`
+      let a = "hello";
+      let b = " world";
+      let c = a + b;
+      len(c)
+    `), 11);
+  });
+
+  it('equality of string variables', async () => {
+    assert.equal(await run(`
+      let a = "hello";
+      let b = "hello";
+      a == b
+    `), 1);
+  });
+
+  it('inequality of different string variables', async () => {
+    assert.equal(await run(`
+      let a = "hello";
+      let b = "world";
+      a == b
+    `), 0);
+  });
+
+  it('concat result compared to literal', async () => {
+    assert.equal(await run(`
+      let a = "hello";
+      let b = " world";
+      let c = a + b;
+      c == "hello world"
+    `), 1);
+  });
+
+  it('string != through variables', async () => {
+    assert.equal(await run(`
+      let a = "hello";
+      let b = "world";
+      a != b
+    `), 1);
+  });
+
+  it('multiple concat chain through variables', async () => {
+    assert.equal(await runStr(`
+      let a = "hello";
+      let b = " ";
+      let c = "world";
+      a + b + c
+    `), 'hello world');
+  });
+
+  it('string variable in if condition', async () => {
+    assert.equal(await run(`
+      let greeting = "hello";
+      if (greeting == "hello") { 42 } else { 0 }
+    `), 42);
+  });
+
+  it('string assigned from concat', async () => {
+    assert.equal(await run(`
+      let greeting = "hi" + " there";
+      len(greeting)
+    `), 8);
+  });
+
+  it('string in function parameter', async () => {
+    assert.equal(await run(`
+      let check = fn(s) {
+        s == "hello"
+      };
+      check("hello")
+    `), 1);
+  });
+});
