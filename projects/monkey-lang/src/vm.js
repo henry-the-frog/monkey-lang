@@ -817,6 +817,17 @@ export class VM {
             if (!recording() && this.jit.countEdge(closureId, target2)) {
               this._startRecording(target2);
             }
+            
+            // If we're recording an outer loop and hit an inner loop back-edge
+            // that doesn't have a compiled trace yet, abort recording.
+            // The inner loop will get its own trace, and trace stitching will
+            // handle the combination. Without this, the outer trace inlines the
+            // inner loop body with constant-folded values from the recording
+            // iteration, producing incorrect results for subsequent iterations.
+            if (recording() && target2 !== this.recorder.startIp &&
+                target2 < this.recorder.startIp) {
+              this._abortRecording('inner loop without compiled trace');
+            }
           }
 
           frame.ip = target2 - 1;

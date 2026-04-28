@@ -1325,7 +1325,7 @@ describe('Real World JIT', () => {
     const vm = runJIT('let collatz = fn(n) { let steps = 0; while (n != 1) { if (n % 2 == 0) { n = n / 2; } else { n = n * 3 + 1; } steps++; } steps }; collatz(27)');
     assert.equal(vm.lastPoppedStackElem().value, 111);
   });
-  it('sieve-like counting', { skip: 'JIT trace constant-folds inner loop comparison (j*j) from recording iteration — needs inner loop trace stitching fix' }, () => {
+  it('sieve-like counting', () => {
     const vm = runJIT('let count = 0; for (let i = 2; i < 100; i++) { let is_p = true; for (let j = 2; j * j <= i; j++) { if (i % j == 0) { is_p = false; break; } } if (is_p) { count++; } } count');
     assert.equal(vm.lastPoppedStackElem().value, 25);
   });
