@@ -8,7 +8,9 @@ import { Lexer } from './lexer.js';
 import { Environment, MonkeyString } from './object.js';
 import { resetModuleLoader, getModuleLoader } from './module-loader.js';
 
-const TEST_DIR = join(import.meta.dirname, '__test_modules__');
+import { fileURLToPath } from 'node:url';
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const TEST_DIR = join(__dirname, '__test_modules__');
 
 function evalWithFile(code, filePath) {
   const lexer = new Lexer(code);
