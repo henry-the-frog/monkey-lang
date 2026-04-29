@@ -89,15 +89,15 @@ describe('WASM hash maps — in expressions', () => {
     `), 60);
   });
 
-  it('hash with computation', async () => {
+  it('hash with computation (10 entries)', async () => {
     assert.equal(await run(`
       let m = {};
       let i = 0;
-      while (i < 3) {
+      while (i < 10) {
         set m[i] = i * i;
         set i = i + 1
       };
-      m[0] + m[1] + m[2]
-    `), 0 + 1 + 4);
+      m[3] + m[7] + m[9]
+    `), 9 + 49 + 81);
   });
 });

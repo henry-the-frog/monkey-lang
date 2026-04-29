@@ -3662,9 +3662,9 @@ class WasmCompiler {
       const hashNewIdx = this._getHashNewFunc();
       const hashSetIdx = this._getHashSetFunc();
       
-      // Determine capacity: next power of 2 >= pairs.size * 2
-      let cap = 8;
-      while (cap < expr.pairs.size * 2) cap *= 2;
+      // Determine capacity: next power of 2 >= max(16, pairs.size * 2)
+      let cap = 16;
+      while (cap < expr.pairs.size * 2 + 2) cap *= 2;
       
       const mapLocal = this.currentLocalCount + this.currentExtraLocals;
       this.currentExtraLocals++;
