@@ -318,3 +318,42 @@ describe('WASM Hash Map Iteration', () => {
     assert.equal(result, 55);
   });
 });
+
+describe('WASM for-in directly on hash map (auto-detect)', () => {
+  it('for-in on string key hash iterates keys', async () => {
+    const result = await compileAndRun(`
+      let h = {"x": 10, "y": 20, "z": 30};
+      let sum = 0;
+      for (k in h) {
+        sum = sum + h[k];
+      }
+      sum
+    `);
+    assert.equal(result, 60);
+  });
+
+  it('for-in on int key hash iterates keys', async () => {
+    const result = await compileAndRun(`
+      let h = {1: 100, 2: 200};
+      let total = 0;
+      for (k in h) {
+        total = total + k;
+      }
+      total
+    `);
+    // keys are 1 and 2, sum = 3
+    assert.equal(result, 3);
+  });
+
+  it('for-in on array still works after iter_prepare', async () => {
+    const result = await compileAndRun(`
+      let arr = [5, 10, 15];
+      let sum = 0;
+      for (x in arr) {
+        sum = sum + x;
+      }
+      sum
+    `);
+    assert.equal(result, 30);
+  });
+});

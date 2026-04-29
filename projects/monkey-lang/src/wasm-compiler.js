@@ -382,6 +382,10 @@ export class WasmCompiler {
     const valuesIdx = this.builder.addImport('env', '__values', [ValType.i32], [ValType.i32]);
     this._runtimeFuncs.values = valuesIdx;
 
+    // __iter_prepare: if hash map → return keys(hash), else return unchanged
+    const iterPrepIdx = this.builder.addImport('env', '__iter_prepare', [ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.iterPrepare = iterPrepIdx;
+
     const containsIdx = this.builder.addImport('env', '__contains', [ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.contains = containsIdx;
 
@@ -2378,6 +2382,8 @@ export class WasmCompiler {
 
     // Compile iterable
     this.compileNode(node.iterable);
+    // Normalize: if hash map → convert to keys array for iteration
+    this.currentBody.call(this._runtimeFuncs.iterPrepare);
     const arrLocal = this.nextLocalIndex++;
     this.currentBody.addLocal(ValType.i32);
     this.currentBody.localSet(arrLocal);
@@ -4879,6 +4885,27 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
           }
         }
         return writeArray(vals);
+      },
+      __iter_prepare(ptr) {
+        // If ptr points to a hash map (TAG_HASH), return keys(hash)
+        // Otherwise return ptr unchanged (array/string/etc.)
+        const mem = memoryRef.memory;
+        if (!mem || ptr < 16) return ptr;
+        const view = new DataView(mem.buffer);
+        const tag = view.getInt32(ptr, true);
+        if (tag === TAG_HASH) {
+          // Convert hash to keys array for iteration
+          const capacity = view.getInt32(ptr + 4, true);
+          const entriesPtr = view.getInt32(ptr + 12, true);
+          const keys = [];
+          for (let i = 0; i < capacity; i++) {
+            const entryAddr = entriesPtr + i * 12;
+            const status = view.getInt32(entryAddr, true);
+            if (status === 1) keys.push(view.getInt32(entryAddr + 4, true));
+          }
+          return writeArray(keys);
+        }
+        return ptr; // Not a hash — return unchanged
       },
       __contains(arrPtr, elem) {
         const mem = memoryRef.memory;
