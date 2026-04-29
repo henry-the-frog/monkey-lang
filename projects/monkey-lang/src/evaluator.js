@@ -372,6 +372,18 @@ const builtins = new Map([
     }
     return new MonkeyArray(result);
   })],
+  ['type', new MonkeyBuiltin((...args) => {
+    if (args.length !== 1) return newError('type requires 1 argument');
+    const val = args[0];
+    if (val === NULL) return new MonkeyString('null');
+    if (val instanceof MonkeyInteger) return new MonkeyString('integer');
+    if (val instanceof MonkeyString) return new MonkeyString('string');
+    if (val instanceof MonkeyBoolean) return new MonkeyString('boolean');
+    if (val instanceof MonkeyArray) return new MonkeyString('array');
+    if (val instanceof MonkeyHash) return new MonkeyString('hash');
+    if (val instanceof MonkeyFunction || val instanceof MonkeyBuiltin) return new MonkeyString('function');
+    return new MonkeyString(val.type ? val.type().toLowerCase() : 'unknown');
+  })],
   ['contains', new MonkeyBuiltin((...args) => {
     if (args.length !== 2) return newError('contains requires two arguments');
     if (args[0] instanceof MonkeyArray) {
