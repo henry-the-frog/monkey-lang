@@ -58,8 +58,17 @@ const benchmarks = [
       let arr = range(1, 101);
       map(arr, fn(x) { x * 2; });
     `,
-    prelude: true
+    prelude: true,
     // * Note: includes 6ms prelude compilation overhead. Eval has native map builtin.
+    // Compare with VM (native) below for fair comparison.
+  },
+  {
+    name: "array map (native)",
+    code: `
+      let arr = [];
+      for (let i = 1; i <= 100; set i = i + 1) { set arr = push(arr, i); };
+      __nativeMap(arr, fn(x) { x * 2; });
+    `,
   },
   {
     name: "string concat 1000",
