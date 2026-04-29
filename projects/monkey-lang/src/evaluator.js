@@ -357,28 +357,50 @@ const builtins = new Map([
   })],
   ['map', new MonkeyBuiltin((...args) => {
     if (args.length !== 2) return newError(`wrong number of arguments. got=${args.length}, want=2`);
-    const arr = args[0];
+    const collection = args[0];
     const fn = args[1];
-    if (!(arr instanceof MonkeyArray)) return newError(`first argument to map must be ARRAY, got ${arr.type()}`);
-    const result = new Array(arr.elements.length);
-    for (let i = 0; i < arr.elements.length; i++) {
-      result[i] = applyFunction(fn, [arr.elements[i]]);
-      if (isError(result[i])) return result[i];
+    if (collection instanceof MonkeyArray) {
+      const result = new Array(collection.elements.length);
+      for (let i = 0; i < collection.elements.length; i++) {
+        result[i] = applyFunction(fn, [collection.elements[i]]);
+        if (isError(result[i])) return result[i];
+      }
+      return new MonkeyArray(result);
     }
-    return new MonkeyArray(result);
+    if (collection instanceof MonkeyHash) {
+      const newPairs = new Map();
+      for (const [hashKey, { key, value }] of collection.pairs) {
+        const newVal = applyFunction(fn, [key, value]);
+        if (isError(newVal)) return newVal;
+        newPairs.set(hashKey, { key, value: newVal });
+      }
+      return new MonkeyHash(newPairs);
+    }
+    return newError(`first argument to map must be ARRAY or HASH, got ${collection.type()}`);
   })],
   ['filter', new MonkeyBuiltin((...args) => {
     if (args.length !== 2) return newError(`wrong number of arguments. got=${args.length}, want=2`);
-    const arr = args[0];
+    const collection = args[0];
     const fn = args[1];
-    if (!(arr instanceof MonkeyArray)) return newError(`first argument to filter must be ARRAY, got ${arr.type()}`);
-    const result = [];
-    for (const el of arr.elements) {
-      const val = applyFunction(fn, [el]);
-      if (isError(val)) return val;
-      if (isTruthy(val)) result.push(el);
+    if (collection instanceof MonkeyArray) {
+      const result = [];
+      for (const el of collection.elements) {
+        const val = applyFunction(fn, [el]);
+        if (isError(val)) return val;
+        if (isTruthy(val)) result.push(el);
+      }
+      return new MonkeyArray(result);
     }
-    return new MonkeyArray(result);
+    if (collection instanceof MonkeyHash) {
+      const newPairs = new Map();
+      for (const [hashKey, { key, value }] of collection.pairs) {
+        const keep = applyFunction(fn, [key, value]);
+        if (isError(keep)) return keep;
+        if (isTruthy(keep)) newPairs.set(hashKey, { key, value });
+      }
+      return new MonkeyHash(newPairs);
+    }
+    return newError(`first argument to filter must be ARRAY or HASH, got ${collection.type()}`);
   })],
   ['reduce', new MonkeyBuiltin((...args) => {
     if (args.length < 2 || args.length > 3) return newError(`wrong number of arguments. got=${args.length}, want=2 or 3`);
