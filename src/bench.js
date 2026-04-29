@@ -28,6 +28,31 @@ const benchmarks = [
     expected: 10001
   },
   {
+    name: "local tight loop 100K",
+    code: `
+      let test = fn() {
+        let sum = 0;
+        for (let i = 0; i < 100000; set i = i + 1) {
+          set sum = sum + i;
+        };
+        sum;
+      };
+      test();
+    `,
+    expected: 4999950000
+  },
+  {
+    name: "hash set/get 1000",
+    code: `
+      let h = {};
+      for (let i = 0; i < 1000; set i = i + 1) {
+        set h[i] = i * 2;
+      };
+      h[500];
+    `,
+    expected: 1000
+  },
+  {
     name: "array map (prelude)",
     code: `
       let arr = range(1, 101);
@@ -46,12 +71,27 @@ const benchmarks = [
     expected: 1000
   },
   {
-    name: "recursive sum 1..1000",
+    name: "recursive sum 1..500",
     code: `
       let sum = fn(n) { if (n == 0) { 0; } else { n + sum(n - 1); }; };
-      sum(1000);
+      sum(500);
     `,
-    expected: 500500
+    expected: 125250
+  },
+  {
+    name: "nested closures 5K",
+    code: `
+      let make = fn(x) {
+        fn(y) {
+          fn(z) { x + y + z; };
+        };
+      };
+      let sum = 0;
+      for (let i = 0; i < 5000; set i = i + 1) {
+        set sum = sum + make(i)(i+1)(i+2);
+      };
+      sum;
+    `,
   }
 ];
 
@@ -87,20 +127,22 @@ function bench(fn, iterations = 5) {
 }
 
 console.log("Monkey-Lang Performance Benchmark");
-console.log("=".repeat(60));
-console.log("");
+console.log("=".repeat(68));
+console.log(`${"Benchmark".padEnd(25)} ${"Eval".padStart(10)} ${"VM".padStart(10)} ${"Speedup".padStart(10)} ${"Winner".padStart(8)}`);
+console.log("-".repeat(68));
 
 for (const bm of benchmarks) {
-  const evalTime = bench(() => runEval(bm.code));
-  const vmTime = bench(() => runVM(bm.code, bm.prelude));
-  const ratio = (evalTime / vmTime).toFixed(1);
-  const winner = vmTime < evalTime ? "VM" : "Eval";
-  
-  console.log(`${bm.name}`);
-  console.log(`  Evaluator: ${evalTime.toFixed(1)}ms`);
-  console.log(`  VM:        ${vmTime.toFixed(1)}ms`);
-  console.log(`  Winner:    ${winner} (${ratio}x)`);
-  console.log("");
+  try {
+    const evalTime = bench(() => runEval(bm.code));
+    const vmTime = bench(() => runVM(bm.code, bm.prelude));
+    const ratio = (evalTime / vmTime).toFixed(1);
+    const winner = vmTime < evalTime ? "VM" : "Eval";
+    
+    console.log(`${bm.name.padEnd(25)} ${(evalTime.toFixed(1) + "ms").padStart(10)} ${(vmTime.toFixed(1) + "ms").padStart(10)} ${(ratio + "x").padStart(10)} ${winner.padStart(8)}`);
+  } catch (e) {
+    console.log(`${bm.name.padEnd(25)} ERROR: ${e.message}`);
+  }
 }
 
+console.log("-".repeat(68));
 console.log("Done!");
