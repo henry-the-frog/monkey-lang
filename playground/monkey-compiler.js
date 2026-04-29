@@ -2228,7 +2228,9 @@ var WasmOp = {
   i32_sub: 107,
   i32_mul: 108,
   i32_div_s: 109,
+  i32_div_u: 110,
   i32_rem_s: 111,
+  i32_rem_u: 112,
   i32_and: 113,
   i32_or: 114,
   i32_shl: 116,
@@ -2647,6 +2649,7 @@ var WasmCompiler = class {
     this._strConcatFuncIdx = null;
     this._strEqFuncIdx = null;
     this._indexOfFuncIdx = null;
+    this._intToStrFuncIdx = null;
     this._needsMemory = false;
     this._anonCounter = 0;
     this._anonMap = /* @__PURE__ */ new Map();
@@ -2691,6 +2694,7 @@ var WasmCompiler = class {
       this._getStrConcatFunc();
       this._getStrEqFunc();
       this._getIndexOfFunc();
+      this._getIntToStringFunc();
     }
     this._processGlobals(program.statements);
     this._collectFunctions(program.statements);
@@ -3248,6 +3252,225 @@ var WasmCompiler = class {
     this._indexOfFuncIdx = funcIdx;
     return funcIdx;
   }
+  // __int_to_str(n: i32) -> str_ptr: i32
+  // Converts an integer to its string representation
+  _getIntToStringFunc() {
+    if (this._intToStrFuncIdx !== null) return this._intToStrFuncIdx;
+    const allocIdx = this._getAllocFunc();
+    const typeIdx = this.module.addType([WASM_TYPE.I32], [WASM_TYPE.I32]);
+    const body = [
+      // isNeg = (n < 0) ? 1 : 0
+      WasmOp.local_get,
+      0,
+      WasmOp.i32_const,
+      0,
+      WasmOp.i32_lt_s,
+      WasmOp.local_set,
+      1,
+      // abs = isNeg ? (0 - n) : n
+      WasmOp.local_get,
+      1,
+      WasmOp.if_,
+      127,
+      WasmOp.i32_const,
+      0,
+      WasmOp.local_get,
+      0,
+      WasmOp.i32_sub,
+      WasmOp.else_,
+      WasmOp.local_get,
+      0,
+      WasmOp.end,
+      WasmOp.local_set,
+      2,
+      // abs
+      // Handle 0 specially
+      WasmOp.local_get,
+      2,
+      WasmOp.i32_eqz,
+      WasmOp.if_,
+      64,
+      // Allocate "0": [1, 0, 0, 0, '0']
+      WasmOp.i32_const,
+      5,
+      WasmOp.call,
+      ...encodeULEB128(allocIdx),
+      WasmOp.local_set,
+      5,
+      WasmOp.local_get,
+      5,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_store,
+      2,
+      0,
+      WasmOp.local_get,
+      5,
+      WasmOp.i32_const,
+      ...encodeSLEB128(48),
+      // '0'
+      WasmOp.i32_store8,
+      0,
+      4,
+      WasmOp.local_get,
+      5,
+      WasmOp.return_,
+      WasmOp.end,
+      // Count digits
+      WasmOp.i32_const,
+      0,
+      WasmOp.local_set,
+      3,
+      // digitCount = 0
+      WasmOp.local_get,
+      2,
+      WasmOp.local_set,
+      4,
+      // temp = abs
+      WasmOp.block,
+      64,
+      WasmOp.loop,
+      64,
+      WasmOp.local_get,
+      4,
+      WasmOp.i32_eqz,
+      WasmOp.br_if,
+      1,
+      WasmOp.local_get,
+      3,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_add,
+      WasmOp.local_set,
+      3,
+      WasmOp.local_get,
+      4,
+      WasmOp.i32_const,
+      10,
+      WasmOp.i32_div_u,
+      WasmOp.local_set,
+      4,
+      WasmOp.br,
+      0,
+      WasmOp.end,
+      WasmOp.end,
+      // Total length = digitCount + isNeg
+      // Allocate: 4 + totalLen
+      WasmOp.local_get,
+      3,
+      WasmOp.local_get,
+      1,
+      WasmOp.i32_add,
+      WasmOp.local_tee,
+      6,
+      // total length
+      WasmOp.i32_const,
+      4,
+      WasmOp.i32_add,
+      WasmOp.call,
+      ...encodeULEB128(allocIdx),
+      WasmOp.local_set,
+      5,
+      // newPtr
+      // Store string length
+      WasmOp.local_get,
+      5,
+      WasmOp.local_get,
+      6,
+      // total length
+      WasmOp.i32_store,
+      2,
+      0,
+      // Fill digits from right to left
+      // i = totalLen - 1
+      WasmOp.local_get,
+      6,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_sub,
+      WasmOp.local_set,
+      6,
+      // i = totalLen - 1
+      WasmOp.local_get,
+      2,
+      WasmOp.local_set,
+      4,
+      // temp = abs
+      WasmOp.block,
+      64,
+      WasmOp.loop,
+      64,
+      WasmOp.local_get,
+      4,
+      WasmOp.i32_eqz,
+      WasmOp.br_if,
+      1,
+      // newPtr[4 + i] = '0' + (temp % 10)
+      WasmOp.local_get,
+      5,
+      WasmOp.i32_const,
+      4,
+      WasmOp.i32_add,
+      WasmOp.local_get,
+      6,
+      WasmOp.i32_add,
+      WasmOp.local_get,
+      4,
+      WasmOp.i32_const,
+      10,
+      WasmOp.i32_rem_u,
+      WasmOp.i32_const,
+      ...encodeSLEB128(48),
+      // '0'
+      WasmOp.i32_add,
+      WasmOp.i32_store8,
+      0,
+      0,
+      // temp /= 10
+      WasmOp.local_get,
+      4,
+      WasmOp.i32_const,
+      10,
+      WasmOp.i32_div_u,
+      WasmOp.local_set,
+      4,
+      // i--
+      WasmOp.local_get,
+      6,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_sub,
+      WasmOp.local_set,
+      6,
+      WasmOp.br,
+      0,
+      WasmOp.end,
+      WasmOp.end,
+      // If negative, add '-' at position 0
+      WasmOp.local_get,
+      1,
+      WasmOp.if_,
+      64,
+      WasmOp.local_get,
+      5,
+      WasmOp.i32_const,
+      ...encodeSLEB128(45),
+      // '-'
+      WasmOp.i32_store8,
+      0,
+      4,
+      WasmOp.end,
+      // return newPtr
+      WasmOp.local_get,
+      5
+    ];
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [
+      { count: 6, type: WASM_TYPE.I32 }
+    ], body);
+    this._intToStrFuncIdx = funcIdx;
+    return funcIdx;
+  }
   // Ensure memory exists and heap pointer global is initialized
   _ensureMemory() {
     if (this._needsMemory) return;
@@ -3536,7 +3759,7 @@ var WasmCompiler = class {
         if (name === "push") return "int";
         if (name === "indexOf") return "int";
         if (name === "map" || name === "filter" || name === "split") return "array";
-        if (name === "charAt" || name === "substring" || name === "toUpperCase" || name === "toLowerCase") return "string";
+        if (name === "charAt" || name === "substring" || name === "toUpperCase" || name === "toLowerCase" || name === "replace" || name === "trim" || name === "intToString") return "string";
       }
       return "unknown";
     }
@@ -3899,6 +4122,303 @@ var WasmCompiler = class {
     body.push(WasmOp.br, 0);
     body.push(WasmOp.end);
     body.push(WasmOp.end);
+  }
+  // intToString(n) → converts integer to string representation
+  _compileIntToString(numExpr, body) {
+    const intToStrIdx = this._getIntToStringFunc();
+    this._compileExpr(numExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.call, ...encodeULEB128(intToStrIdx));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+  }
+  // replace(str, search, replacement) → new string with first occurrence replaced
+  // Uses indexOf to find, then concatenates: prefix + replacement + suffix
+  _compileReplace(strExpr, searchExpr, replExpr, body) {
+    const allocIdx = this._getAllocFunc();
+    const indexOfIdx = this._getIndexOfFunc();
+    const concatIdx = this._getStrConcatFunc();
+    const strLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const searchLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const replLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const posLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const prefixLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const suffixLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const tmpLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const strLenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const searchLenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    this._compileExpr(strExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(strLocal));
+    this._compileExpr(searchExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(searchLocal));
+    this._compileExpr(replExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(replLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(searchLocal));
+    body.push(WasmOp.call, ...encodeULEB128(indexOfIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(posLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.i32_lt_s);
+    body.push(WasmOp.if_, 64);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+    body.push(WasmOp.return_);
+    body.push(WasmOp.end);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(strLenLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(searchLocal));
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(searchLenLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(prefixLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(prefixLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_store, 2, 0);
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.block, 64);
+    body.push(WasmOp.loop, 64);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_ge_u);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(prefixLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.i32_store8, 0, 0);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLenLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_sub);
+    body.push(WasmOp.local_get, ...encodeULEB128(searchLenLocal));
+    body.push(WasmOp.i32_sub);
+    body.push(WasmOp.local_tee, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(suffixLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(suffixLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_store, 2, 0);
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(searchLenLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(strLenLocal));
+    body.push(WasmOp.block, 64);
+    body.push(WasmOp.loop, 64);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(suffixLocal));
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.i32_ge_u);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(suffixLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLenLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.i32_store8, 0, 0);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    body.push(WasmOp.local_get, ...encodeULEB128(prefixLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(replLocal));
+    body.push(WasmOp.call, ...encodeULEB128(concatIdx));
+    body.push(WasmOp.local_get, ...encodeULEB128(suffixLocal));
+    body.push(WasmOp.call, ...encodeULEB128(concatIdx));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+  }
+  // trim(str) — removes leading/trailing ASCII whitespace (space, tab, newline)
+  _compileTrim(strExpr, body) {
+    const allocIdx = this._getAllocFunc();
+    const strLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const lenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const startLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const endLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const newPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const newLenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const iLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const byteLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    this._compileExpr(strExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(strLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(lenLocal));
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(startLocal));
+    body.push(WasmOp.block, 64);
+    body.push(WasmOp.loop, 64);
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(lenLocal));
+    body.push(WasmOp.i32_ge_u);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 32);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 9);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.i32_or);
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 10);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.i32_or);
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 13);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.i32_or);
+    body.push(WasmOp.i32_eqz);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(startLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    body.push(WasmOp.local_get, ...encodeULEB128(lenLocal));
+    body.push(WasmOp.local_set, ...encodeULEB128(endLocal));
+    body.push(WasmOp.block, 64);
+    body.push(WasmOp.loop, 64);
+    body.push(WasmOp.local_get, ...encodeULEB128(endLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_le_u);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(endLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_sub);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 32);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 9);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.i32_or);
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 10);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.i32_or);
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 13);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.i32_or);
+    body.push(WasmOp.i32_eqz);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(endLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_sub);
+    body.push(WasmOp.local_set, ...encodeULEB128(endLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    body.push(WasmOp.local_get, ...encodeULEB128(endLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_sub);
+    body.push(WasmOp.local_set, ...encodeULEB128(newLenLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(newLenLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(newLenLocal));
+    body.push(WasmOp.i32_store, 2, 0);
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(iLocal));
+    body.push(WasmOp.block, 64);
+    body.push(WasmOp.loop, 64);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(newLenLocal));
+    body.push(WasmOp.i32_ge_u);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.i32_store8, 0, 0);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(iLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
   }
   // split(str, delim) → array of substrings
   // Implementation: walk through str, find delim positions, extract substrings
@@ -4866,6 +5386,18 @@ var WasmCompiler = class {
       }
       if (funcName === "split" && expr.arguments.length === 2) {
         this._compileSplit(expr.arguments[0], expr.arguments[1], body);
+        return;
+      }
+      if (funcName === "replace" && expr.arguments.length === 3) {
+        this._compileReplace(expr.arguments[0], expr.arguments[1], expr.arguments[2], body);
+        return;
+      }
+      if (funcName === "trim" && expr.arguments.length === 1) {
+        this._compileTrim(expr.arguments[0], body);
+        return;
+      }
+      if (funcName === "intToString" && expr.arguments.length === 1) {
+        this._compileIntToString(expr.arguments[0], body);
         return;
       }
       const funcInfo = this.functions.get(funcName);
