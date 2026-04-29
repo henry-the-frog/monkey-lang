@@ -1033,3 +1033,83 @@ describe('Sys Module (evaluator)', () => {
     assert.equal(r.value, '0.2.0');
   });
 });
+
+// Hash map builtins
+describe('Hash Map Builtins', () => {
+  it('has() checks key existence', () => {
+    assert.equal(testEval('has({"a": 1}, "a")').value, true);
+    assert.equal(testEval('has({"a": 1}, "b")').value, false);
+  });
+  it('delete() removes key', () => {
+    assert.equal(testEval('len(delete({"a": 1, "b": 2}, "a"))').value, 1);
+  });
+  it('merge() combines hashes', () => {
+    assert.equal(testEval('merge({"a": 1}, {"b": 2})["a"]').value, 1);
+    assert.equal(testEval('merge({"a": 1}, {"a": 2})["a"]').value, 2);
+  });
+  it('entries() returns [key, value] pairs', () => {
+    assert.equal(testEval('len(entries({"a": 1, "b": 2}))').value, 2);
+  });
+  it('fromEntries() creates hash from pairs', () => {
+    assert.equal(testEval('fromEntries([["a", 1]])["a"]').value, 1);
+  });
+  it('zip() combines parallel arrays', () => {
+    assert.equal(testEval('zip(["a"], [1])["a"]').value, 1);
+  });
+  it('groupBy() groups by key function', () => {
+    const r = testEval('len(groupBy([1,2,3,4], fn(x) { if (x % 2 == 0) { "even" } else { "odd" } }))');
+    assert.equal(r.value, 2);
+  });
+});
+
+// Array builtins
+describe('Array Builtins', () => {
+  it('range(n)', () => {
+    assert.equal(testEval('len(range(5))').value, 5);
+    assert.equal(testEval('range(3)[1]').value, 1);
+  });
+  it('sum()', () => {
+    assert.equal(testEval('sum([1,2,3,4,5])').value, 15);
+    assert.equal(testEval('sum(range(101))').value, 5050);
+  });
+  it('avg()', () => {
+    assert.equal(testEval('avg([10,20,30])').value, 20);
+  });
+  it('flat()', () => {
+    assert.equal(testEval('len(flat([[1,2],[3,4]]))').value, 4);
+  });
+  it('flatMap()', () => {
+    assert.equal(testEval('len(flatMap([1,2], fn(x) { [x, x] }))').value, 4);
+  });
+  it('unique()', () => {
+    assert.equal(testEval('len(unique([1,2,3,2,1]))').value, 3);
+  });
+  it('take()', () => {
+    assert.equal(testEval('len(take(range(10), 3))').value, 3);
+  });
+  it('drop()', () => {
+    assert.equal(testEval('len(drop(range(10), 7))').value, 3);
+  });
+  it('chunk()', () => {
+    assert.equal(testEval('len(chunk(range(10), 3))').value, 4);
+  });
+  it('indexOf()', () => {
+    assert.equal(testEval('indexOf([10,20,30], 20)').value, 1);
+    assert.equal(testEval('indexOf([10,20], 99)').value, -1);
+  });
+  it('slice()', () => {
+    assert.equal(testEval('len(slice(range(10), 3, 7))').value, 4);
+  });
+  it('enumerate()', () => {
+    assert.equal(testEval('len(enumerate([1,2,3]))').value, 3);
+  });
+  it('sortBy()', () => {
+    assert.equal(testEval('sortBy([3,1,2], fn(x) { x })[0]').value, 1);
+  });
+  it('type()', () => {
+    assert.equal(testEval('type(42)').value, 'integer');
+    assert.equal(testEval('type("hi")').value, 'string');
+    assert.equal(testEval('type([])').value, 'array');
+    assert.equal(testEval('type({})').value, 'hash');
+  });
+});
