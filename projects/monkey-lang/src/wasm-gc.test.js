@@ -358,3 +358,124 @@ describe('GC Array Proof-of-Concept (loop fill + sum)', () => {
     assert.ok(elapsed < 100, `GC array loop took ${elapsed}ms (expected < 100ms)`);
   });
 });
+
+describe('GC Array Stress Tests', () => {
+  it('large array (10000 elements)', async () => {
+    const { WasmModuleBuilder, ValType, Op, refNullType } = await import('./wasm.js');
+    const builder = new WasmModuleBuilder();
+    const arrayIdx = builder.addArrayType(ValType.i32, true);
+    const { index, body } = builder.addFunction([ValType.i32], [ValType.i32]);
+    body.addLocal(refNullType(arrayIdx));
+    body.addLocal(ValType.i32);
+    body.addLocal(ValType.i32);
+    // Create array of n elements, fill with i*2, return last element
+    body.i32Const(0); body.localGet(0); body.arrayNew(arrayIdx); body.localSet(1);
+    body.i32Const(0); body.localSet(2);
+    body.block(); body.loop();
+      body.localGet(2); body.localGet(0); body.emit(Op.i32_ge_s); body.brIf(1);
+      body.localGet(1); body.localGet(2);
+      body.localGet(2); body.i32Const(2); body.emit(Op.i32_mul);
+      body.arraySet(arrayIdx);
+      body.localGet(2); body.i32Const(1); body.emit(Op.i32_add); body.localSet(2);
+      body.br(0);
+    body.end(); body.end();
+    // Return arr[n-1]
+    body.localGet(1);
+    body.localGet(0); body.i32Const(1); body.emit(Op.i32_sub);
+    body.arrayGet(arrayIdx);
+    builder.addMemory(1);
+    builder.addExport('f', 0x00, index);
+    const binary = builder.build();
+    const inst = new WebAssembly.Instance(new WebAssembly.Module(binary));
+    assert.equal(inst.exports.f(10000), 19998); // (10000-1)*2
+  });
+
+  it('nested struct with array field', async () => {
+    const { WasmModuleBuilder, ValType, Op, refNullType, refType } = await import('./wasm.js');
+    const builder = new WasmModuleBuilder();
+    // Define: array of i32, struct{len: i32, data: ref array}
+    const arrayIdx = builder.addArrayType(ValType.i32, true);
+    const structIdx = builder.addStructType([
+      { type: ValType.i32, mutable: true },  // length field
+      { type: refNullType(arrayIdx), mutable: true }  // array ref field
+    ]);
+
+    const { index, body } = builder.addFunction([ValType.i32], [ValType.i32]);
+    body.addLocal(refNullType(structIdx)); // local[1] = struct
+    body.addLocal(refNullType(arrayIdx));  // local[2] = array
+
+    // Create array of n elements filled with 0
+    body.i32Const(0); body.localGet(0); body.arrayNew(arrayIdx); body.localSet(2);
+    // Create struct {len=n, data=array}
+    body.localGet(0);
+    body.localGet(2);
+    body.structNew(structIdx);
+    body.localSet(1);
+    // Read struct.len
+    body.localGet(1);
+    body.structGet(structIdx, 0);
+    builder.addMemory(1);
+    builder.addExport('f', 0x00, index);
+    const binary = builder.build();
+    const inst = new WebAssembly.Instance(new WebAssembly.Module(binary));
+    assert.equal(inst.exports.f(42), 42);
+  });
+
+  it('struct with array field — set and get through struct', async () => {
+    const { WasmModuleBuilder, ValType, Op, GcOp, refNullType } = await import('./wasm.js');
+    const builder = new WasmModuleBuilder();
+    const arrayIdx = builder.addArrayType(ValType.i32, true);
+    const structIdx = builder.addStructType([
+      { type: ValType.i32, mutable: true },
+      { type: refNullType(arrayIdx), mutable: true }
+    ]);
+
+    const { index, body } = builder.addFunction([ValType.i32], [ValType.i32]);
+    body.addLocal(refNullType(structIdx));
+    body.addLocal(refNullType(arrayIdx));
+
+    // arr = array.new(0, 5)
+    body.i32Const(0); body.i32Const(5); body.arrayNew(arrayIdx); body.localSet(2);
+    // struct = {len=5, data=arr}
+    body.i32Const(5); body.localGet(2); body.structNew(structIdx); body.localSet(1);
+    // Set arr[param] = 77
+    body.localGet(1); body.structGet(structIdx, 1); // get array from struct
+    body.localGet(0); // index
+    body.i32Const(77); // value
+    body.arraySet(arrayIdx);
+    // Get arr[param] through struct
+    body.localGet(1); body.structGet(structIdx, 1);
+    body.localGet(0);
+    body.arrayGet(arrayIdx);
+    builder.addMemory(1);
+    builder.addExport('f', 0x00, index);
+    const binary = builder.build();
+    const inst = new WebAssembly.Instance(new WebAssembly.Module(binary));
+    assert.equal(inst.exports.f(3), 77); // arr[3] = 77
+  });
+
+  it('array.new_fixed (fixed-size from stack values)', async () => {
+    const { WasmModuleBuilder, ValType, refNullType } = await import('./wasm.js');
+    const builder = new WasmModuleBuilder();
+    const arrayIdx = builder.addArrayType(ValType.i32, true);
+    const { index, body } = builder.addFunction([], [ValType.i32]);
+    body.addLocal(refNullType(arrayIdx));
+    // Push 3 values, create fixed array
+    body.i32Const(10);
+    body.i32Const(20);
+    body.i32Const(30);
+    body.arrayNewFixed(arrayIdx, 3);
+    body.localSet(0);
+    // Sum elements
+    body.localGet(0); body.i32Const(0); body.arrayGet(arrayIdx);
+    body.localGet(0); body.i32Const(1); body.arrayGet(arrayIdx);
+    body.emit(0x6a);
+    body.localGet(0); body.i32Const(2); body.arrayGet(arrayIdx);
+    body.emit(0x6a);
+    builder.addMemory(1);
+    builder.addExport('f', 0x00, index);
+    const binary = builder.build();
+    const inst = new WebAssembly.Instance(new WebAssembly.Module(binary));
+    assert.equal(inst.exports.f(), 60);
+  });
+});
