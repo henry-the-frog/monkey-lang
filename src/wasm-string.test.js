@@ -492,3 +492,59 @@ describe('WASM strings — split', () => {
     `), 5 + 5);
   });
 });
+
+describe('WASM strings — replace', () => {
+  it('replace basic', async () => {
+    assert.equal(await runStr('replace("hello world", "world", "earth")'), 'hello earth');
+  });
+
+  it('replace at beginning', async () => {
+    assert.equal(await runStr('replace("hello world", "hello", "hi")'), 'hi world');
+  });
+
+  it('replace not found', async () => {
+    assert.equal(await runStr('replace("hello", "xyz", "abc")'), 'hello');
+  });
+
+  it('replace with empty', async () => {
+    assert.equal(await runStr('replace("hello world", " world", "")'), 'hello');
+  });
+
+  it('replace first occurrence only', async () => {
+    assert.equal(await runStr('replace("aaa", "a", "b")'), 'baa');
+  });
+
+  it('replace comparison', async () => {
+    assert.equal(await run('replace("hello world", "world", "earth") == "hello earth"'), 1);
+  });
+});
+
+describe('WASM strings — trim', () => {
+  it('trim leading spaces', async () => {
+    assert.equal(await runStr('trim("  hello")'), 'hello');
+  });
+
+  it('trim trailing spaces', async () => {
+    assert.equal(await runStr('trim("hello  ")'), 'hello');
+  });
+
+  it('trim both', async () => {
+    assert.equal(await runStr('trim("  hello  ")'), 'hello');
+  });
+
+  it('trim no whitespace', async () => {
+    assert.equal(await runStr('trim("hello")'), 'hello');
+  });
+
+  it('trim all whitespace', async () => {
+    assert.equal(await run('len(trim("   "))'), 0);
+  });
+
+  it('trim tabs and newlines', async () => {
+    assert.equal(await run('len(trim("\\t\\nhello\\n\\t"))'), 5);
+  });
+
+  it('trim comparison', async () => {
+    assert.equal(await run('trim("  hello  ") == "hello"'), 1);
+  });
+});

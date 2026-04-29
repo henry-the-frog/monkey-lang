@@ -796,7 +796,7 @@ class WasmCompiler {
         if (name === 'push') return 'int';
         if (name === 'indexOf') return 'int';
         if (name === 'map' || name === 'filter' || name === 'split') return 'array';
-        if (name === 'charAt' || name === 'substring' || name === 'toUpperCase' || name === 'toLowerCase') return 'string';
+        if (name === 'charAt' || name === 'substring' || name === 'toUpperCase' || name === 'toLowerCase' || name === 'replace' || name === 'trim') return 'string';
       }
       return 'unknown';
     }
@@ -1263,6 +1263,334 @@ class WasmCompiler {
     body.push(WasmOp.br, 0);          // br to loop start (continue)
     body.push(WasmOp.end);            // end loop
     body.push(WasmOp.end);            // end block
+  }
+
+  // replace(str, search, replacement) → new string with first occurrence replaced
+  // Uses indexOf to find, then concatenates: prefix + replacement + suffix
+  _compileReplace(strExpr, searchExpr, replExpr, body) {
+    const allocIdx = this._getAllocFunc();
+    const indexOfIdx = this._getIndexOfFunc();
+    const concatIdx = this._getStrConcatFunc();
+    
+    const strLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const searchLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const replLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const posLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const prefixLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const suffixLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const tmpLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const strLenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const searchLenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    
+    // Evaluate args
+    this._compileExpr(strExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(strLocal));
+    
+    this._compileExpr(searchExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(searchLocal));
+    
+    this._compileExpr(replExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(replLocal));
+    
+    // pos = indexOf(str, search)
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(searchLocal));
+    body.push(WasmOp.call, ...encodeULEB128(indexOfIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(posLocal));
+    
+    // If pos < 0, return original string
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.i32_lt_s);
+    body.push(WasmOp.if_, 0x40);
+      body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+      if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+      body.push(WasmOp.return_);
+    body.push(WasmOp.end);
+    
+    // Read string and search lengths
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(strLenLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(searchLocal));
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(searchLenLocal));
+    
+    // Create prefix: substring(str, 0, pos)
+    // Allocate and copy manually (inline substring)
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(prefixLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(prefixLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_store, 2, 0);
+    // Copy bytes
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.block, 0x40);
+    body.push(WasmOp.loop, 0x40);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_ge_u);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(prefixLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.i32_store8, 0, 0);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    
+    // Create suffix: substring(str, pos+searchLen, strLen)
+    // suffixLen = strLen - pos - searchLen
+    body.push(WasmOp.local_get, ...encodeULEB128(strLenLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_sub);
+    body.push(WasmOp.local_get, ...encodeULEB128(searchLenLocal));
+    body.push(WasmOp.i32_sub);
+    body.push(WasmOp.local_tee, ...encodeULEB128(tmpLocal)); // suffixLen
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(suffixLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(suffixLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_store, 2, 0);
+    // Copy suffix bytes
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(tmpLocal));
+    // Compute suffix start offset
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(searchLenLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(strLenLocal)); // reuse as srcStart
+    body.push(WasmOp.block, 0x40);
+    body.push(WasmOp.loop, 0x40);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(suffixLocal));
+    body.push(WasmOp.i32_load, 2, 0); // suffixLen
+    body.push(WasmOp.i32_ge_u);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(suffixLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLenLocal)); // srcStart
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.i32_store8, 0, 0);
+    body.push(WasmOp.local_get, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(tmpLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    
+    // Result = concat(concat(prefix, replacement), suffix)
+    body.push(WasmOp.local_get, ...encodeULEB128(prefixLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(replLocal));
+    body.push(WasmOp.call, ...encodeULEB128(concatIdx));
+    body.push(WasmOp.local_get, ...encodeULEB128(suffixLocal));
+    body.push(WasmOp.call, ...encodeULEB128(concatIdx));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+  }
+
+  // trim(str) — removes leading/trailing ASCII whitespace (space, tab, newline)
+  _compileTrim(strExpr, body) {
+    const allocIdx = this._getAllocFunc();
+    
+    const strLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const lenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const startLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const endLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const newPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const newLenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const iLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const byteLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    
+    this._compileExpr(strExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(strLocal));
+    
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(lenLocal));
+    
+    // Find start: skip leading whitespace
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(startLocal));
+    body.push(WasmOp.block, 0x40);
+    body.push(WasmOp.loop, 0x40);
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(lenLocal));
+    body.push(WasmOp.i32_ge_u);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(byteLocal));
+    // Check if byte is whitespace (32=' ', 9='\t', 10='\n', 13='\r')
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 32);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 9);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.i32_or);
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 10);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.i32_or);
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 13);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.i32_or);
+    body.push(WasmOp.i32_eqz); // NOT whitespace → break
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(startLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    
+    // Find end: skip trailing whitespace (end = len, work backwards)
+    body.push(WasmOp.local_get, ...encodeULEB128(lenLocal));
+    body.push(WasmOp.local_set, ...encodeULEB128(endLocal));
+    body.push(WasmOp.block, 0x40);
+    body.push(WasmOp.loop, 0x40);
+    body.push(WasmOp.local_get, ...encodeULEB128(endLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_le_u);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(endLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_sub);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 32);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 9);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.i32_or);
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 10);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.i32_or);
+    body.push(WasmOp.local_get, ...encodeULEB128(byteLocal));
+    body.push(WasmOp.i32_const, 13);
+    body.push(WasmOp.i32_eq);
+    body.push(WasmOp.i32_or);
+    body.push(WasmOp.i32_eqz);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(endLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_sub);
+    body.push(WasmOp.local_set, ...encodeULEB128(endLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    
+    // newLen = end - start
+    body.push(WasmOp.local_get, ...encodeULEB128(endLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_sub);
+    body.push(WasmOp.local_set, ...encodeULEB128(newLenLocal));
+    
+    // Allocate new string
+    body.push(WasmOp.local_get, ...encodeULEB128(newLenLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(newLenLocal));
+    body.push(WasmOp.i32_store, 2, 0);
+    
+    // Copy bytes
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(iLocal));
+    body.push(WasmOp.block, 0x40);
+    body.push(WasmOp.loop, 0x40);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(newLenLocal));
+    body.push(WasmOp.i32_ge_u);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.i32_store8, 0, 0);
+    body.push(WasmOp.local_get, ...encodeULEB128(iLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(iLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    
+    body.push(WasmOp.local_get, ...encodeULEB128(newPtrLocal));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
   }
 
   // split(str, delim) → array of substrings
@@ -2463,6 +2791,18 @@ class WasmCompiler {
       // Built-in: split(string, delimiter) — returns array of strings
       if (funcName === 'split' && expr.arguments.length === 2) {
         this._compileSplit(expr.arguments[0], expr.arguments[1], body);
+        return;
+      }
+      
+      // Built-in: replace(string, search, replacement) — replaces first occurrence
+      if (funcName === 'replace' && expr.arguments.length === 3) {
+        this._compileReplace(expr.arguments[0], expr.arguments[1], expr.arguments[2], body);
+        return;
+      }
+      
+      // Built-in: trim(string) — removes leading/trailing whitespace
+      if (funcName === 'trim' && expr.arguments.length === 1) {
+        this._compileTrim(expr.arguments[0], body);
         return;
       }
       
