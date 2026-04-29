@@ -53,12 +53,13 @@ const benchmarks = [
     expected: 1000
   },
   {
-    name: "array map (prelude)",
+    name: "array map (prelude)*",
     code: `
       let arr = range(1, 101);
       map(arr, fn(x) { x * 2; });
     `,
     prelude: true
+    // * Note: includes 6ms prelude compilation overhead. Eval has native map builtin.
   },
   {
     name: "string concat 1000",
