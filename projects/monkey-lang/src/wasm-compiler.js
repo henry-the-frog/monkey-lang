@@ -812,6 +812,65 @@ export class WasmCompiler {
     hashFindSlotBody.localGet(6);  // return result
     this._runtimeFuncs.hashFindSlot = hashFindSlotIdx;
 
+    // __hash_find_slot_str(entries_ptr: i32, capacity: i32, key_ptr: i32) → slot_index: i32
+    // Like find_slot but uses __str_eq for string key comparison
+    const { index: hashFindSlotStrIdx, body: hashFindSlotStrBody } = this.builder.addFunction(
+      [ValType.i32, ValType.i32, ValType.i32], [ValType.i32]
+    );
+    hashFindSlotStrBody.addLocal(ValType.i32); // local[3] = index
+    hashFindSlotStrBody.addLocal(ValType.i32); // local[4] = entry_addr
+    hashFindSlotStrBody.addLocal(ValType.i32); // local[5] = status
+    hashFindSlotStrBody.addLocal(ValType.i32); // local[6] = result
+    hashFindSlotStrBody.addLocal(ValType.i32); // local[7] = found flag
+    hashFindSlotStrBody
+      // index = hash_fnv_str(key_ptr) & (capacity - 1)
+      .localGet(2).call(hashFnvStrIdx)
+      .localGet(1).i32Const(1).emit(Op.i32_sub).emit(Op.i32_and)
+      .localSet(3)
+      .i32Const(0).localSet(7)   // found = 0
+      // Probe loop
+      .block().loop()
+        // if found, break
+        .localGet(7).brIf(1)
+        // entry_addr = entries_ptr + index * 12
+        .localGet(0).localGet(3).i32Const(ENTRY_SIZE).emit(Op.i32_mul).emit(Op.i32_add)
+        .localSet(4)
+        // status = entry.status
+        .localGet(4).i32Load().localSet(5)
+        // if empty: return current index
+        .localGet(5).emit(Op.i32_eqz)
+        .if_()
+          .localGet(3).localSet(6)
+          .i32Const(1).localSet(7)
+        .end()
+        // if occupied and key matches (via __str_eq): return current index
+        .localGet(5).i32Const(1).emit(Op.i32_eq)
+        .if_()
+          .localGet(4).i32Const(4).emit(Op.i32_add).i32Load()
+          .localGet(2).call(strEqIdx)
+          .if_()
+            .localGet(3).localSet(6)
+            .i32Const(1).localSet(7)
+          .end()
+        .end()
+        // if deleted and not found yet: use as candidate
+        .localGet(5).i32Const(2).emit(Op.i32_eq)
+        .if_()
+          .localGet(7).emit(Op.i32_eqz)
+          .if_()
+            .localGet(3).localSet(6)
+            .i32Const(1).localSet(7)
+          .end()
+        .end()
+        // advance: index = (index + 1) & (capacity - 1)
+        .localGet(3).i32Const(1).emit(Op.i32_add)
+        .localGet(1).i32Const(1).emit(Op.i32_sub).emit(Op.i32_and)
+        .localSet(3)
+        .br(0)
+      .end().end();
+    hashFindSlotStrBody.localGet(6);  // return result
+    this._runtimeFuncs.hashFindSlotStr = hashFindSlotStrIdx;
+
     // __hash_resize(map_ptr: i32, new_capacity: i32) → void
     // Allocates new entries array, rehashes all occupied entries from old array
     const { index: hashResizeIdx, body: hashResizeBody } = this.builder.addFunction(
