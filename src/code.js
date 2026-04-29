@@ -43,6 +43,10 @@ export const Opcodes = {
   OpTailCall:        0x1E, // Tail call: OpTailCall <uint8> (num args) — reuses frame
   OpSetIndex:        0x26, // Set index: pop value, pop key, pop obj, set obj[key]=value, push obj
   OpMethodCall:      0x27, // Method call: OpMethodCall <uint16 name constant> <uint8 numArgs> — dispatch obj.method(args)
+  // Superinstructions (combined opcodes for common patterns)
+  OpIncrementLocal:  0x28, // set local = local + 1: OpIncrementLocal <uint8 local_index>
+  OpAddSetLocal:     0x29, // add TOS values and store: OpAddSetLocal <uint8 local_index>
+  OpAddSetGlobal:    0x2A, // add TOS values and store: OpAddSetGlobal <uint16 global_index>
 };
 
 // Instruction definitions: opcode → { name, operandWidths }
@@ -88,6 +92,9 @@ const definitions = new Map([
   [Opcodes.OpTailCall,       { name: 'OpTailCall',       operandWidths: [1] }],
   [Opcodes.OpSetIndex,       { name: 'OpSetIndex',       operandWidths: [] }],
   [Opcodes.OpMethodCall,     { name: 'OpMethodCall',     operandWidths: [2, 1] }],
+  [Opcodes.OpIncrementLocal, { name: 'OpIncrementLocal', operandWidths: [1] }],
+  [Opcodes.OpAddSetLocal,    { name: 'OpAddSetLocal',    operandWidths: [1] }],
+  [Opcodes.OpAddSetGlobal,   { name: 'OpAddSetGlobal',   operandWidths: [2] }],
 ]);
 
 /**

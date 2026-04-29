@@ -436,6 +436,40 @@ export class DebugVM {
         vm.push(vm._deepEqual(left, right) ? TRUE : FALSE);
         break;
       }
+      // Superinstructions (handled same as in VM)
+      case Opcodes.OpIncrementLocal: {
+        const localIdx = instructions[ip + 1];
+        vm.frames[vm.framesIndex - 1].ip += 1;
+        const base = vm.frames[vm.framesIndex - 1].basePointer;
+        const val = vm.stack[base + localIdx];
+        if (typeof val === 'number') {
+          vm.stack[base + localIdx] = val + 1;
+        } else {
+          vm.stack[base + localIdx] = (val && typeof val.value === 'number') ? val.value + 1 : 1;
+        }
+        break;
+      }
+      case Opcodes.OpAddSetLocal: {
+        const localIdx = instructions[ip + 1];
+        vm.frames[vm.framesIndex - 1].ip += 1;
+        const right = vm.pop();
+        const left = vm.pop();
+        const base = vm.frames[vm.framesIndex - 1].basePointer;
+        const lv = typeof left === 'number' ? left : (left && left.value) || 0;
+        const rv = typeof right === 'number' ? right : (right && right.value) || 0;
+        vm.stack[base + localIdx] = lv + rv;
+        break;
+      }
+      case Opcodes.OpAddSetGlobal: {
+        const globalIdx = (instructions[ip + 1] << 8) | instructions[ip + 2];
+        vm.frames[vm.framesIndex - 1].ip += 2;
+        const right = vm.pop();
+        const left = vm.pop();
+        const lv = typeof left === 'number' ? left : (left && left.value) || 0;
+        const rv = typeof right === 'number' ? right : (right && right.value) || 0;
+        vm.globals[globalIdx] = lv + rv;
+        break;
+      }
       default:
         throw new Error(`unknown opcode: ${op}`);
     }

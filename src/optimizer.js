@@ -258,6 +258,12 @@ function peepholeOptimize(bytecode) {
         i += 2;
         continue;
       }
+
+      // === Superinstructions ===
+      // NOTE: OpAdd + OpSetLocal/Global cannot be safely combined because OpAdd
+      // handles multiple types (int, float, string, array concatenation).
+      // The superinstruction would need to handle all type combinations.
+      // For now, only emit superinstructions for type-stable patterns.
     }
     
     result.push(instrs[i]);
