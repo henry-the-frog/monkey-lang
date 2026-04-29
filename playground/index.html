@@ -224,13 +224,24 @@ const examplesBar = document.querySelector('.examples-bar');
 const examples = [
   {
     name: 'Fibonacci',
-    code: `// Compute fib(35) — compiled to native WASM
-// 1.8x faster than equivalent JavaScript!
+    code: `// Memoized Fibonacci — arrays as cache
+let memo = [];
+let i = 0;
+while (i < 50) { push(memo, 0); set i = i + 1 };
+
 let fib = fn(n) {
-  if (n < 2) { n }
-  else { fib(n - 1) + fib(n - 2) }
+  if (n <= 1) { n }
+  else {
+    if (memo[n] != 0) { memo[n] }
+    else {
+      let result = fib(n - 1) + fib(n - 2);
+      set memo[n] = result;
+      result
+    }
+  }
 };
-fib(35)`
+
+fib(40)  // 102334155 — computed in microseconds!`
   },
   {
     name: 'Closures',
