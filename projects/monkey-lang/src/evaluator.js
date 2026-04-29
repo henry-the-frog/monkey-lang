@@ -230,6 +230,18 @@ const builtins = new Map([
     for (const [, {key, value}] of args[0].pairs) arr.push(new MonkeyArray([key, value]));
     return new MonkeyArray(arr);
   })],
+  ['fromEntries', new MonkeyBuiltin((...args) => {
+    if (args.length !== 1 || !(args[0] instanceof MonkeyArray)) return newError('fromEntries requires one array argument');
+    const pairs = new Map();
+    for (const entry of args[0].elements) {
+      if (!(entry instanceof MonkeyArray) || entry.elements.length < 2) continue;
+      const key = entry.elements[0];
+      const value = entry.elements[1];
+      const hashKey = key.fastHashKey ? key.fastHashKey() : (key.hashKey ? key.hashKey() : null);
+      if (hashKey) pairs.set(hashKey, { key, value });
+    }
+    return new MonkeyHash(pairs);
+  })],
   ['delete', new MonkeyBuiltin((...args) => {
     if (args.length !== 2 || args[0].type() !== OBJ.HASH) return newError('delete requires a hash and a key');
     const hash = args[0];
