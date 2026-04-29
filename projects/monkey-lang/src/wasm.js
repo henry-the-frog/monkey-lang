@@ -46,6 +46,20 @@ export const ValType = {
   f64: 0x7c,
   funcref: 0x70,
   externref: 0x6f,
+  // GC reference types
+  anyref: 0x6e,
+  eqref: 0x6d,
+  i31ref: 0x6c,
+  structref: 0x6b,
+  arrayref: 0x6a,
+  nullref: 0x71,
+};
+
+// GC type definition kinds (used in type section)
+export const TypeKind = {
+  func: 0x60,
+  struct: 0x5f,
+  array: 0x5e,
 };
 
 // === WASM Opcodes ===
@@ -168,6 +182,38 @@ export const Op = {
   f64_convert_i32_s: 0xb7,
   i32_wrap_i64: 0xa7,
   i64_extend_i32_s: 0xac,
+};
+
+// GC opcodes (all prefixed with 0xfb)
+export const GcOp = {
+  prefix: 0xfb,
+  struct_new: 0x00,
+  struct_new_default: 0x01,
+  struct_get: 0x02,
+  struct_get_s: 0x03,
+  struct_get_u: 0x04,
+  struct_set: 0x05,
+  array_new: 0x06,
+  array_new_default: 0x07,
+  array_new_fixed: 0x08,
+  array_new_data: 0x09,
+  array_new_elem: 0x0a,
+  array_get: 0x0b,
+  array_get_s: 0x0c,
+  array_get_u: 0x0d,
+  array_set: 0x0e,
+  array_len: 0x0f,
+  array_fill: 0x10,
+  array_copy: 0x11,
+  ref_cast: 0x17,
+  ref_cast_null: 0x18,
+  ref_test: 0x14,
+  ref_test_null: 0x15,
+  ref_i31: 0x1c,
+  i31_get_s: 0x1d,
+  i31_get_u: 0x1e,
+  extern_internalize: 0x1a,
+  extern_externalize: 0x1b,
 };
 
 // === Section IDs ===
@@ -334,8 +380,31 @@ export class WasmModuleBuilder {
     const key = `${params.join(',')}->${results.join(',')}`;
     if (this._typeCache.has(key)) return this._typeCache.get(key);
     const idx = this.types.length;
-    this.types.push({ params, results });
+    this.types.push({ kind: 'func', params, results });
     this._typeCache.set(key, idx);
+    return idx;
+  }
+
+  /**
+   * Add a struct type definition.
+   * @param {Array<{type: number, mutable: boolean}>} fields - struct fields
+   * @returns {number} type index
+   */
+  addStructType(fields) {
+    const idx = this.types.length;
+    this.types.push({ kind: 'struct', fields });
+    return idx;
+  }
+
+  /**
+   * Add an array type definition.
+   * @param {number} elemType - ValType of elements
+   * @param {boolean} mutable - whether elements are mutable
+   * @returns {number} type index
+   */
+  addArrayType(elemType, mutable = true) {
+    const idx = this.types.length;
+    this.types.push({ kind: 'array', elemType, mutable });
     return idx;
   }
 
@@ -521,12 +590,41 @@ export class WasmModuleBuilder {
     if (this.types.length > 0) {
       const bytes = [];
       bytes.push(...encodeULEB128(this.types.length));
-      for (const { params, results } of this.types) {
-        bytes.push(0x60); // functype
-        bytes.push(...encodeULEB128(params.length));
-        bytes.push(...params);
-        bytes.push(...encodeULEB128(results.length));
-        bytes.push(...results);
+      for (const typeDef of this.types) {
+        if (typeDef.kind === 'func' || !typeDef.kind) {
+          // Function type: 0x60 [params] [results]
+          bytes.push(0x60);
+          bytes.push(...encodeULEB128(typeDef.params.length));
+          bytes.push(...typeDef.params);
+          bytes.push(...encodeULEB128(typeDef.results.length));
+          bytes.push(...typeDef.results);
+        } else if (typeDef.kind === 'struct') {
+          // Struct type: 0x5f [field_count] [fields...]
+          // Each field: [valtype] [mutability: 0x00=const, 0x01=var]
+          bytes.push(0x5f);
+          bytes.push(...encodeULEB128(typeDef.fields.length));
+          for (const field of typeDef.fields) {
+            // Encode field type (may be ref type which needs special encoding)
+            if (typeof field.type === 'object' && field.type.ref !== undefined) {
+              // (ref $typeIdx) = 0x64 typeIdx or (ref null $typeIdx) = 0x63 typeIdx
+              bytes.push(field.type.nullable ? 0x63 : 0x64);
+              bytes.push(...encodeULEB128(field.type.ref));
+            } else {
+              bytes.push(field.type);
+            }
+            bytes.push(field.mutable ? 0x01 : 0x00);
+          }
+        } else if (typeDef.kind === 'array') {
+          // Array type: 0x5e [valtype] [mutability]
+          bytes.push(0x5e);
+          if (typeof typeDef.elemType === 'object' && typeDef.elemType.ref !== undefined) {
+            bytes.push(typeDef.elemType.nullable ? 0x63 : 0x64);
+            bytes.push(...encodeULEB128(typeDef.elemType.ref));
+          } else {
+            bytes.push(typeDef.elemType);
+          }
+          bytes.push(typeDef.mutable ? 0x01 : 0x00);
+        }
       }
       sections.push(this._makeSection(Section.Type, bytes));
     }
