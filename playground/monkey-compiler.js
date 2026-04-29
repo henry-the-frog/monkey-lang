@@ -2235,6 +2235,7 @@ var WasmOp = {
   i32_or: 114,
   i32_shl: 116,
   i32_shr_s: 117,
+  i32_shr_u: 118,
   // i64 operations
   i64_const: 66,
   i64_eqz: 80,
@@ -2650,6 +2651,9 @@ var WasmCompiler = class {
     this._strEqFuncIdx = null;
     this._indexOfFuncIdx = null;
     this._intToStrFuncIdx = null;
+    this._hashNewFuncIdx = null;
+    this._hashGetFuncIdx = null;
+    this._hashSetFuncIdx = null;
     this._needsMemory = false;
     this._anonCounter = 0;
     this._anonMap = /* @__PURE__ */ new Map();
@@ -2695,6 +2699,9 @@ var WasmCompiler = class {
       this._getStrEqFunc();
       this._getIndexOfFunc();
       this._getIntToStringFunc();
+      this._getHashNewFunc();
+      this._getHashSetFunc();
+      this._getHashGetFunc();
     }
     this._processGlobals(program.statements);
     this._collectFunctions(program.statements);
@@ -2728,6 +2735,7 @@ var WasmCompiler = class {
       if (node instanceof ForInExpression) return true;
       if (node instanceof ArrayComprehension) return true;
       if (node instanceof StringLiteral) return true;
+      if (node instanceof HashLiteral) return true;
       if (node.statements) return node.statements.some((s) => scan(s));
       if (node.expression) return scan(node.expression);
       if (node.value) return scan(node.value);
@@ -3471,6 +3479,392 @@ var WasmCompiler = class {
     this._intToStrFuncIdx = funcIdx;
     return funcIdx;
   }
+  // __hash_new(capacity: i32) -> ptr: i32
+  // Allocates a new hash map with given capacity (must be power of 2)
+  // Layout: [capacity:i32][size:i32][entries: capacity * 16 bytes each]
+  // Entry: [occupied:i32][key:i32][value:i32][pad:i32]
+  _getHashNewFunc() {
+    if (this._hashNewFuncIdx !== null) return this._hashNewFuncIdx;
+    const allocIdx = this._getAllocFunc();
+    const typeIdx = this.module.addType([WASM_TYPE.I32], [WASM_TYPE.I32]);
+    const body = [
+      // totalSize = 8 + capacity * 16
+      WasmOp.local_get,
+      0,
+      WasmOp.i32_const,
+      16,
+      WasmOp.i32_mul,
+      WasmOp.i32_const,
+      8,
+      WasmOp.i32_add,
+      WasmOp.local_set,
+      2,
+      // ptr = __alloc(totalSize)
+      WasmOp.local_get,
+      2,
+      WasmOp.call,
+      ...encodeULEB128(allocIdx),
+      WasmOp.local_set,
+      1,
+      // Store capacity
+      WasmOp.local_get,
+      1,
+      WasmOp.local_get,
+      0,
+      WasmOp.i32_store,
+      2,
+      0,
+      // Store size = 0
+      WasmOp.local_get,
+      1,
+      WasmOp.i32_const,
+      0,
+      WasmOp.i32_store,
+      2,
+      4,
+      // Zero all entries (set occupied=0 for each)
+      WasmOp.i32_const,
+      0,
+      WasmOp.local_set,
+      3,
+      WasmOp.block,
+      64,
+      WasmOp.loop,
+      64,
+      WasmOp.local_get,
+      3,
+      WasmOp.local_get,
+      0,
+      WasmOp.i32_ge_u,
+      WasmOp.br_if,
+      1,
+      // entries[i].occupied = 0
+      WasmOp.local_get,
+      1,
+      WasmOp.i32_const,
+      8,
+      WasmOp.i32_add,
+      WasmOp.local_get,
+      3,
+      WasmOp.i32_const,
+      16,
+      WasmOp.i32_mul,
+      WasmOp.i32_add,
+      WasmOp.i32_const,
+      0,
+      WasmOp.i32_store,
+      2,
+      0,
+      WasmOp.local_get,
+      3,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_add,
+      WasmOp.local_set,
+      3,
+      WasmOp.br,
+      0,
+      WasmOp.end,
+      WasmOp.end,
+      // return ptr
+      WasmOp.local_get,
+      1
+    ];
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [
+      { count: 3, type: WASM_TYPE.I32 }
+    ], body);
+    this._hashNewFuncIdx = funcIdx;
+    return funcIdx;
+  }
+  // __hash_set(map_ptr: i32, key: i32, value: i32)
+  // Inserts or updates a key-value pair. Uses integer keys with multiplicative hash.
+  _getHashSetFunc() {
+    if (this._hashSetFuncIdx !== null) return this._hashSetFuncIdx;
+    const typeIdx = this.module.addType([WASM_TYPE.I32, WASM_TYPE.I32, WASM_TYPE.I32], []);
+    const body = [
+      // capacity = load(mapPtr)
+      WasmOp.local_get,
+      0,
+      WasmOp.i32_load,
+      2,
+      0,
+      WasmOp.local_set,
+      3,
+      // hash = key * 2654435769 (golden ratio hash)
+      WasmOp.local_get,
+      1,
+      WasmOp.i32_const,
+      ...encodeSLEB128(2654435769 | 0),
+      // signed encoding of 2654435769
+      WasmOp.i32_mul,
+      WasmOp.local_set,
+      4,
+      // idx = (hash >>> 16) & (capacity - 1)
+      WasmOp.local_get,
+      4,
+      WasmOp.i32_const,
+      16,
+      WasmOp.i32_shr_u,
+      WasmOp.local_get,
+      3,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_sub,
+      WasmOp.i32_and,
+      WasmOp.local_set,
+      5,
+      // Linear probe loop
+      WasmOp.block,
+      64,
+      WasmOp.loop,
+      64,
+      // entryPtr = mapPtr + 8 + idx * 16
+      WasmOp.local_get,
+      0,
+      WasmOp.i32_const,
+      8,
+      WasmOp.i32_add,
+      WasmOp.local_get,
+      5,
+      WasmOp.i32_const,
+      16,
+      WasmOp.i32_mul,
+      WasmOp.i32_add,
+      WasmOp.local_set,
+      6,
+      // occupied = load(entryPtr)
+      WasmOp.local_get,
+      6,
+      WasmOp.i32_load,
+      2,
+      0,
+      WasmOp.local_set,
+      7,
+      // If empty (occupied == 0): insert here
+      WasmOp.local_get,
+      7,
+      WasmOp.i32_eqz,
+      WasmOp.if_,
+      64,
+      // Set occupied = 1
+      WasmOp.local_get,
+      6,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_store,
+      2,
+      0,
+      // Set key
+      WasmOp.local_get,
+      6,
+      WasmOp.local_get,
+      1,
+      WasmOp.i32_store,
+      2,
+      4,
+      // Set value
+      WasmOp.local_get,
+      6,
+      WasmOp.local_get,
+      2,
+      WasmOp.i32_store,
+      2,
+      8,
+      // Increment size
+      WasmOp.local_get,
+      0,
+      WasmOp.local_get,
+      0,
+      WasmOp.i32_load,
+      2,
+      4,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_add,
+      WasmOp.i32_store,
+      2,
+      4,
+      WasmOp.return_,
+      WasmOp.end,
+      // If occupied and key matches: update value
+      WasmOp.local_get,
+      7,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_eq,
+      WasmOp.local_get,
+      6,
+      WasmOp.i32_load,
+      2,
+      4,
+      // stored key
+      WasmOp.local_get,
+      1,
+      // search key
+      WasmOp.i32_eq,
+      WasmOp.i32_and,
+      WasmOp.if_,
+      64,
+      WasmOp.local_get,
+      6,
+      WasmOp.local_get,
+      2,
+      WasmOp.i32_store,
+      2,
+      8,
+      WasmOp.return_,
+      WasmOp.end,
+      // Else: linear probe — idx = (idx + 1) & (capacity - 1)
+      WasmOp.local_get,
+      5,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_add,
+      WasmOp.local_get,
+      3,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_sub,
+      WasmOp.i32_and,
+      WasmOp.local_set,
+      5,
+      WasmOp.br,
+      0,
+      WasmOp.end,
+      WasmOp.end
+    ];
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [
+      { count: 5, type: WASM_TYPE.I32 }
+    ], body);
+    this._hashSetFuncIdx = funcIdx;
+    return funcIdx;
+  }
+  // __hash_get(map_ptr: i32, key: i32) -> value: i32
+  // Looks up a key. Returns 0 if not found.
+  _getHashGetFunc() {
+    if (this._hashGetFuncIdx !== null) return this._hashGetFuncIdx;
+    const typeIdx = this.module.addType([WASM_TYPE.I32, WASM_TYPE.I32], [WASM_TYPE.I32]);
+    const body = [
+      // capacity = load(mapPtr)
+      WasmOp.local_get,
+      0,
+      WasmOp.i32_load,
+      2,
+      0,
+      WasmOp.local_set,
+      2,
+      // hash = key * golden_ratio
+      WasmOp.local_get,
+      1,
+      WasmOp.i32_const,
+      ...encodeSLEB128(2654435769 | 0),
+      WasmOp.i32_mul,
+      WasmOp.local_set,
+      3,
+      // idx = (hash >>> 16) & (capacity - 1)
+      WasmOp.local_get,
+      3,
+      WasmOp.i32_const,
+      16,
+      WasmOp.i32_shr_u,
+      WasmOp.local_get,
+      2,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_sub,
+      WasmOp.i32_and,
+      WasmOp.local_set,
+      4,
+      // Linear probe
+      WasmOp.block,
+      64,
+      WasmOp.loop,
+      64,
+      WasmOp.local_get,
+      0,
+      WasmOp.i32_const,
+      8,
+      WasmOp.i32_add,
+      WasmOp.local_get,
+      4,
+      WasmOp.i32_const,
+      16,
+      WasmOp.i32_mul,
+      WasmOp.i32_add,
+      WasmOp.local_set,
+      5,
+      WasmOp.local_get,
+      5,
+      WasmOp.i32_load,
+      2,
+      0,
+      WasmOp.local_set,
+      6,
+      // If empty: not found
+      WasmOp.local_get,
+      6,
+      WasmOp.i32_eqz,
+      WasmOp.if_,
+      64,
+      WasmOp.i32_const,
+      0,
+      WasmOp.return_,
+      WasmOp.end,
+      // If occupied and key matches: return value
+      WasmOp.local_get,
+      6,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_eq,
+      WasmOp.local_get,
+      5,
+      WasmOp.i32_load,
+      2,
+      4,
+      WasmOp.local_get,
+      1,
+      WasmOp.i32_eq,
+      WasmOp.i32_and,
+      WasmOp.if_,
+      64,
+      WasmOp.local_get,
+      5,
+      WasmOp.i32_load,
+      2,
+      8,
+      WasmOp.return_,
+      WasmOp.end,
+      // Linear probe
+      WasmOp.local_get,
+      4,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_add,
+      WasmOp.local_get,
+      2,
+      WasmOp.i32_const,
+      1,
+      WasmOp.i32_sub,
+      WasmOp.i32_and,
+      WasmOp.local_set,
+      4,
+      WasmOp.br,
+      0,
+      WasmOp.end,
+      WasmOp.end,
+      // Unreachable (infinite loop guaranteed to find empty slot)
+      WasmOp.i32_const,
+      0
+    ];
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [
+      { count: 5, type: WASM_TYPE.I32 }
+    ], body);
+    this._hashGetFuncIdx = funcIdx;
+    return funcIdx;
+  }
   // Ensure memory exists and heap pointer global is initialized
   _ensureMemory() {
     if (this._needsMemory) return;
@@ -3735,6 +4129,7 @@ var WasmCompiler = class {
     if (expr instanceof BooleanLiteral) return "int";
     if (expr instanceof ArrayLiteral) return "array";
     if (expr instanceof ArrayComprehension) return "array";
+    if (expr instanceof HashLiteral) return "hash";
     if (expr instanceof Identifier) {
       const localType = this.currentVarTypes?.get(expr.value);
       if (localType) return localType;
@@ -4046,6 +4441,21 @@ var WasmCompiler = class {
       }
     } else if (stmt instanceof SetStatement) {
       if (stmt.name instanceof IndexExpression) {
+        const leftType = this._inferExprType(stmt.name.left);
+        if (leftType === "hash") {
+          const hashSetIdx = this._getHashSetFunc();
+          this._compileExpr(stmt.name.left, body);
+          if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+          this._compileExpr(stmt.name.index, body);
+          if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+          this._compileExpr(stmt.value, body);
+          if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+          body.push(WasmOp.call, ...encodeULEB128(hashSetIdx));
+          if (isLast) {
+            this._compileExpr(stmt.value, body);
+          }
+          return;
+        }
         this._compileExpr(stmt.name.left, body);
         if (this.useI64) body.push(WasmOp.i32_wrap_i64);
         body.push(WasmOp.i32_const, 8);
@@ -5674,6 +6084,28 @@ var WasmCompiler = class {
       if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
       return;
     }
+    if (expr instanceof HashLiteral) {
+      const hashNewIdx = this._getHashNewFunc();
+      const hashSetIdx = this._getHashSetFunc();
+      let cap = 8;
+      while (cap < expr.pairs.size * 2) cap *= 2;
+      const mapLocal = this.currentLocalCount + this.currentExtraLocals;
+      this.currentExtraLocals++;
+      body.push(WasmOp.i32_const, ...encodeSLEB128(cap));
+      body.push(WasmOp.call, ...encodeULEB128(hashNewIdx));
+      body.push(WasmOp.local_set, ...encodeULEB128(mapLocal));
+      for (const [keyExpr, valExpr] of expr.pairs) {
+        body.push(WasmOp.local_get, ...encodeULEB128(mapLocal));
+        this._compileExpr(keyExpr, body);
+        if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+        this._compileExpr(valExpr, body);
+        if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+        body.push(WasmOp.call, ...encodeULEB128(hashSetIdx));
+      }
+      body.push(WasmOp.local_get, ...encodeULEB128(mapLocal));
+      if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+      return;
+    }
     if (expr instanceof ArrayLiteral) {
       const len = expr.elements.length;
       const cap = Math.max(len, len === 0 ? 256 : len * 2);
@@ -5704,6 +6136,17 @@ var WasmCompiler = class {
       return;
     }
     if (expr instanceof IndexExpression) {
+      const leftType = this._inferExprType(expr.left);
+      if (leftType === "hash") {
+        const hashGetIdx = this._getHashGetFunc();
+        this._compileExpr(expr.left, body);
+        if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+        this._compileExpr(expr.index, body);
+        if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+        body.push(WasmOp.call, ...encodeULEB128(hashGetIdx));
+        if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
+        return;
+      }
       this._compileExpr(expr.left, body);
       if (this.useI64) body.push(WasmOp.i32_wrap_i64);
       body.push(WasmOp.i32_const, 8);
