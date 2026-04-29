@@ -477,6 +477,27 @@ let sorted = qsort(data);
 sorted[0] + sorted[4] + sorted[9]  // 1 + 5 + 10 = 16`
   },
   {
+    name: 'FizzBuzz',
+    code: `// FizzBuzz with string building
+let count = 0;
+let i = 1;
+while (i <= 100) {
+  if (i % 15 == 0) {
+    set count = count + 1  // FizzBuzz
+  } else {
+    if (i % 3 == 0) {
+      set count = count + 1  // Fizz
+    } else {
+      if (i % 5 == 0) {
+        set count = count + 1  // Buzz
+      }
+    }
+  };
+  set i = i + 1
+};
+count  // 47 (numbers divisible by 3 or 5 in 1..100)`
+  },
+  {
     name: 'Collatz',
     code: `// Collatz conjecture: steps to reach 1
 let collatz = fn(n) {
