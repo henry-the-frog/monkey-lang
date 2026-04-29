@@ -524,6 +524,52 @@ let collatz = fn(n) {
 collatz(27)  // 111 steps`
   },
   {
+    name: 'Algorithm Suite',
+    code: `// Full algorithm demo: generate, filter, sort, search
+let data = [];
+let i = 0;
+while (i < 50) {
+  push(data, (i * 7 + 13) % 47);
+  set i = i + 1
+};
+
+// Filter: keep values > 20
+let big = [x for x in data if x > 20];
+
+// QuickSort using comprehensions
+let qsort = fn(arr) {
+  if (len(arr) <= 1) { arr }
+  else {
+    let p = arr[0];
+    let result = [];
+    for (x in qsort([y for y in arr if y < p])) { push(result, x) };
+    for (x in [y for y in arr if y == p]) { push(result, x) };
+    for (x in qsort([y for y in arr if y > p])) { push(result, x) };
+    result
+  }
+};
+let sorted = qsort(big);
+
+// Binary search
+let lo = 0;
+let hi = len(sorted) - 1;
+let target = sorted[0];
+let found = 0 - 1;
+while (lo <= hi) {
+  let mid = (lo + hi) / 2;
+  if (sorted[mid] == target) {
+    set found = mid;
+    break
+  } else {
+    if (sorted[mid] < target) { set lo = mid + 1 }
+    else { set hi = mid - 1 }
+  }
+};
+
+// Result: data=50, filtered, sorted, found at index 0
+len(data) + len(sorted) + found  // 50 + filtered_count + 0`
+  },
+  {
     name: 'Nested Loops',
     code: `// 1000×1000 nested loop — pure WASM speed
 let nested = fn(n) {
