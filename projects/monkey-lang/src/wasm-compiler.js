@@ -402,6 +402,10 @@ export class WasmCompiler {
     const rangeIdx = this.builder.addImport('env', '__range', [ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.range = rangeIdx;
 
+    // __sum: sum all i32 elements of an array
+    const sumIdx = this.builder.addImport('env', '__sum', [ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.sum = sumIdx;
+
     const containsIdx = this.builder.addImport('env', '__contains', [ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.contains = containsIdx;
 
@@ -5035,6 +5039,20 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         const values = [];
         for (let i = start; i < end; i++) values.push(i);
         return writeArray(values);
+      },
+      __sum(arrPtr) {
+        const mem = memoryRef.memory;
+        if (!mem || arrPtr < 8) return 0;
+        const view = new DataView(mem.buffer);
+        const tag = view.getInt32(arrPtr, true);
+        if (tag !== TAG_ARRAY) return 0;
+        const len = view.getInt32(arrPtr + 4, true);
+        let total = 0;
+        // Array data starts at offset 12 (after TAG+length+capacity)
+        for (let i = 0; i < len; i++) {
+          total += view.getInt32(arrPtr + 12 + i * 4, true);
+        }
+        return total;
       },
       __hash_merge(hashPtr1, hashPtr2) {
         // Merge two hash maps: create new hash with all entries from both.
