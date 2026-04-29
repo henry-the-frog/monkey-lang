@@ -428,39 +428,69 @@ const builtins = new Map([
   })],
   ['find', new MonkeyBuiltin((...args) => {
     if (args.length !== 2) return newError(`wrong number of arguments. got=${args.length}, want=2`);
-    const arr = args[0];
+    const collection = args[0];
     const fn = args[1];
-    if (!(arr instanceof MonkeyArray)) return newError(`first argument to find must be ARRAY, got ${arr.type()}`);
-    for (const el of arr.elements) {
-      const val = applyFunction(fn, [el]);
-      if (isError(val)) return val;
-      if (isTruthy(val)) return el;
+    if (collection instanceof MonkeyArray) {
+      for (const el of collection.elements) {
+        const val = applyFunction(fn, [el]);
+        if (isError(val)) return val;
+        if (isTruthy(val)) return el;
+      }
+      return NULL;
     }
-    return NULL;
+    if (collection instanceof MonkeyHash) {
+      for (const [, { key, value }] of collection.pairs) {
+        const val = applyFunction(fn, [key, value]);
+        if (isError(val)) return val;
+        if (isTruthy(val)) return key;
+      }
+      return NULL;
+    }
+    return newError(`first argument to find must be ARRAY or HASH, got ${collection.type()}`);
   })],
   ['any', new MonkeyBuiltin((...args) => {
     if (args.length !== 2) return newError(`wrong number of arguments. got=${args.length}, want=2`);
-    const arr = args[0];
+    const collection = args[0];
     const fn = args[1];
-    if (!(arr instanceof MonkeyArray)) return newError(`first argument to any must be ARRAY, got ${arr.type()}`);
-    for (const el of arr.elements) {
-      const val = applyFunction(fn, [el]);
-      if (isError(val)) return val;
-      if (isTruthy(val)) return TRUE;
+    if (collection instanceof MonkeyArray) {
+      for (const el of collection.elements) {
+        const val = applyFunction(fn, [el]);
+        if (isError(val)) return val;
+        if (isTruthy(val)) return TRUE;
+      }
+      return FALSE;
     }
-    return FALSE;
+    if (collection instanceof MonkeyHash) {
+      for (const [, { key, value }] of collection.pairs) {
+        const val = applyFunction(fn, [key, value]);
+        if (isError(val)) return val;
+        if (isTruthy(val)) return TRUE;
+      }
+      return FALSE;
+    }
+    return newError(`first argument to any must be ARRAY or HASH, got ${collection.type()}`);
   })],
   ['all', new MonkeyBuiltin((...args) => {
     if (args.length !== 2) return newError(`wrong number of arguments. got=${args.length}, want=2`);
-    const arr = args[0];
+    const collection = args[0];
     const fn = args[1];
-    if (!(arr instanceof MonkeyArray)) return newError(`first argument to all must be ARRAY, got ${arr.type()}`);
-    for (const el of arr.elements) {
-      const val = applyFunction(fn, [el]);
-      if (isError(val)) return val;
-      if (!isTruthy(val)) return FALSE;
+    if (collection instanceof MonkeyArray) {
+      for (const el of collection.elements) {
+        const val = applyFunction(fn, [el]);
+        if (isError(val)) return val;
+        if (!isTruthy(val)) return FALSE;
+      }
+      return TRUE;
     }
-    return TRUE;
+    if (collection instanceof MonkeyHash) {
+      for (const [, { key, value }] of collection.pairs) {
+        const val = applyFunction(fn, [key, value]);
+        if (isError(val)) return val;
+        if (!isTruthy(val)) return FALSE;
+      }
+      return TRUE;
+    }
+    return newError(`first argument to all must be ARRAY or HASH, got ${collection.type()}`);
   })],
   ['sort', new MonkeyBuiltin((...args) => {
     if (args.length < 1 || args.length > 2) return newError(`wrong number of arguments. got=${args.length}, want=1 or 2`);
