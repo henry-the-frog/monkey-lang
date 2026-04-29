@@ -619,3 +619,66 @@ describe('WASM arrays — comprehensions', () => {
     `), 55);
   });
 });
+
+describe('WASM — break and continue', () => {
+  it('break from while', async () => {
+    assert.equal(await run(`
+      let i = 0;
+      while (i < 1000) {
+        set i = i + 1;
+        if (i == 10) { break }
+      };
+      i
+    `), 10);
+  });
+
+  it('continue in while (skip evens)', async () => {
+    assert.equal(await run(`
+      let sum = 0;
+      let i = 0;
+      while (i < 10) {
+        set i = i + 1;
+        if (i % 2 == 0) { continue };
+        set sum = sum + i
+      };
+      sum
+    `), 25);
+  });
+
+  it('break with accumulator', async () => {
+    assert.equal(await run(`
+      let sum = 0;
+      let i = 0;
+      while (i < 100) {
+        set sum = sum + i;
+        set i = i + 1;
+        if (sum > 50) { break }
+      };
+      sum
+    `), 55);
+  });
+
+  it('break from for-in', async () => {
+    assert.equal(await run(`
+      let arr = [1, 2, 3, 4, 5];
+      let sum = 0;
+      for (x in arr) {
+        if (x > 3) { break };
+        set sum = sum + x
+      };
+      sum
+    `), 6);
+  });
+
+  it('continue in for-in', async () => {
+    assert.equal(await run(`
+      let arr = [1, 2, 3, 4, 5, 6];
+      let sum = 0;
+      for (x in arr) {
+        if (x % 2 == 0) { continue };
+        set sum = sum + x
+      };
+      sum
+    `), 9);
+  });
+});

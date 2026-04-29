@@ -60,6 +60,8 @@ class WasmCompiler {
     this._hashNewFuncIdx = null; // lazily added __hash_new function
     this._hashGetFuncIdx = null; // lazily added __hash_get function
     this._hashSetFuncIdx = null; // lazily added __hash_set function
+    this._loopDepth = 0; // nesting depth for break/continue
+    this._blockDepthInLoop = 0; // block nesting depth within current loop
     this._needsMemory = false; // set when arrays or dynamic allocation needed
     this._anonCounter = 0; // counter for anonymous function names
     this._anonMap = new Map(); // FunctionLiteral node → name string
@@ -1609,6 +1611,13 @@ class WasmCompiler {
           body.push(WasmOp.local_get, ...encodeULEB128(localIdx));
         }
       }
+    } else if (stmt instanceof ast.BreakStatement) {
+      // Break: exit the loop's outer block
+      // depth 0 = current nesting, +1 for each if/block, +1 more for outer block
+      body.push(WasmOp.br, ...encodeULEB128(this._blockDepthInLoop + 1));
+    } else if (stmt instanceof ast.ContinueStatement) {
+      // Continue: go to loop header
+      body.push(WasmOp.br, ...encodeULEB128(this._blockDepthInLoop));
     } else if (stmt instanceof ast.SetStatement) {
       // Array/indexed assignment: set arr[i] = value
       if (stmt.name instanceof ast.IndexExpression) {
