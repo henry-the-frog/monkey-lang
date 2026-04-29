@@ -775,6 +775,64 @@ export class WasmCompiler {
     hashFindSlotBody.localGet(6);  // return result
     this._runtimeFuncs.hashFindSlot = hashFindSlotIdx;
 
+    // __hash_resize(map_ptr: i32, new_capacity: i32) → void
+    // Allocates new entries array, rehashes all occupied entries from old array
+    const { index: hashResizeIdx, body: hashResizeBody } = this.builder.addFunction(
+      [ValType.i32, ValType.i32], []
+    );
+    hashResizeBody.addLocal(ValType.i32); // local[2] = old_entries_ptr
+    hashResizeBody.addLocal(ValType.i32); // local[3] = old_capacity
+    hashResizeBody.addLocal(ValType.i32); // local[4] = new_entries_ptr
+    hashResizeBody.addLocal(ValType.i32); // local[5] = i (loop counter)
+    hashResizeBody.addLocal(ValType.i32); // local[6] = old_entry_addr
+    hashResizeBody.addLocal(ValType.i32); // local[7] = key
+    hashResizeBody.addLocal(ValType.i32); // local[8] = value
+    hashResizeBody.addLocal(ValType.i32); // local[9] = new_slot
+    hashResizeBody.addLocal(ValType.i32); // local[10] = new_entry_addr
+    hashResizeBody
+      // Save old entries and capacity
+      .localGet(0).i32Const(12).emit(Op.i32_add).i32Load().localSet(2) // old_entries_ptr
+      .localGet(0).i32Const(4).emit(Op.i32_add).i32Load().localSet(3)  // old_capacity
+      // Allocate new entries array (new_capacity * ENTRY_SIZE bytes, zero-initialized by bump allocator)
+      .localGet(1).i32Const(ENTRY_SIZE).emit(Op.i32_mul)
+      .call(allocIdx)
+      .localSet(4) // new_entries_ptr
+      // Update map header: capacity = new_capacity, entries_ptr = new_entries_ptr, size = 0 (re-insert will re-count)
+      .localGet(0).i32Const(4).emit(Op.i32_add).localGet(1).i32Store()  // capacity = new_capacity
+      .localGet(0).i32Const(8).emit(Op.i32_add).i32Const(0).i32Store()  // size = 0
+      .localGet(0).i32Const(12).emit(Op.i32_add).localGet(4).i32Store() // entries_ptr = new_entries_ptr
+      // Loop over old entries and re-insert occupied ones
+      .i32Const(0).localSet(5) // i = 0
+      .block().loop()
+        // if i >= old_capacity, break
+        .localGet(5).localGet(3).emit(Op.i32_ge_u).brIf(1)
+        // old_entry_addr = old_entries_ptr + i * ENTRY_SIZE
+        .localGet(2).localGet(5).i32Const(ENTRY_SIZE).emit(Op.i32_mul).emit(Op.i32_add).localSet(6)
+        // if status == 1 (occupied), re-insert
+        .localGet(6).i32Load().i32Const(1).emit(Op.i32_eq)
+        .if_()
+          // key = old_entry[4], value = old_entry[8]
+          .localGet(6).i32Const(4).emit(Op.i32_add).i32Load().localSet(7)
+          .localGet(6).i32Const(8).emit(Op.i32_add).i32Load().localSet(8)
+          // Find slot in new array
+          .localGet(4).localGet(1).localGet(7).call(hashFindSlotIdx).localSet(9)
+          // new_entry_addr = new_entries_ptr + slot * ENTRY_SIZE
+          .localGet(4).localGet(9).i32Const(ENTRY_SIZE).emit(Op.i32_mul).emit(Op.i32_add).localSet(10)
+          // Write entry
+          .localGet(10).i32Const(1).i32Store()                                       // status = occupied
+          .localGet(10).i32Const(4).emit(Op.i32_add).localGet(7).i32Store()           // key
+          .localGet(10).i32Const(8).emit(Op.i32_add).localGet(8).i32Store()           // value
+          // Increment size
+          .localGet(0).i32Const(8).emit(Op.i32_add)
+          .localGet(0).i32Const(8).emit(Op.i32_add).i32Load()
+          .i32Const(1).emit(Op.i32_add).i32Store()
+        .end()
+        // i++
+        .localGet(5).i32Const(1).emit(Op.i32_add).localSet(5)
+        .br(0) // continue loop
+      .end().end();
+    this._runtimeFuncs.hashResize = hashResizeIdx;
+
     // __hash_set_native(map_ptr: i32, key: i32, value: i32) → map_ptr: i32
     const { index: hashSetNativeIdx, body: hashSetNativeBody } = this.builder.addFunction(
       [ValType.i32, ValType.i32, ValType.i32], [ValType.i32]
@@ -784,9 +842,24 @@ export class WasmCompiler {
     hashSetNativeBody.addLocal(ValType.i32); // local[5] = slot_index
     hashSetNativeBody.addLocal(ValType.i32); // local[6] = entry_addr
     hashSetNativeBody.addLocal(ValType.i32); // local[7] = old_status
+    hashSetNativeBody.addLocal(ValType.i32); // local[8] = size
     hashSetNativeBody
+      // Check load factor: if size * 4 >= capacity * 3, resize first
+      .localGet(0).i32Const(8).emit(Op.i32_add).i32Load().localSet(8)    // size
+      .localGet(0).i32Const(4).emit(Op.i32_add).i32Load().localSet(4)    // capacity
+      .localGet(8).i32Const(4).emit(Op.i32_mul)                          // size * 4
+      .localGet(4).i32Const(3).emit(Op.i32_mul)                          // capacity * 3
+      .emit(Op.i32_ge_u)
+      .if_()
+        // Resize to 2x capacity
+        .localGet(0)
+        .localGet(4).i32Const(1).emit(Op.i32_shl) // new_capacity = capacity * 2
+        .call(hashResizeIdx)
+        // Reload capacity (now doubled)
+        .localGet(0).i32Const(4).emit(Op.i32_add).i32Load().localSet(4)
+      .end()
+      // Load entries_ptr (may have changed after resize)
       .localGet(0).i32Const(12).emit(Op.i32_add).i32Load().localSet(3) // entries_ptr
-      .localGet(0).i32Const(4).emit(Op.i32_add).i32Load().localSet(4)  // capacity
       // Find slot
       .localGet(3).localGet(4).localGet(1).call(hashFindSlotIdx).localSet(5)
       // entry_addr = entries_ptr + slot * 12

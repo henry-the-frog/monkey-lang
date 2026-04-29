@@ -112,4 +112,49 @@ describe('WASM Native Hash Map', () => {
     `);
     assert.equal(result, 1);
   });
+
+  it('auto-resize handles more than initial capacity', async () => {
+    // Initial capacity is 8, load factor 0.75 = threshold at 6 entries
+    // Insert 20 entries to trigger multiple resizes
+    const result = await compileAndRun(`
+      let h = {};
+      for (let i = 1; i <= 20; i = i + 1) {
+        h[i] = i * 10;
+      }
+      h[1] + h[10] + h[20]
+    `);
+    assert.equal(result, 10 + 100 + 200);
+  });
+
+  it('auto-resize preserves all entries', async () => {
+    // Insert 50 entries and verify they're all still accessible
+    const result = await compileAndRun(`
+      let h = {};
+      let sum = 0;
+      for (let i = 0; i < 50; i = i + 1) {
+        h[i] = i;
+      }
+      for (let i = 0; i < 50; i = i + 1) {
+        sum = sum + h[i];
+      }
+      sum
+    `);
+    // sum of 0..49 = 49*50/2 = 1225
+    assert.equal(result, 1225);
+  });
+
+  it('auto-resize with frequency counting pattern', async () => {
+    // Realistic pattern: count frequencies of many values
+    const result = await compileAndRun(`
+      let counts = {};
+      let data = [1, 2, 3, 1, 2, 3, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 1, 2, 3];
+      for (let i = 0; i < len(data); i = i + 1) {
+        let key = data[i];
+        counts[key] = counts[key] + 1;
+      }
+      counts[1] + counts[2] + counts[3]
+    `);
+    // 1 appears 4 times, 2 appears 4 times, 3 appears 4 times
+    assert.equal(result, 12);
+  });
 });
