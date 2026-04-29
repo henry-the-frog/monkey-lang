@@ -869,7 +869,7 @@ export function monkeyEval(node, env) {
     if (left === NULL || left === undefined) return NULL;
     const index = monkeyEval(node.index, env);
     if (isError(index)) return index;
-    return evalIndexExpression(left, index) || NULL;
+    return evalIndexExpression(left, index) ?? NULL;
   }
   if (node instanceof AST.EnumStatement) {
     const pairs = new Map();

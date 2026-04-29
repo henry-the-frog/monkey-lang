@@ -1322,7 +1322,7 @@ export class VM {
       if (numArgs < numParams) {
         const defaults = closure.fn.defaults || [];
         for (let i = numArgs; i < numParams; i++) {
-          this.stack[this.sp] = defaults[i] || NULL;
+          this.stack[this.sp] = defaults[i] ?? NULL;
           this.sp++;
         }
         numArgs = numParams;
@@ -1361,7 +1361,7 @@ export class VM {
       if (numArgs < numParams) {
         const defaults = closure.fn.defaults || [];
         for (let i = numArgs; i < numParams; i++) {
-          this.stack[this.sp] = defaults[i] || NULL;
+          this.stack[this.sp] = defaults[i] ?? NULL;
           this.sp++;
         }
         numArgs = numParams;
