@@ -1138,14 +1138,16 @@ export class VM {
       this.executeBinaryFloatOperation(op, unwrapNum(left), unwrapNum(right));
     } else if (isStr(left) && isStr(right)) {
       if (op === Opcodes.OpAdd) {
-        this.push(this._track(internString(left.value + right.value)));
+        // Don't intern concat results — they're usually unique runtime strings
+        // Interning is for repeated constants, not dynamic concatenation
+        this.push(this._track(new MonkeyString(left.value + right.value)));
       } else {
         throw new Error(`unknown string operator: ${op}`);
       }
     } else if (isStr(left) && isInt(right) && op === Opcodes.OpMul) {
-      this.push(this._track(internString(left.value.repeat(Math.max(0, unwrapInt(right))))));
+      this.push(this._track(new MonkeyString(left.value.repeat(Math.max(0, unwrapInt(right))))));
     } else if (isInt(left) && isStr(right) && op === Opcodes.OpMul) {
-      this.push(this._track(internString(right.value.repeat(Math.max(0, unwrapInt(left))))));
+      this.push(this._track(new MonkeyString(right.value.repeat(Math.max(0, unwrapInt(left))))));
     } else if (left instanceof MonkeyArray && right instanceof MonkeyArray && op === Opcodes.OpAdd) {
       this.push(this._track(new MonkeyArray([...left.elements, ...right.elements])));
     } else {
