@@ -998,6 +998,72 @@ export class WasmCompiler {
       .end();
     this._runtimeFuncs.hashGetNative = hashGetNativeIdx;
 
+    // __hash_set_str_native(map_ptr: i32, key_ptr: i32, value: i32) → map_ptr: i32
+    // Like hash_set_native but uses find_slot_str for string keys
+    const { index: hashSetStrNativeIdx, body: hashSetStrNativeBody } = this.builder.addFunction(
+      [ValType.i32, ValType.i32, ValType.i32], [ValType.i32]
+    );
+    hashSetStrNativeBody.addLocal(ValType.i32); // local[3] = entries_ptr
+    hashSetStrNativeBody.addLocal(ValType.i32); // local[4] = capacity
+    hashSetStrNativeBody.addLocal(ValType.i32); // local[5] = slot_index
+    hashSetStrNativeBody.addLocal(ValType.i32); // local[6] = entry_addr
+    hashSetStrNativeBody.addLocal(ValType.i32); // local[7] = old_status
+    hashSetStrNativeBody.addLocal(ValType.i32); // local[8] = size
+    hashSetStrNativeBody
+      // Check load factor: if size * 4 >= capacity * 3, resize first
+      .localGet(0).i32Const(8).emit(Op.i32_add).i32Load().localSet(8)    // size
+      .localGet(0).i32Const(4).emit(Op.i32_add).i32Load().localSet(4)    // capacity
+      .localGet(8).i32Const(4).emit(Op.i32_mul)                          // size * 4
+      .localGet(4).i32Const(3).emit(Op.i32_mul)                          // capacity * 3
+      .emit(Op.i32_ge_u)
+      .if_()
+        .localGet(0)
+        .localGet(4).i32Const(1).emit(Op.i32_shl)
+        .call(hashResizeIdx)
+        .localGet(0).i32Const(4).emit(Op.i32_add).i32Load().localSet(4)
+      .end()
+      .localGet(0).i32Const(12).emit(Op.i32_add).i32Load().localSet(3) // entries_ptr
+      // Find slot using string comparison
+      .localGet(3).localGet(4).localGet(1).call(hashFindSlotStrIdx).localSet(5)
+      // entry_addr = entries_ptr + slot * 12
+      .localGet(3).localGet(5).i32Const(ENTRY_SIZE).emit(Op.i32_mul).emit(Op.i32_add).localSet(6)
+      .localGet(6).i32Load().localSet(7)
+      // Write entry
+      .localGet(6).i32Const(1).i32Store()                                    // status = occupied
+      .localGet(6).i32Const(4).emit(Op.i32_add).localGet(1).i32Store()       // key = string ptr
+      .localGet(6).i32Const(8).emit(Op.i32_add).localGet(2).i32Store()       // value
+      // If new entry, increment size
+      .localGet(7).i32Const(1).emit(Op.i32_ne)
+      .if_()
+        .localGet(0).i32Const(8).emit(Op.i32_add)
+        .localGet(0).i32Const(8).emit(Op.i32_add).i32Load()
+        .i32Const(1).emit(Op.i32_add).i32Store()
+      .end();
+    hashSetStrNativeBody.localGet(0); // return map_ptr
+    this._runtimeFuncs.hashSetStrNative = hashSetStrNativeIdx;
+
+    // __hash_get_str_native(map_ptr: i32, key_ptr: i32) → value: i32
+    const { index: hashGetStrNativeIdx, body: hashGetStrNativeBody } = this.builder.addFunction(
+      [ValType.i32, ValType.i32], [ValType.i32]
+    );
+    hashGetStrNativeBody.addLocal(ValType.i32); // local[2] = entries_ptr
+    hashGetStrNativeBody.addLocal(ValType.i32); // local[3] = capacity
+    hashGetStrNativeBody.addLocal(ValType.i32); // local[4] = slot_index
+    hashGetStrNativeBody.addLocal(ValType.i32); // local[5] = entry_addr
+    hashGetStrNativeBody
+      .localGet(0).i32Const(12).emit(Op.i32_add).i32Load().localSet(2)
+      .localGet(0).i32Const(4).emit(Op.i32_add).i32Load().localSet(3)
+      .localGet(2).localGet(3).localGet(1).call(hashFindSlotStrIdx).localSet(4)
+      .localGet(2).localGet(4).i32Const(ENTRY_SIZE).emit(Op.i32_mul).emit(Op.i32_add).localSet(5)
+      // If occupied, return value; else 0
+      .localGet(5).i32Load().i32Const(1).emit(Op.i32_eq)
+      .if_(ValType.i32)
+        .localGet(5).i32Const(8).emit(Op.i32_add).i32Load()
+      .else_()
+        .i32Const(0)
+      .end();
+    this._runtimeFuncs.hashGetStrNative = hashGetStrNativeIdx;
+
     // Register builtins in global scope
     this.globalScope.define('__alloc', allocIdx, 'func');
     this.globalScope.define('__len', lenIdx, 'func');
