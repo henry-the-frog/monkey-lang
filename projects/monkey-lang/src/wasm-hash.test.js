@@ -357,3 +357,44 @@ describe('WASM for-in directly on hash map (auto-detect)', () => {
     assert.equal(result, 30);
   });
 });
+
+describe('WASM Hash Map Delete', () => {
+  it('delete string key', async () => {
+    const result = await compileAndRun(`
+      let h = {"a": 1, "b": 2, "c": 3};
+      delete(h, "b");
+      len(keys(h))
+    `);
+    assert.equal(result, 2);
+  });
+
+  it('delete integer key', async () => {
+    const result = await compileAndRun(`
+      let h = {1: 10, 2: 20, 3: 30};
+      delete(h, 2);
+      let sum = 0;
+      for (k in h) { sum = sum + h[k] }
+      sum
+    `);
+    assert.equal(result, 40);
+  });
+
+  it('delete non-existent key is no-op', async () => {
+    const result = await compileAndRun(`
+      let h = {"x": 99};
+      delete(h, "y");
+      h["x"]
+    `);
+    assert.equal(result, 99);
+  });
+
+  it('re-insert after delete', async () => {
+    const result = await compileAndRun(`
+      let h = {"a": 1, "b": 2};
+      delete(h, "a");
+      h["a"] = 99;
+      h["a"]
+    `);
+    assert.equal(result, 99);
+  });
+});

@@ -223,6 +223,16 @@ const builtins = new Map([
     for (const [, {value}] of args[0].pairs) arr.push(value);
     return new MonkeyArray(arr);
   })],
+  ['delete', new MonkeyBuiltin((...args) => {
+    if (args.length !== 2 || args[0].type() !== OBJ.HASH) return newError('delete requires a hash and a key');
+    const hash = args[0];
+    const key = args[1];
+    const hashKey = key.hashKey ? key.hashKey() : null;
+    if (hashKey === null) return newError('unusable as hash key: ' + key.type());
+    const newPairs = new Map(hash.pairs);
+    newPairs.delete(hashKey);
+    return new MonkeyHash(newPairs);
+  })],
   ['sort', new MonkeyBuiltin((...args) => {
     if (args.length !== 1 || !(args[0] instanceof MonkeyArray)) return newError('sort requires one array argument');
     const sorted = [...args[0].elements].sort((a, b) => {
