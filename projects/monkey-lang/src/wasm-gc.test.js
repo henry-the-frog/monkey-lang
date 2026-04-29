@@ -1,9 +1,13 @@
 // wasm-gc.test.js — Verify WASM GC type definitions, ref types, and GC instructions
-import { describe, it } from 'node:test';
+import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { WasmModuleBuilder, ValType, GcOp, TypeKind, refType, refNullType } from './wasm.js';
 
-describe('WASM GC Module Builder', () => {
+// Skip GC tests on Node versions that don't support the GC proposal (< 20)
+const nodeVersion = parseInt(process.versions.node.split('.')[0]);
+const skipGc = nodeVersion < 20;
+
+describe('WASM GC Module Builder', { skip: skipGc ? 'WASM GC not available on Node < 20' : false }, () => {
   describe('Type definitions', () => {
     it('creates struct type with i32 field', () => {
       const builder = new WasmModuleBuilder();
@@ -272,7 +276,7 @@ describe('WASM GC Module Builder', () => {
   });
 });
 
-describe('GC Array Proof-of-Concept (loop fill + sum)', () => {
+describe('GC Array Proof-of-Concept (loop fill + sum)', { skip: skipGc ? 'Node < 20' : false }, () => {
   it('fills array with loop and sums elements', async () => {
     const { WasmModuleBuilder, ValType, Op, refNullType } = await import('./wasm.js');
     const builder = new WasmModuleBuilder();
@@ -359,7 +363,7 @@ describe('GC Array Proof-of-Concept (loop fill + sum)', () => {
   });
 });
 
-describe('GC Array Stress Tests', () => {
+describe('GC Array Stress Tests', { skip: skipGc ? 'Node < 20' : false }, () => {
   it('large array (10000 elements)', async () => {
     const { WasmModuleBuilder, ValType, Op, refNullType } = await import('./wasm.js');
     const builder = new WasmModuleBuilder();
