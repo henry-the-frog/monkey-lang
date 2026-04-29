@@ -1612,7 +1612,25 @@ class WasmCompiler {
     } else if (stmt instanceof ast.SetStatement) {
       // Array/indexed assignment: set arr[i] = value
       if (stmt.name instanceof ast.IndexExpression) {
-        // Compute: addr = ptr + 8 + idx * 4, then i32.store
+        // Detect hash map vs array
+        const leftType = this._inferExprType(stmt.name.left);
+        if (leftType === 'hash') {
+          // Hash set: __hash_set(map, key, value)
+          const hashSetIdx = this._getHashSetFunc();
+          this._compileExpr(stmt.name.left, body);
+          if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+          this._compileExpr(stmt.name.index, body);
+          if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+          this._compileExpr(stmt.value, body);
+          if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+          body.push(WasmOp.call, ...encodeULEB128(hashSetIdx));
+          if (isLast) {
+            this._compileExpr(stmt.value, body);
+          }
+          return;
+        }
+        
+        // Array set: addr = ptr + 8 + idx * 4, then i32.store
         this._compileExpr(stmt.name.left, body);  // array pointer
         if (this.useI64) body.push(WasmOp.i32_wrap_i64);
         body.push(WasmOp.i32_const, 8); // skip header
