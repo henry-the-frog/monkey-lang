@@ -407,6 +407,29 @@ const builtins = new Map([
     }
     return newError('partition requires array or hash');
   })],
+  ['mapKeys', new MonkeyBuiltin((...args) => {
+    if (args.length !== 2 || !(args[0] instanceof MonkeyHash)) return newError('mapKeys requires a hash and a function');
+    const fn = args[1];
+    const result = new Map();
+    for (const [, { key, value }] of args[0].pairs) {
+      const newKey = applyFunction(fn, [key]);
+      if (isError(newKey)) return newKey;
+      const hashKey = newKey.fastHashKey ? newKey.fastHashKey() : (newKey.hashKey ? newKey.hashKey() : null);
+      if (hashKey) result.set(hashKey, { key: newKey, value });
+    }
+    return new MonkeyHash(result);
+  })],
+  ['mapValues', new MonkeyBuiltin((...args) => {
+    if (args.length !== 2 || !(args[0] instanceof MonkeyHash)) return newError('mapValues requires a hash and a function');
+    const fn = args[1];
+    const result = new Map();
+    for (const [hashKey, { key, value }] of args[0].pairs) {
+      const newVal = applyFunction(fn, [value]);
+      if (isError(newVal)) return newVal;
+      result.set(hashKey, { key, value: newVal });
+    }
+    return new MonkeyHash(result);
+  })],
   ['contains', new MonkeyBuiltin((...args) => {
     if (args.length !== 2) return newError('contains requires two arguments');
     if (args[0] instanceof MonkeyArray) {
