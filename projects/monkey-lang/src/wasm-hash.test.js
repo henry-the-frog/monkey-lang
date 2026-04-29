@@ -235,3 +235,86 @@ describe('WASM String Key Hash Maps', () => {
     assert.equal(result, 99);
   });
 });
+
+describe('WASM Hash Map Iteration', () => {
+  it('for-in over keys(h) with integer keys', async () => {
+    const result = await compileAndRun(`
+      let h = {1: 10, 2: 20, 3: 30};
+      let sum = 0;
+      for (k in keys(h)) {
+        sum = sum + h[k];
+      }
+      sum
+    `);
+    assert.equal(result, 60);
+  });
+
+  it('for-in over keys(h) with string keys', async () => {
+    const result = await compileAndRun(`
+      let h = {"a": 1, "b": 2, "c": 3};
+      let sum = 0;
+      for (k in keys(h)) {
+        sum = sum + h[k];
+      }
+      sum
+    `);
+    assert.equal(result, 6);
+  });
+
+  it('for-in over values(h)', async () => {
+    const result = await compileAndRun(`
+      let h = {"x": 10, "y": 20, "z": 30};
+      let sum = 0;
+      for (v in values(h)) {
+        sum = sum + v;
+      }
+      sum
+    `);
+    assert.equal(result, 60);
+  });
+
+  it('keys() count matches size', async () => {
+    const result = await compileAndRun(`
+      let h = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5};
+      len(keys(h))
+    `);
+    assert.equal(result, 5);
+  });
+
+  it('keys() on empty hash', async () => {
+    const result = await compileAndRun(`
+      let h = {};
+      len(keys(h))
+    `);
+    assert.equal(result, 0);
+  });
+
+  it('for-in with hash modification in loop body', async () => {
+    // Build a new hash from an existing one
+    const result = await compileAndRun(`
+      let src = {1: 10, 2: 20, 3: 30};
+      let sum = 0;
+      for (k in keys(src)) {
+        sum = sum + k;
+      }
+      sum
+    `);
+    // keys are 1, 2, 3 — sum of keys = 6
+    assert.equal(result, 6);
+  });
+
+  it('for-in with many entries (post-resize)', async () => {
+    const result = await compileAndRun(`
+      let h = {};
+      h["a"] = 1; h["b"] = 2; h["c"] = 3; h["d"] = 4;
+      h["e"] = 5; h["f"] = 6; h["g"] = 7; h["h"] = 8;
+      h["i"] = 9; h["j"] = 10;
+      let sum = 0;
+      for (v in values(h)) {
+        sum = sum + v;
+      }
+      sum
+    `);
+    assert.equal(result, 55);
+  });
+});

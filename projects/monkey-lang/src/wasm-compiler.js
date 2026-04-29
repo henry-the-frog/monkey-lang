@@ -4849,8 +4849,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         if (hashPtr < 16) return writeArray([]);
         const tag = view.getInt32(hashPtr, true);
         if (tag !== TAG_HASH) return writeArray([]);
-        const numEntries = view.getInt32(hashPtr + 4, true);
-        const capacity = view.getInt32(hashPtr + 8, true);
+        const capacity = view.getInt32(hashPtr + 4, true);
         const entriesPtr = view.getInt32(hashPtr + 12, true);
         const keys = [];
         for (let i = 0; i < capacity; i++) {
@@ -4869,8 +4868,7 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
         if (hashPtr < 16) return writeArray([]);
         const tag = view.getInt32(hashPtr, true);
         if (tag !== TAG_HASH) return writeArray([]);
-        const numEntries = view.getInt32(hashPtr + 4, true);
-        const capacity = view.getInt32(hashPtr + 8, true);
+        const capacity = view.getInt32(hashPtr + 4, true);
         const entriesPtr = view.getInt32(hashPtr + 12, true);
         const vals = [];
         for (let i = 0; i < capacity; i++) {
