@@ -582,3 +582,39 @@ describe('WASM strings — intToString', () => {
     assert.equal(await run('len(intToString(12345))'), 5);
   });
 });
+
+describe('WASM strings — ordering comparison (< > <= >=)', () => {
+  it('less than', async () => {
+    assert.equal(await run('"abc" < "abd"'), 1);
+    assert.equal(await run('"abd" < "abc"'), 0);
+  });
+
+  it('greater than', async () => {
+    assert.equal(await run('"b" > "a"'), 1);
+    assert.equal(await run('"a" > "b"'), 0);
+  });
+
+  it('less than or equal', async () => {
+    assert.equal(await run('"abc" <= "abc"'), 1);
+    assert.equal(await run('"abc" <= "abd"'), 1);
+    assert.equal(await run('"abd" <= "abc"'), 0);
+  });
+
+  it('greater than or equal', async () => {
+    assert.equal(await run('"abc" >= "abc"'), 1);
+    assert.equal(await run('"abd" >= "abc"'), 1);
+    assert.equal(await run('"abc" >= "abd"'), 0);
+  });
+
+  it('shorter string is less', async () => {
+    assert.equal(await run('"ab" < "abc"'), 1);
+  });
+
+  it('string comparison with variables', async () => {
+    assert.equal(await run(`
+      let a = "hello";
+      let b = "world";
+      a < b
+    `), 1);
+  });
+});
