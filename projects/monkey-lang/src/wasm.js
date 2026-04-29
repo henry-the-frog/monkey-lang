@@ -330,6 +330,58 @@ export class FuncBodyBuilder {
   return_() { return this.emit(Op.return); }
   drop() { return this.emit(Op.drop); }
 
+  // === GC Instructions ===
+  
+  // Struct operations
+  structNew(typeIdx) {
+    return this.emit(GcOp.prefix, GcOp.struct_new, ...encodeULEB128(typeIdx));
+  }
+  structNewDefault(typeIdx) {
+    return this.emit(GcOp.prefix, GcOp.struct_new_default, ...encodeULEB128(typeIdx));
+  }
+  structGet(typeIdx, fieldIdx) {
+    return this.emit(GcOp.prefix, GcOp.struct_get, ...encodeULEB128(typeIdx), ...encodeULEB128(fieldIdx));
+  }
+  structSet(typeIdx, fieldIdx) {
+    return this.emit(GcOp.prefix, GcOp.struct_set, ...encodeULEB128(typeIdx), ...encodeULEB128(fieldIdx));
+  }
+
+  // Array operations
+  arrayNew(typeIdx) {
+    return this.emit(GcOp.prefix, GcOp.array_new, ...encodeULEB128(typeIdx));
+  }
+  arrayNewDefault(typeIdx) {
+    return this.emit(GcOp.prefix, GcOp.array_new_default, ...encodeULEB128(typeIdx));
+  }
+  arrayNewFixed(typeIdx, length) {
+    return this.emit(GcOp.prefix, GcOp.array_new_fixed, ...encodeULEB128(typeIdx), ...encodeULEB128(length));
+  }
+  arrayGet(typeIdx) {
+    return this.emit(GcOp.prefix, GcOp.array_get, ...encodeULEB128(typeIdx));
+  }
+  arraySet(typeIdx) {
+    return this.emit(GcOp.prefix, GcOp.array_set, ...encodeULEB128(typeIdx));
+  }
+  arrayLen() {
+    return this.emit(GcOp.prefix, GcOp.array_len);
+  }
+
+  // i31ref operations
+  refI31() { return this.emit(GcOp.prefix, GcOp.ref_i31); }
+  i31GetS() { return this.emit(GcOp.prefix, GcOp.i31_get_s); }
+  i31GetU() { return this.emit(GcOp.prefix, GcOp.i31_get_u); }
+
+  // Ref cast/test
+  refCast(heapType) {
+    return this.emit(GcOp.prefix, GcOp.ref_cast, ...encodeULEB128(heapType));
+  }
+  refCastNull(heapType) {
+    return this.emit(GcOp.prefix, GcOp.ref_cast_null, ...encodeULEB128(heapType));
+  }
+  refTest(heapType) {
+    return this.emit(GcOp.prefix, GcOp.ref_test, ...encodeULEB128(heapType));
+  }
+
   // Memory helpers (align=2 for i32, align=3 for f64)
   i32Load(offset = 0, align = 2) {
     return this.emit(Op.i32_load, ...encodeULEB128(align), ...encodeULEB128(offset));
