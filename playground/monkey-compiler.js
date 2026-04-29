@@ -2654,6 +2654,8 @@ var WasmCompiler = class {
     this._hashNewFuncIdx = null;
     this._hashGetFuncIdx = null;
     this._hashSetFuncIdx = null;
+    this._loopDepth = 0;
+    this._blockDepthInLoop = 0;
     this._needsMemory = false;
     this._anonCounter = 0;
     this._anonMap = /* @__PURE__ */ new Map();
@@ -4439,6 +4441,10 @@ var WasmCompiler = class {
           body.push(WasmOp.local_get, ...encodeULEB128(localIdx));
         }
       }
+    } else if (stmt instanceof BreakStatement) {
+      body.push(WasmOp.br, ...encodeULEB128(this._blockDepthInLoop + 1));
+    } else if (stmt instanceof ContinueStatement) {
+      body.push(WasmOp.br, ...encodeULEB128(this._blockDepthInLoop));
     } else if (stmt instanceof SetStatement) {
       if (stmt.name instanceof IndexExpression) {
         const leftType = this._inferExprType(stmt.name.left);
