@@ -101,3 +101,65 @@ describe('WASM hash maps — in expressions', () => {
     `), 9 + 49 + 81);
   });
 });
+
+describe('WASM hash maps — stress', () => {
+  it('overwrite same key many times', async () => {
+    assert.equal(await run(`
+      let m = {};
+      let i = 0;
+      while (i < 5) {
+        set m[1] = i;
+        set i = i + 1
+      };
+      m[1]
+    `), 4);
+  });
+
+  it('hash as function argument', async () => {
+    assert.equal(await run(`
+      let get = fn(h, k) { h[k] };
+      let m = {10: 100, 20: 200};
+      get(m, 10) + get(m, 20)
+    `), 300);
+  });
+
+  it('hash returned from function', async () => {
+    assert.equal(await run(`
+      let make = fn() {
+        let h = {1: 10, 2: 20};
+        h
+      };
+      let m = make();
+      m[1] + m[2]
+    `), 30);
+  });
+
+  it('hash with computed keys', async () => {
+    assert.equal(await run(`
+      let m = {};
+      let base = 100;
+      set m[base + 1] = 1;
+      set m[base + 2] = 2;
+      m[101] + m[102]
+    `), 3);
+  });
+
+  it('multiple hashes', async () => {
+    assert.equal(await run(`
+      let a = {1: 10};
+      let b = {1: 20};
+      a[1] + b[1]
+    `), 30);
+  });
+
+  it('frequency counter pattern', async () => {
+    assert.equal(await run(`
+      let data = [1, 2, 1, 3, 2, 1];
+      let freq = {};
+      for (x in data) {
+        set freq[x] = freq[x] + 1
+      };
+      freq[1]
+    `), 3);
+  });
+});
