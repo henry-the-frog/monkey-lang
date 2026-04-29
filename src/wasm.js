@@ -140,6 +140,7 @@ const WasmOp = {
   i32_or: 0x72,
   i32_shl: 0x74,
   i32_shr_s: 0x75,
+  i32_shr_u: 0x76,
 
   // i64 operations
   i64_const: 0x42,
