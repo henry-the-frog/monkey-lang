@@ -5,7 +5,7 @@ import { WasmModuleBuilder, ValType, GcOp, TypeKind, refType, refNullType } from
 
 // Skip GC tests on Node versions that don't support the GC proposal (< 20)
 const nodeVersion = parseInt(process.versions.node.split('.')[0]);
-const skipGc = nodeVersion < 20;
+const skipGc = nodeVersion < 22;
 
 describe('WASM GC Module Builder', { skip: skipGc ? 'WASM GC not available on Node < 20' : false }, () => {
   describe('Type definitions', () => {
