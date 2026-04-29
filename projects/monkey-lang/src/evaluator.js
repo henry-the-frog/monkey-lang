@@ -1231,6 +1231,12 @@ function evalForInExpression(node, env) {
     elements = iterable.value.split('').map(c => new MonkeyString(c));
   } else if (iterable instanceof MonkeyGenerator) {
     elements = iterable.values;
+  } else if (iterable instanceof MonkeyHash) {
+    // Iterate over hash keys
+    elements = [];
+    for (const [, { key }] of iterable.pairs) {
+      elements.push(key);
+    }
   } else if (iterable instanceof MonkeyInstance) {
     // Check for __iter__ protocol
     const iterFn = iterable.get('__iter__');

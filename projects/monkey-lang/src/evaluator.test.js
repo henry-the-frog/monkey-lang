@@ -252,6 +252,18 @@ describe('New Language Features (Evaluator)', () => {
   it('for-in array', () => {
     assert.equal(testEval('let s = 0; for (x in [1,2,3]) { s += x; }; s').value, 6);
   });
+  it('for-in hash iterates keys', () => {
+    const result = testEval('let h = {"a": 1, "b": 2, "c": 3}; let sum = 0; for (k in h) { sum = sum + h[k] }; sum');
+    assert.equal(result.value, 6);
+  });
+  it('for-in hash with integer keys', () => {
+    const result = testEval('let h = {1: 10, 2: 20, 3: 30}; let sum = 0; for (k in h) { sum = sum + h[k] }; sum');
+    assert.equal(result.value, 60);
+  });
+  it('for-in empty hash', () => {
+    const result = testEval('let count = 0; for (k in {}) { count = count + 1 }; count');
+    assert.equal(result.value, 0);
+  });
   it('break in while', () => {
     assert.equal(testEval('let i = 0; while (true) { if (i == 5) { break; } i++; }; i').value, 5);
   });
