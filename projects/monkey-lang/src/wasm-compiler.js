@@ -6123,6 +6123,23 @@ export function formatWasmValue(value, dataView) {
           return '[' + elems.join(', ') + ']';
         }
       }
+      if (tag === TAG_HASH) {
+        const capacity = dataView.getInt32(value + 4, true);
+        const entriesPtr = dataView.getInt32(value + 12, true);
+        const entries = [];
+        for (let i = 0; i < capacity && entries.length < 50; i++) {
+          const entryAddr = entriesPtr + i * 12;
+          const status = dataView.getInt32(entryAddr, true);
+          if (status === 1) {
+            const k = dataView.getInt32(entryAddr + 4, true);
+            const v = dataView.getInt32(entryAddr + 8, true);
+            const keyStr = formatWasmValue(k, dataView);
+            const valStr = formatWasmValue(v, dataView);
+            entries.push(`${keyStr}: ${valStr}`);
+          }
+        }
+        return '{' + entries.join(', ') + '}';
+      }
     } catch (e) {
       // Not a valid pointer, treat as integer
     }
