@@ -138,6 +138,7 @@ const WasmOp = {
   i32_rem_u: 0x70,
   i32_and: 0x71,
   i32_or: 0x72,
+  i32_xor: 0x73,
   i32_shl: 0x74,
   i32_shr_s: 0x75,
   i32_shr_u: 0x76,

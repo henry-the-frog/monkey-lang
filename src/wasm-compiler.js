@@ -61,6 +61,9 @@ class WasmCompiler {
     this._hashNewFuncIdx = null; // lazily added __hash_new function
     this._hashGetFuncIdx = null; // lazily added __hash_get function
     this._hashSetFuncIdx = null; // lazily added __hash_set function
+    this._hashFnv1aFuncIdx = null; // lazily added __hash_fnv1a function
+    this._hashSetStrFuncIdx = null; // lazily added __hash_set_str function
+    this._hashGetStrFuncIdx = null; // lazily added __hash_get_str function
     this._loopDepth = 0; // nesting depth for break/continue
     this._blockDepthInLoop = 0; // block nesting depth within current loop
     this._needsMemory = false; // set when arrays or dynamic allocation needed
@@ -119,6 +122,9 @@ class WasmCompiler {
       this._getHashNewFunc(); // adds __hash_new before any user functions
       this._getHashSetFunc(); // adds __hash_set before any user functions
       this._getHashGetFunc(); // adds __hash_get before any user functions
+      this._getHashFnv1aFunc(); // adds __hash_fnv1a before any user functions
+      this._getHashSetStrFunc(); // adds __hash_set_str before any user functions
+      this._getHashGetStrFunc(); // adds __hash_get_str before any user functions
     }
 
     // Pass 0.5: Process top-level let bindings as globals (non-function values)
@@ -1094,6 +1100,360 @@ class WasmCompiler {
     return funcIdx;
   }
 
+  // __hash_fnv1a(strPtr: i32) -> hash: i32
+  // FNV-1a hash of string bytes (reads length-prefixed string)
+  _getHashFnv1aFunc() {
+    if (this._hashFnv1aFuncIdx !== null) return this._hashFnv1aFuncIdx;
+    
+    const typeIdx = this.module.addType([WASM_TYPE.I32], [WASM_TYPE.I32]);
+    
+    // Params: 0=strPtr. Locals: 1=len, 2=i, 3=hash
+    const body = [
+      // len = load(strPtr)
+      WasmOp.local_get, 0,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 1,
+      
+      // hash = 2166136261 (FNV offset basis)
+      WasmOp.i32_const, ...encodeSLEB128(0x811C9DC5 | 0),
+      WasmOp.local_set, 3,
+      
+      // i = 0
+      WasmOp.i32_const, 0,
+      WasmOp.local_set, 2,
+      
+      // Loop over bytes
+      WasmOp.block, 0x40,
+      WasmOp.loop, 0x40,
+        // if i >= len, break
+        WasmOp.local_get, 2,
+        WasmOp.local_get, 1,
+        WasmOp.i32_ge_u,
+        WasmOp.br_if, 1,
+        
+        // hash = hash XOR byte[i]
+        WasmOp.local_get, 3,
+        WasmOp.local_get, 0,
+        WasmOp.i32_const, 4,
+        WasmOp.i32_add,
+        WasmOp.local_get, 2,
+        WasmOp.i32_add,
+        WasmOp.i32_load8_u, 0, 0,
+        WasmOp.i32_xor,
+        
+        // hash = hash * 16777619 (FNV prime)
+        WasmOp.i32_const, ...encodeSLEB128(0x01000193),
+        WasmOp.i32_mul,
+        WasmOp.local_set, 3,
+        
+        // i++
+        WasmOp.local_get, 2,
+        WasmOp.i32_const, 1,
+        WasmOp.i32_add,
+        WasmOp.local_set, 2,
+        WasmOp.br, 0,
+      WasmOp.end,
+      WasmOp.end,
+      
+      // return hash
+      WasmOp.local_get, 3,
+    ];
+    
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [
+      { count: 3, type: WASM_TYPE.I32 } // len, i, hash
+    ], body);
+    this._hashFnv1aFuncIdx = funcIdx;
+    return funcIdx;
+  }
+
+  // __hash_set_str(map_ptr: i32, key_ptr: i32, value: i32)
+  // String-key hash set: uses FNV-1a for hashing and __str_eq for comparison
+  _getHashSetStrFunc() {
+    if (this._hashSetStrFuncIdx !== null) return this._hashSetStrFuncIdx;
+    
+    const fnv1aIdx = this._getHashFnv1aFunc();
+    const strEqIdx = this._getStrEqFunc();
+    const typeIdx = this.module.addType([WASM_TYPE.I32, WASM_TYPE.I32, WASM_TYPE.I32], []);
+    
+    // Params: 0=mapPtr, 1=keyPtr, 2=value
+    // Locals: 3=capacity, 4=hash, 5=idx, 6=entryPtr, 7=occupied
+    const body = [
+      // capacity = load(mapPtr)
+      WasmOp.local_get, 0,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 3,
+      
+      // hash = __hash_fnv1a(keyPtr)
+      WasmOp.local_get, 1,
+      WasmOp.call, ...encodeULEB128(fnv1aIdx),
+      WasmOp.local_set, 4,
+      
+      // idx = (hash >>> 16 ^ hash) & (capacity - 1)
+      WasmOp.local_get, 4,
+      WasmOp.i32_const, 16,
+      WasmOp.i32_shr_u,
+      WasmOp.local_get, 4,
+      WasmOp.i32_xor,
+      WasmOp.local_get, 3,
+      WasmOp.i32_const, 1,
+      WasmOp.i32_sub,
+      WasmOp.i32_and,
+      WasmOp.local_set, 5,
+      
+      // Linear probe loop
+      WasmOp.block, 0x40,
+      WasmOp.loop, 0x40,
+        // entryPtr = mapPtr + 8 + idx * 16
+        WasmOp.local_get, 0,
+        WasmOp.i32_const, 8,
+        WasmOp.i32_add,
+        WasmOp.local_get, 5,
+        WasmOp.i32_const, 16,
+        WasmOp.i32_mul,
+        WasmOp.i32_add,
+        WasmOp.local_set, 6,
+        
+        // occupied = load(entryPtr)
+        WasmOp.local_get, 6,
+        WasmOp.i32_load, 2, 0,
+        WasmOp.local_set, 7,
+        
+        // If empty (occupied == 0): insert here
+        WasmOp.local_get, 7,
+        WasmOp.i32_eqz,
+        WasmOp.if_, 0x40,
+          // Set occupied = 1
+          WasmOp.local_get, 6,
+          WasmOp.i32_const, 1,
+          WasmOp.i32_store, 2, 0,
+          // Set key (store string pointer)
+          WasmOp.local_get, 6,
+          WasmOp.local_get, 1,
+          WasmOp.i32_store, 2, 4,
+          // Set value
+          WasmOp.local_get, 6,
+          WasmOp.local_get, 2,
+          WasmOp.i32_store, 2, 8,
+          // Increment size
+          WasmOp.local_get, 0,
+          WasmOp.local_get, 0,
+          WasmOp.i32_load, 2, 4,
+          WasmOp.i32_const, 1,
+          WasmOp.i32_add,
+          WasmOp.i32_store, 2, 4,
+          WasmOp.return_,
+        WasmOp.end,
+        
+        // If occupied and key matches via __str_eq: update value
+        WasmOp.local_get, 7,
+        WasmOp.i32_const, 1,
+        WasmOp.i32_eq,
+        WasmOp.if_, 0x40,
+          WasmOp.local_get, 6,
+          WasmOp.i32_load, 2, 4, // stored key ptr
+          WasmOp.local_get, 1, // search key ptr
+          WasmOp.call, ...encodeULEB128(strEqIdx),
+          WasmOp.if_, 0x40,
+            WasmOp.local_get, 6,
+            WasmOp.local_get, 2,
+            WasmOp.i32_store, 2, 8,
+            WasmOp.return_,
+          WasmOp.end,
+        WasmOp.end,
+        
+        // Else: linear probe — idx = (idx + 1) & (capacity - 1)
+        WasmOp.local_get, 5,
+        WasmOp.i32_const, 1,
+        WasmOp.i32_add,
+        WasmOp.local_get, 3,
+        WasmOp.i32_const, 1,
+        WasmOp.i32_sub,
+        WasmOp.i32_and,
+        WasmOp.local_set, 5,
+        WasmOp.br, 0,
+      WasmOp.end,
+      WasmOp.end,
+    ];
+    
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [
+      { count: 5, type: WASM_TYPE.I32 }
+    ], body);
+    this._hashSetStrFuncIdx = funcIdx;
+    return funcIdx;
+  }
+
+  // __hash_get_str(map_ptr: i32, key_ptr: i32) -> value: i32
+  // String-key hash get: uses FNV-1a for hashing and __str_eq for comparison
+  _getHashGetStrFunc() {
+    if (this._hashGetStrFuncIdx !== null) return this._hashGetStrFuncIdx;
+    
+    const fnv1aIdx = this._getHashFnv1aFunc();
+    const strEqIdx = this._getStrEqFunc();
+    const typeIdx = this.module.addType([WASM_TYPE.I32, WASM_TYPE.I32], [WASM_TYPE.I32]);
+    
+    // Params: 0=mapPtr, 1=keyPtr
+    // Locals: 2=capacity, 3=hash, 4=idx, 5=entryPtr, 6=occupied
+    const body = [
+      // capacity = load(mapPtr)
+      WasmOp.local_get, 0,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 2,
+      
+      // hash = __hash_fnv1a(keyPtr)
+      WasmOp.local_get, 1,
+      WasmOp.call, ...encodeULEB128(fnv1aIdx),
+      WasmOp.local_set, 3,
+      
+      // idx = (hash >>> 16 ^ hash) & (capacity - 1)
+      WasmOp.local_get, 3,
+      WasmOp.i32_const, 16,
+      WasmOp.i32_shr_u,
+      WasmOp.local_get, 3,
+      WasmOp.i32_xor,
+      WasmOp.local_get, 2,
+      WasmOp.i32_const, 1,
+      WasmOp.i32_sub,
+      WasmOp.i32_and,
+      WasmOp.local_set, 4,
+      
+      // Linear probe loop
+      WasmOp.block, 0x40,
+      WasmOp.loop, 0x40,
+        // entryPtr = mapPtr + 8 + idx * 16
+        WasmOp.local_get, 0,
+        WasmOp.i32_const, 8,
+        WasmOp.i32_add,
+        WasmOp.local_get, 4,
+        WasmOp.i32_const, 16,
+        WasmOp.i32_mul,
+        WasmOp.i32_add,
+        WasmOp.local_set, 5,
+        
+        // occupied = load(entryPtr)
+        WasmOp.local_get, 5,
+        WasmOp.i32_load, 2, 0,
+        WasmOp.local_set, 6,
+        
+        // If empty: key not found, return 0
+        WasmOp.local_get, 6,
+        WasmOp.i32_eqz,
+        WasmOp.if_, 0x40,
+          WasmOp.i32_const, 0,
+          WasmOp.return_,
+        WasmOp.end,
+        
+        // If occupied and key matches via __str_eq: return value
+        WasmOp.local_get, 6,
+        WasmOp.i32_const, 1,
+        WasmOp.i32_eq,
+        WasmOp.if_, 0x40,
+          WasmOp.local_get, 5,
+          WasmOp.i32_load, 2, 4, // stored key ptr
+          WasmOp.local_get, 1, // search key ptr
+          WasmOp.call, ...encodeULEB128(strEqIdx),
+          WasmOp.if_, WASM_TYPE.I32,
+            WasmOp.local_get, 5,
+            WasmOp.i32_load, 2, 8,
+          WasmOp.else_,
+            // Not a match, fall through to probe
+            WasmOp.i32_const, 0, // dummy value, will be dropped
+          WasmOp.end,
+          // If str_eq returned true, we got the value — but we need to check
+          // Actually let me restructure: use br_if pattern instead
+        WasmOp.end,
+    ];
+    // Hmm, the if/else approach is cleaner but tricky with the return.
+    // Let me redo with a simpler structure.
+    body.length = 0;
+    
+    body.push(
+      // capacity = load(mapPtr)
+      WasmOp.local_get, 0,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 2,
+      
+      // hash = __hash_fnv1a(keyPtr)
+      WasmOp.local_get, 1,
+      WasmOp.call, ...encodeULEB128(fnv1aIdx),
+      WasmOp.local_set, 3,
+      
+      // idx = (hash >>> 16 ^ hash) & (capacity - 1)
+      WasmOp.local_get, 3,
+      WasmOp.i32_const, 16,
+      WasmOp.i32_shr_u,
+      WasmOp.local_get, 3,
+      WasmOp.i32_xor,
+      WasmOp.local_get, 2,
+      WasmOp.i32_const, 1,
+      WasmOp.i32_sub,
+      WasmOp.i32_and,
+      WasmOp.local_set, 4,
+      
+      // Linear probe loop
+      WasmOp.block, 0x40,
+      WasmOp.loop, 0x40,
+        // entryPtr = mapPtr + 8 + idx * 16
+        WasmOp.local_get, 0,
+        WasmOp.i32_const, 8,
+        WasmOp.i32_add,
+        WasmOp.local_get, 4,
+        WasmOp.i32_const, 16,
+        WasmOp.i32_mul,
+        WasmOp.i32_add,
+        WasmOp.local_set, 5,
+        
+        // occupied = load(entryPtr)
+        WasmOp.local_get, 5,
+        WasmOp.i32_load, 2, 0,
+        WasmOp.local_set, 6,
+        
+        // If empty: key not found, return 0
+        WasmOp.local_get, 6,
+        WasmOp.i32_eqz,
+        WasmOp.if_, 0x40,
+          WasmOp.i32_const, 0,
+          WasmOp.return_,
+        WasmOp.end,
+        
+        // If occupied: check key match via __str_eq
+        WasmOp.local_get, 5,
+        WasmOp.i32_load, 2, 4, // stored key ptr
+        WasmOp.local_get, 1, // search key ptr
+        WasmOp.call, ...encodeULEB128(strEqIdx),
+        WasmOp.if_, 0x40,
+          // Key matches — return value
+          WasmOp.local_get, 5,
+          WasmOp.i32_load, 2, 8,
+          WasmOp.return_,
+        WasmOp.end,
+        
+        // Linear probe: idx = (idx + 1) & (capacity - 1)
+        WasmOp.local_get, 4,
+        WasmOp.i32_const, 1,
+        WasmOp.i32_add,
+        WasmOp.local_get, 2,
+        WasmOp.i32_const, 1,
+        WasmOp.i32_sub,
+        WasmOp.i32_and,
+        WasmOp.local_set, 4,
+        WasmOp.br, 0,
+      WasmOp.end,
+      WasmOp.end,
+      
+      // Should never reach here (table is never 100% full), but return 0
+      WasmOp.i32_const, 0,
+    );
+    
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [
+      { count: 5, type: WASM_TYPE.I32 }
+    ], body);
+    this._hashGetStrFuncIdx = funcIdx;
+    return funcIdx;
+  }
+
   // Ensure memory exists and heap pointer global is initialized
   _ensureMemory() {
     if (this._needsMemory) return;
@@ -1321,7 +1681,14 @@ class WasmCompiler {
     if (expr instanceof ast.BooleanLiteral) return 'int';
     if (expr instanceof ast.ArrayLiteral) return 'array';
     if (expr instanceof ast.ArrayComprehension) return 'array';
-    if (expr instanceof ast.HashLiteral) return 'hash';
+    if (expr instanceof ast.HashLiteral) {
+      // Check first key to determine hash type
+      for (const [keyExpr] of expr.pairs) {
+        if (this._inferExprType(keyExpr) === 'string') return 'hash_str';
+        break;
+      }
+      return 'hash';
+    }
     if (expr instanceof ast.Identifier) {
       // Check local type map first, then global
       const localType = this.currentVarTypes?.get(expr.value);
@@ -1734,9 +2101,9 @@ class WasmCompiler {
       if (stmt.name instanceof ast.IndexExpression) {
         // Detect hash map vs array
         const leftType = this._inferExprType(stmt.name.left);
-        if (leftType === 'hash') {
-          // Hash set: __hash_set(map, key, value)
-          const hashSetIdx = this._getHashSetFunc();
+        if (leftType === 'hash' || leftType === 'hash_str') {
+          // Hash set: __hash_set or __hash_set_str(map, key, value)
+          const hashSetIdx = leftType === 'hash_str' ? this._getHashSetStrFunc() : this._getHashSetFunc();
           this._compileExpr(stmt.name.left, body);
           if (this.useI64) body.push(WasmOp.i32_wrap_i64);
           this._compileExpr(stmt.name.index, body);
@@ -3780,7 +4147,14 @@ class WasmCompiler {
     // Allocates a hash map, inserts all pairs
     if (expr instanceof ast.HashLiteral) {
       const hashNewIdx = this._getHashNewFunc();
-      const hashSetIdx = this._getHashSetFunc();
+      
+      // Detect string keys from first key
+      let useStringKeys = false;
+      for (const [keyExpr] of expr.pairs) {
+        if (this._inferExprType(keyExpr) === 'string') useStringKeys = true;
+        break;
+      }
+      const hashSetIdx = useStringKeys ? this._getHashSetStrFunc() : this._getHashSetFunc();
       
       // Determine capacity: next power of 2 >= max(16, pairs.size * 2)
       let cap = 16;
@@ -3859,9 +4233,9 @@ class WasmCompiler {
     if (expr instanceof ast.IndexExpression) {
       // Detect hash map vs array
       const leftType = this._inferExprType(expr.left);
-      if (leftType === 'hash') {
-        // Hash map access: __hash_get(map, key)
-        const hashGetIdx = this._getHashGetFunc();
+      if (leftType === 'hash' || leftType === 'hash_str') {
+        // Hash map access: __hash_get or __hash_get_str(map, key)
+        const hashGetIdx = leftType === 'hash_str' ? this._getHashGetStrFunc() : this._getHashGetFunc();
         this._compileExpr(expr.left, body);
         if (this.useI64) body.push(WasmOp.i32_wrap_i64);
         this._compileExpr(expr.index, body);

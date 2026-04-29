@@ -163,3 +163,68 @@ describe('WASM hash maps — stress', () => {
     `), 3);
   });
 });
+
+// String key tests
+describe('WASM hash maps — string keys', () => {
+  it('create and access with string keys', async () => {
+    assert.equal(await run(`
+      let m = {"foo": 10, "bar": 20, "baz": 30};
+      m["foo"] + m["bar"] + m["baz"]
+    `), 60);
+  });
+
+  it('single string key entry', async () => {
+    assert.equal(await run(`
+      let m = {"hello": 42};
+      m["hello"]
+    `), 42);
+  });
+
+  it('string key not found returns 0', async () => {
+    assert.equal(await run(`
+      let m = {"foo": 10};
+      m["missing"]
+    `), 0);
+  });
+
+  it('string key update existing', async () => {
+    assert.equal(await run(`
+      let m = {"x": 1};
+      set m["x"] = 99;
+      m["x"]
+    `), 99);
+  });
+
+  it('string key add new after creation', async () => {
+    assert.equal(await run(`
+      let m = {"a": 1};
+      set m["b"] = 2;
+      m["a"] + m["b"]
+    `), 3);
+  });
+
+  it('many string keys', async () => {
+    assert.equal(await run(`
+      let m = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5};
+      m["one"] + m["two"] + m["three"] + m["four"] + m["five"]
+    `), 15);
+  });
+
+  it('string keys with similar prefixes', async () => {
+    assert.equal(await run(`
+      let m = {"abc": 10, "abd": 20, "abe": 30};
+      m["abd"]
+    `), 20);
+  });
+
+  it('string key frequency counter', async () => {
+    assert.equal(await run(`
+      let counts = {"cat": 0, "dog": 0};
+      set counts["cat"] = counts["cat"] + 1;
+      set counts["cat"] = counts["cat"] + 1;
+      set counts["cat"] = counts["cat"] + 1;
+      set counts["dog"] = counts["dog"] + 1;
+      counts["cat"]
+    `), 3);
+  });
+});
