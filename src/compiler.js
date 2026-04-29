@@ -1007,25 +1007,30 @@ export class Compiler {
       // Set mutates an existing variable or property
       if (node.name instanceof AST.IndexExpression) {
         // set obj.prop = value  OR  set obj[idx] = value
-        // Compile as: OpSetIndex(obj, key, value)
-        this.compile(node.name.left);  // the object
-        this.compile(node.name.index); // the key/index
-        this.compile(node.value);      // the new value
+        this.compile(node.name.left);
+        this.compile(node.name.index);
+        this.compile(node.value);
         this.emit(Opcodes.OpSetIndex);
       } else {
         // Simple variable reassignment: set x = value
         const sym = this.symbolTable.resolve(node.name.value);
         if (!sym) throw new Error(`undefined variable: ${node.name.value}`);
         if (sym.isConst) throw new Error(`Cannot reassign const binding '${node.name.value}'`);
-        this.compile(node.value);
-        if (sym.scope === SymbolScopes.GLOBAL) {
-          this.emit(Opcodes.OpSetGlobal, sym.index);
-        } else if (sym.scope === SymbolScopes.LOCAL) {
-          this.emit(Opcodes.OpSetLocal, sym.index);
-        } else if (sym.scope === SymbolScopes.FREE) {
-          this.emit(Opcodes.OpSetFree, sym.index);
+
+        // Superinstruction: set x = x + <int_literal>  (self-increment pattern)
+        if (this._canEmitIntegerAddSet(node, sym)) {
+          this._emitIntegerAddSet(node, sym);
         } else {
-          throw new Error(`cannot set ${sym.scope} variable: ${node.name.value}`);
+          this.compile(node.value);
+          if (sym.scope === SymbolScopes.GLOBAL) {
+            this.emit(Opcodes.OpSetGlobal, sym.index);
+          } else if (sym.scope === SymbolScopes.LOCAL) {
+            this.emit(Opcodes.OpSetLocal, sym.index);
+          } else if (sym.scope === SymbolScopes.FREE) {
+            this.emit(Opcodes.OpSetFree, sym.index);
+          } else {
+            throw new Error(`cannot set ${sym.scope} variable: ${node.name.value}`);
+          }
         }
       }
     } else if (node instanceof AST.Identifier) {
@@ -1627,6 +1632,45 @@ export class Compiler {
   addConstant(obj) {
     this.constants.push(obj);
     return this.constants.length - 1;
+  }
+
+  /**
+   * Check if a SetStatement can be compiled as a superinstruction.
+   * Pattern: set x = x + <integer_literal> where x is a local variable.
+   * Only safe when we KNOW both sides are integers (self-add with constant).
+   */
+  _canEmitIntegerAddSet(node, sym) {
+    if (sym.scope !== SymbolScopes.LOCAL && sym.scope !== SymbolScopes.GLOBAL) return false;
+    const val = node.value;
+    if (!(val instanceof AST.InfixExpression) || val.operator !== '+') return false;
+    // Check: left is the same variable being set
+    if (!(val.left instanceof AST.Identifier) || val.left.value !== node.name.value) return false;
+    // Check: right is an integer literal
+    if (!(val.right instanceof AST.IntegerLiteral)) return false;
+    return true;
+  }
+
+  /**
+   * Emit a superinstruction for set x = x + <int_literal>.
+   * Special case: if the constant is 1, emit OpIncrementLocal (saves 3 dispatches).
+   * Otherwise: emit OpGetLocal + OpConstant + OpAddSetLocal (saves 1 dispatch).
+   */
+  _emitIntegerAddSet(node, sym) {
+    const constVal = node.value.right.value;
+    
+    if (constVal === 1 && sym.scope === SymbolScopes.LOCAL) {
+      // set x = x + 1 → OpIncrementLocal(x)
+      this.emit(Opcodes.OpIncrementLocal, sym.index);
+    } else {
+      // set x = x + N → OpGetLocal(x), OpConstant(N), OpAddSetLocal(x)
+      this.loadSymbol(sym);
+      this.emit(Opcodes.OpConstant, this.addConstant(new MonkeyInteger(constVal)));
+      if (sym.scope === SymbolScopes.LOCAL) {
+        this.emit(Opcodes.OpAddSetLocal, sym.index);
+      } else {
+        this.emit(Opcodes.OpAddSetGlobal, sym.index);
+      }
+    }
   }
 
   emit(op, ...operands) {
