@@ -398,6 +398,10 @@ export class WasmCompiler {
     const hashMergeIdx = this.builder.addImport('env', '__hash_merge', [ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.hashMerge = hashMergeIdx;
 
+    // __range: create array [start, start+1, ..., end-1]
+    const rangeIdx = this.builder.addImport('env', '__range', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.range = rangeIdx;
+
     const containsIdx = this.builder.addImport('env', '__contains', [ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.contains = containsIdx;
 
@@ -2233,6 +2237,17 @@ export class WasmCompiler {
         this.compileNode(node.arguments[0]); // hash1
         this.compileNode(node.arguments[1]); // hash2
         this.currentBody.call(this._runtimeFuncs.hashMerge);
+        return;
+      }
+      if (name === 'range' && (node.arguments.length === 1 || node.arguments.length === 2)) {
+        if (node.arguments.length === 1) {
+          this.currentBody.i32Const(0); // start = 0
+          this.compileNode(node.arguments[0]); // end
+        } else {
+          this.compileNode(node.arguments[0]); // start
+          this.compileNode(node.arguments[1]); // end
+        }
+        this.currentBody.call(this._runtimeFuncs.range);
         return;
       }
       if (name === 'contains' && node.arguments.length === 2) {
@@ -5014,6 +5029,12 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
           idx = (idx + 1) & mask;
         }
         return 0;
+      },
+      __range(start, end) {
+        const len = Math.max(0, end - start);
+        const values = [];
+        for (let i = start; i < end; i++) values.push(i);
+        return writeArray(values);
       },
       __hash_merge(hashPtr1, hashPtr2) {
         // Merge two hash maps: create new hash with all entries from both.
