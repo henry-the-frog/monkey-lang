@@ -242,6 +242,16 @@ const builtins = new Map([
     if (hashKey === null) return newError('unusable as hash key: ' + key.type());
     return hash.pairs.has(hashKey) ? TRUE : FALSE;
   })],
+  ['merge', new MonkeyBuiltin((...args) => {
+    if (args.length !== 2 || args[0].type() !== OBJ.HASH || args[1].type() !== OBJ.HASH) {
+      return newError('merge requires two hash arguments');
+    }
+    const merged = new Map(args[0].pairs);
+    for (const [k, v] of args[1].pairs) {
+      merged.set(k, v);
+    }
+    return new MonkeyHash(merged);
+  })],
   ['sort', new MonkeyBuiltin((...args) => {
     if (args.length !== 1 || !(args[0] instanceof MonkeyArray)) return newError('sort requires one array argument');
     const sorted = [...args[0].elements].sort((a, b) => {

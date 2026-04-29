@@ -394,6 +394,10 @@ export class WasmCompiler {
     const hashHasIdx = this.builder.addImport('env', '__hash_has', [ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.hashHas = hashHasIdx;
 
+    // __hash_merge: merge two hash maps, returns new hash
+    const hashMergeIdx = this.builder.addImport('env', '__hash_merge', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.hashMerge = hashMergeIdx;
+
     const containsIdx = this.builder.addImport('env', '__contains', [ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.contains = containsIdx;
 
@@ -2223,6 +2227,12 @@ export class WasmCompiler {
         this.compileNode(node.arguments[0]); // hash
         this.compileNode(node.arguments[1]); // key
         this.currentBody.call(this._runtimeFuncs.hashHas);
+        return;
+      }
+      if (name === 'merge' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]); // hash1
+        this.compileNode(node.arguments[1]); // hash2
+        this.currentBody.call(this._runtimeFuncs.hashMerge);
         return;
       }
       if (name === 'contains' && node.arguments.length === 2) {
@@ -5004,6 +5014,135 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
           idx = (idx + 1) & mask;
         }
         return 0;
+      },
+      __hash_merge(hashPtr1, hashPtr2) {
+        // Merge two hash maps: create new hash with all entries from both.
+        const mem = memoryRef.memory;
+        if (!mem) return 0;
+        const view = new DataView(mem.buffer);
+        
+        // Create new hash map with generous capacity
+        const newHash = memoryRef.alloc(16);
+        const TAG_HASH_LOCAL = 4;
+        let newCap = 16;
+        let newEntries = memoryRef.alloc(newCap * 12);
+        new Uint8Array(mem.buffer, newEntries, newCap * 12).fill(0);
+        view.setInt32(newHash, TAG_HASH_LOCAL, true);
+        view.setInt32(newHash + 4, newCap, true);
+        view.setInt32(newHash + 8, 0, true);
+        view.setInt32(newHash + 12, newEntries, true);
+        
+        // Helper: insert key-value into newHash (handles resize)
+        const insertInto = (k, v) => {
+          // Check load factor
+          let size = view.getInt32(newHash + 8, true);
+          let cap = view.getInt32(newHash + 4, true);
+          if (size * 4 >= cap * 3 && memoryRef.alloc) {
+            // Resize
+            const nc = cap * 2;
+            const ne = memoryRef.alloc(nc * 12);
+            new Uint8Array(mem.buffer, ne, nc * 12).fill(0);
+            const oe = view.getInt32(newHash + 12, true);
+            for (let i = 0; i < cap; i++) {
+              const ea = oe + i * 12;
+              if (view.getInt32(ea, true) === 1) {
+                const ek = view.getInt32(ea + 4, true);
+                const ev = view.getInt32(ea + 8, true);
+                // Check if string key
+                let isStr = false;
+                try { isStr = ek > 0 && view.getInt32(ek, true) === TAG_STRING; } catch(e) {}
+                let h;
+                if (isStr) {
+                  const len = view.getInt32(ek + 4, true);
+                  h = 0x811c9dc5 | 0;
+                  for (let b = 0; b < len; b++) { h ^= view.getUint8(ek + 8 + b); h = Math.imul(h, 0x01000193); }
+                  h = h >>> 0;
+                } else {
+                  h = (Math.imul(ek, 0x9e3779b9) ^ (ek >>> 16)) >>> 0;
+                }
+                let idx = h & (nc - 1);
+                for (let p = 0; p < nc; p++) {
+                  const na = ne + idx * 12;
+                  if (view.getInt32(na, true) === 0) {
+                    view.setInt32(na, 1, true);
+                    view.setInt32(na + 4, ek, true);
+                    view.setInt32(na + 8, ev, true);
+                    break;
+                  }
+                  idx = (idx + 1) & (nc - 1);
+                }
+              }
+            }
+            view.setInt32(newHash + 4, nc, true);
+            view.setInt32(newHash + 12, ne, true);
+            cap = nc;
+          }
+          
+          // Insert k,v
+          const entriesPtr = view.getInt32(newHash + 12, true);
+          const mask = cap - 1;
+          let isStr = false;
+          try { isStr = k > 0 && view.getInt32(k, true) === TAG_STRING; } catch(e) {}
+          let h;
+          if (isStr) {
+            const len = view.getInt32(k + 4, true);
+            h = 0x811c9dc5 | 0;
+            for (let b = 0; b < len; b++) { h ^= view.getUint8(k + 8 + b); h = Math.imul(h, 0x01000193); }
+            h = h >>> 0;
+          } else {
+            h = (Math.imul(k, 0x9e3779b9) ^ (k >>> 16)) >>> 0;
+          }
+          let idx = h & mask;
+          for (let probe = 0; probe < cap; probe++) {
+            const ea = entriesPtr + idx * 12;
+            const status = view.getInt32(ea, true);
+            if (status === 0 || status === 2) {
+              view.setInt32(ea, 1, true);
+              view.setInt32(ea + 4, k, true);
+              view.setInt32(ea + 8, v, true);
+              view.setInt32(newHash + 8, view.getInt32(newHash + 8, true) + 1, true);
+              return;
+            }
+            if (status === 1) {
+              // Check for key match (overwrite)
+              const storedK = view.getInt32(ea + 4, true);
+              if (isStr) {
+                try {
+                  if (view.getInt32(storedK, true) === TAG_STRING) {
+                    const kLen = view.getInt32(k + 4, true);
+                    const sLen = view.getInt32(storedK + 4, true);
+                    if (kLen === sLen) {
+                      let match = true;
+                      for (let b = 0; b < kLen; b++) {
+                        if (view.getUint8(k + 8 + b) !== view.getUint8(storedK + 8 + b)) { match = false; break; }
+                      }
+                      if (match) { view.setInt32(ea + 8, v, true); return; }
+                    }
+                  }
+                } catch(e) {}
+              } else if (storedK === k) {
+                view.setInt32(ea + 8, v, true);
+                return;
+              }
+            }
+            idx = (idx + 1) & mask;
+          }
+        };
+        
+        // Copy from both hashes
+        for (const srcPtr of [hashPtr1, hashPtr2]) {
+          if (srcPtr < 16) continue;
+          if (view.getInt32(srcPtr, true) !== TAG_HASH_LOCAL) continue;
+          const cap = view.getInt32(srcPtr + 4, true);
+          const entries = view.getInt32(srcPtr + 12, true);
+          for (let i = 0; i < cap; i++) {
+            const ea = entries + i * 12;
+            if (view.getInt32(ea, true) === 1) {
+              insertInto(view.getInt32(ea + 4, true), view.getInt32(ea + 8, true));
+            }
+          }
+        }
+        return newHash;
       },
       __hash_delete(hashPtr, key) {
         // Delete a key from hash map. Marks entry as DELETED (status=2).
