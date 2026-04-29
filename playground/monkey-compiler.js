@@ -6087,8 +6087,8 @@ var WasmCompiler = class {
     if (expr instanceof HashLiteral) {
       const hashNewIdx = this._getHashNewFunc();
       const hashSetIdx = this._getHashSetFunc();
-      let cap = 8;
-      while (cap < expr.pairs.size * 2) cap *= 2;
+      let cap = 16;
+      while (cap < expr.pairs.size * 2 + 2) cap *= 2;
       const mapLocal = this.currentLocalCount + this.currentExtraLocals;
       this.currentExtraLocals++;
       body.push(WasmOp.i32_const, ...encodeSLEB128(cap));
