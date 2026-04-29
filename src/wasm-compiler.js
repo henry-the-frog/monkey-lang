@@ -55,6 +55,7 @@ class WasmCompiler {
     this._ensureCapFuncIdx = null; // lazily added __array_ensure_cap function
     this._strConcatFuncIdx = null; // lazily added __str_concat function
     this._strEqFuncIdx = null; // lazily added __str_eq function
+    this._strCmpFuncIdx = null; // lazily added __str_cmp function
     this._indexOfFuncIdx = null; // lazily added __str_indexOf function
     this._intToStrFuncIdx = null; // lazily added __int_to_str function
     this._hashNewFuncIdx = null; // lazily added __hash_new function
@@ -112,6 +113,7 @@ class WasmCompiler {
       this._getArrayEnsureCapFunc(); // adds __array_ensure_cap before any user functions
       this._getStrConcatFunc(); // adds __str_concat before any user functions
       this._getStrEqFunc(); // adds __str_eq before any user functions
+      this._getStrCmpFunc(); // adds __str_cmp before any user functions
       this._getIndexOfFunc(); // adds __str_indexOf before any user functions
       this._getIntToStringFunc(); // adds __int_to_str before any user functions
       this._getHashNewFunc(); // adds __hash_new before any user functions
@@ -402,6 +404,115 @@ class WasmCompiler {
       { count: 3, type: WASM_TYPE.I32 } // len1, len2, i
     ], body);
     this._strEqFuncIdx = funcIdx;
+    return funcIdx;
+  }
+
+  // __str_cmp(ptr1: i32, ptr2: i32) -> i32 (-1, 0, or 1)
+  // Lexicographic comparison, like strcmp
+  _getStrCmpFunc() {
+    if (this._strCmpFuncIdx !== null) return this._strCmpFuncIdx;
+    
+    const typeIdx = this.module.addType([WASM_TYPE.I32, WASM_TYPE.I32], [WASM_TYPE.I32]);
+    
+    // Params: 0=ptr1, 1=ptr2. Locals: 2=len1, 3=len2, 4=minLen, 5=i, 6=b1, 7=b2
+    const body = [
+      WasmOp.local_get, 0,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 2, // len1
+      
+      WasmOp.local_get, 1,
+      WasmOp.i32_load, 2, 0,
+      WasmOp.local_set, 3, // len2
+      
+      // minLen = min(len1, len2)
+      WasmOp.local_get, 2,
+      WasmOp.local_get, 3,
+      WasmOp.i32_lt_u,
+      WasmOp.if_, 0x7F,
+        WasmOp.local_get, 2,
+      WasmOp.else_,
+        WasmOp.local_get, 3,
+      WasmOp.end,
+      WasmOp.local_set, 4, // minLen
+      
+      // Compare bytes
+      WasmOp.i32_const, 0,
+      WasmOp.local_set, 5, // i = 0
+      WasmOp.block, 0x40,
+        WasmOp.loop, 0x40,
+          WasmOp.local_get, 5,
+          WasmOp.local_get, 4,
+          WasmOp.i32_ge_u,
+          WasmOp.br_if, 1,
+          
+          // b1 = ptr1[4+i]
+          WasmOp.local_get, 0,
+          WasmOp.i32_const, 4,
+          WasmOp.i32_add,
+          WasmOp.local_get, 5,
+          WasmOp.i32_add,
+          WasmOp.i32_load8_u, 0, 0,
+          WasmOp.local_set, 6,
+          
+          // b2 = ptr2[4+i]
+          WasmOp.local_get, 1,
+          WasmOp.i32_const, 4,
+          WasmOp.i32_add,
+          WasmOp.local_get, 5,
+          WasmOp.i32_add,
+          WasmOp.i32_load8_u, 0, 0,
+          WasmOp.local_set, 7,
+          
+          // if b1 < b2 return -1
+          WasmOp.local_get, 6,
+          WasmOp.local_get, 7,
+          WasmOp.i32_lt_u,
+          WasmOp.if_, 0x40,
+            WasmOp.i32_const, ...encodeSLEB128(-1),
+            WasmOp.return_,
+          WasmOp.end,
+          
+          // if b1 > b2 return 1
+          WasmOp.local_get, 6,
+          WasmOp.local_get, 7,
+          WasmOp.i32_gt_u,
+          WasmOp.if_, 0x40,
+            WasmOp.i32_const, 1,
+            WasmOp.return_,
+          WasmOp.end,
+          
+          WasmOp.local_get, 5,
+          WasmOp.i32_const, 1,
+          WasmOp.i32_add,
+          WasmOp.local_set, 5,
+          WasmOp.br, 0,
+        WasmOp.end,
+      WasmOp.end,
+      
+      // All compared bytes equal — compare lengths
+      WasmOp.local_get, 2,
+      WasmOp.local_get, 3,
+      WasmOp.i32_lt_u,
+      WasmOp.if_, 0x40,
+        WasmOp.i32_const, ...encodeSLEB128(-1),
+        WasmOp.return_,
+      WasmOp.end,
+      WasmOp.local_get, 2,
+      WasmOp.local_get, 3,
+      WasmOp.i32_gt_u,
+      WasmOp.if_, 0x40,
+        WasmOp.i32_const, 1,
+        WasmOp.return_,
+      WasmOp.end,
+      
+      WasmOp.i32_const, 0, // equal
+    ];
+    
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [
+      { count: 6, type: WASM_TYPE.I32 }
+    ], body);
+    this._strCmpFuncIdx = funcIdx;
     return funcIdx;
   }
 
