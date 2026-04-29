@@ -268,3 +268,70 @@ export const FALSE = new MonkeyBoolean(false);
 export const NULL = new MonkeyNull();
 export const BREAK_SIGNAL = { type: 'BREAK_SIGNAL' };
 export const CONTINUE_SIGNAL = { type: 'CONTINUE_SIGNAL' };
+
+// --- Unboxed Value Helpers (for VM optimization) ---
+// The VM can store integers as raw JS numbers on the stack instead of MonkeyInteger objects.
+// These helpers provide a uniform interface for type checking and value extraction.
+
+/** Check if a value is an integer (raw number or MonkeyInteger) */
+export function isInt(v) {
+  return typeof v === 'number' || v instanceof MonkeyInteger;
+}
+
+/** Check if a value is a float (MonkeyFloat only — raw numbers are always ints in our encoding) */
+export function isFloat(v) {
+  return v instanceof MonkeyFloat;
+}
+
+/** Check if a value is numeric (int or float) */
+export function isNumeric(v) {
+  return typeof v === 'number' || v instanceof MonkeyInteger || v instanceof MonkeyFloat;
+}
+
+/** Check if a value is a string (MonkeyString) */
+export function isStr(v) {
+  return v instanceof MonkeyString;
+}
+
+/** Extract the raw JS number from an integer value (raw or boxed) */
+export function unwrapInt(v) {
+  return typeof v === 'number' ? v : v.value;
+}
+
+/** Extract the numeric value from any numeric type */
+export function unwrapNum(v) {
+  return typeof v === 'number' ? v : v.value;
+}
+
+/** Wrap an integer for contexts that need a MonkeyInteger (e.g., returning to evaluator) */
+export function wrapInt(n) {
+  return new MonkeyInteger(n);
+}
+
+/** Get inspect() string for any value (raw or boxed) */
+export function inspectValue(v) {
+  if (typeof v === 'number') return String(v);
+  if (v === true) return 'true';
+  if (v === false) return 'false';
+  if (v === null || v === undefined) return 'null';
+  if (v && typeof v.inspect === 'function') return v.inspect();
+  return String(v);
+}
+
+/** Get type string for any value (raw or boxed) */
+export function typeOf(v) {
+  if (typeof v === 'number') return OBJ.INTEGER;
+  if (v === true || v === false) return OBJ.BOOLEAN;
+  if (v === null || v === undefined) return OBJ.NULL;
+  if (v && typeof v.type === 'function') return v.type();
+  return 'UNKNOWN';
+}
+
+/** Get hash key for any value (raw or boxed) */
+export function hashKeyOf(v) {
+  if (typeof v === 'number') return `int:${v}`;
+  if (v === true) return 'bool:true';
+  if (v === false) return 'bool:false';
+  if (v && typeof v.hashKey === 'function') return v.hashKey();
+  return String(v);
+}
