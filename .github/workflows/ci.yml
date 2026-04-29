@@ -19,6 +19,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - name: Run tests
+        working-directory: projects/monkey-lang
         run: node --test src/*.test.js
       - name: Run benchmark
+        working-directory: projects/monkey-lang
         run: timeout 120 node src/benchmark-5way.js || true
