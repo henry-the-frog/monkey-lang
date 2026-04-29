@@ -376,4 +376,38 @@ describe('VM', () => {
       `), 55);
     });
   });
+
+  describe('mutable closures in hash literals', () => {
+    it('shares mutable state across sibling closures in hash', () => {
+      testIntegerObject(runVM(`
+        let make = fn() {
+          let x = 0;
+          {
+            "inc": fn() { set x = x + 1; x; },
+            "get": fn() { x; }
+          };
+        };
+        let obj = make();
+        obj["inc"]();
+        obj["inc"]();
+        obj["get"]();
+      `), 2);
+    });
+
+    it('mutation in one hash closure visible to another', () => {
+      testIntegerObject(runVM(`
+        let counter = fn() {
+          let n = 0;
+          {
+            "add": fn(x) { set n = n + x; },
+            "val": fn() { n; }
+          };
+        };
+        let c = counter();
+        c["add"](10);
+        c["add"](20);
+        c["val"]();
+      `), 30);
+    });
+  });
 });

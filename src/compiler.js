@@ -180,10 +180,15 @@ export class Compiler {
           }
           // Walk children
           for (const key of Object.keys(n)) {
-            if (key === 'token') continue;
+                      if (key === 'token') continue;
             const child = n[key];
             if (child && typeof child === 'object') {
-              if (Array.isArray(child)) child.forEach(c => walkForCaptures(c));
+              if (child instanceof Map) {
+                for (const [k, v] of child) {
+                  if (k && typeof k === 'object') walkForCaptures(k);
+                  if (v && typeof v === 'object') walkForCaptures(v);
+                }
+              } else if (Array.isArray(child)) child.forEach(c => walkForCaptures(c));
               else if (child.constructor?.name !== 'Token') walkForCaptures(child);
             }
           }
@@ -197,7 +202,13 @@ export class Compiler {
         if (key === 'token') continue;
         const child = node[key];
         if (child && typeof child === 'object') {
-          if (Array.isArray(child)) child.forEach(c => walkNode(c, isNested));
+          if (child instanceof Map) {
+            // Handle Map (e.g., HashLiteral.pairs)
+            for (const [k, v] of child) {
+              if (k && typeof k === 'object') walkNode(k, isNested);
+              if (v && typeof v === 'object') walkNode(v, isNested);
+            }
+          } else if (Array.isArray(child)) child.forEach(c => walkNode(c, isNested));
           else if (child.constructor?.name !== 'Token') walkNode(child, isNested);
         }
       }
