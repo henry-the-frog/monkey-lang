@@ -543,15 +543,31 @@ export class WasmCompiler {
     this._runtimeFuncs.alloc = allocIdx;
     this.builder.addExport('__alloc', ExportKind.Func, allocIdx);
 
-    // __len(ptr) → i32 — get length of string or array
+    // __len(ptr) → i32 — get length of string, array, or hash map
     const { index: lenIdx, body: lenBody } = this.builder.addFunction(
       [ValType.i32], [ValType.i32]
     );
+    lenBody.addLocal(ValType.i32); // local[1] = tag
     lenBody
       .localGet(0)
-      .i32Const(4)
-      .emit(Op.i32_add)       // ptr + 4 (skip tag)
-      .i32Load();             // load length
+      .i32Load()              // load tag at ptr
+      .localSet(1)
+      // If TAG_HASH (4), return ptr+8 (size field)
+      .localGet(1)
+      .i32Const(TAG_HASH)
+      .emit(Op.i32_eq)
+      .if_(ValType.i32)
+        .localGet(0)
+        .i32Const(8)
+        .emit(Op.i32_add)
+        .i32Load()
+      .else_()
+        // Arrays/strings: length at ptr+4
+        .localGet(0)
+        .i32Const(4)
+        .emit(Op.i32_add)
+        .i32Load()
+      .end();
     this._runtimeFuncs.len = lenIdx;
 
     // __array_get(arr_ptr, index) → i32 — array element access
