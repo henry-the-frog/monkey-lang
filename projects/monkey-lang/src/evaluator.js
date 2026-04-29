@@ -260,6 +260,23 @@ const builtins = new Map([
     }
     return new MonkeyHash(groups);
   })],
+  ['zip', new MonkeyBuiltin((...args) => {
+    if (args.length !== 2) return newError('zip requires two array arguments');
+    const keys = args[0];
+    const values = args[1];
+    if (!(keys instanceof MonkeyArray) || !(values instanceof MonkeyArray)) {
+      return newError('zip requires two array arguments');
+    }
+    const pairs = new Map();
+    const len = Math.min(keys.elements.length, values.elements.length);
+    for (let i = 0; i < len; i++) {
+      const key = keys.elements[i];
+      const value = values.elements[i];
+      const hashKey = key.fastHashKey ? key.fastHashKey() : (key.hashKey ? key.hashKey() : null);
+      if (hashKey) pairs.set(hashKey, { key, value });
+    }
+    return new MonkeyHash(pairs);
+  })],
   ['delete', new MonkeyBuiltin((...args) => {
     if (args.length !== 2 || args[0].type() !== OBJ.HASH) return newError('delete requires a hash and a key');
     const hash = args[0];
