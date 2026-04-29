@@ -384,6 +384,29 @@ const builtins = new Map([
     if (val instanceof MonkeyFunction || val instanceof MonkeyBuiltin) return new MonkeyString('function');
     return new MonkeyString(val.type ? val.type().toLowerCase() : 'unknown');
   })],
+  ['partition', new MonkeyBuiltin((...args) => {
+    if (args.length !== 2) return newError('partition requires 2 arguments');
+    const fn = args[1];
+    if (args[0] instanceof MonkeyArray) {
+      const yes = [], no = [];
+      for (const elem of args[0].elements) {
+        const result = applyFunction(fn, [elem]);
+        if (isError(result)) return result;
+        (isTruthy(result) ? yes : no).push(elem);
+      }
+      return new MonkeyArray([new MonkeyArray(yes), new MonkeyArray(no)]);
+    }
+    if (args[0] instanceof MonkeyHash) {
+      const yes = new Map(), no = new Map();
+      for (const [hashKey, { key, value }] of args[0].pairs) {
+        const result = applyFunction(fn, [key, value]);
+        if (isError(result)) return result;
+        (isTruthy(result) ? yes : no).set(hashKey, { key, value });
+      }
+      return new MonkeyArray([new MonkeyHash(yes), new MonkeyHash(no)]);
+    }
+    return newError('partition requires array or hash');
+  })],
   ['contains', new MonkeyBuiltin((...args) => {
     if (args.length !== 2) return newError('contains requires two arguments');
     if (args[0] instanceof MonkeyArray) {
