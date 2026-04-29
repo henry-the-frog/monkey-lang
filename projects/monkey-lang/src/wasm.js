@@ -234,6 +234,12 @@ const Section = {
   Tag: 13,
 };
 
+// === Ref Type Helpers ===
+/** Create a non-nullable ref type: (ref $typeIdx) */
+export function refType(typeIdx) { return { ref: typeIdx, nullable: false }; }
+/** Create a nullable ref type: (ref null $typeIdx) */
+export function refNullType(typeIdx) { return { ref: typeIdx, nullable: true }; }
+
 // === Export Kinds ===
 export const ExportKind = {
   Func: 0x00,
@@ -337,7 +343,14 @@ export class FuncBodyBuilder {
     const localBytes = [];
     localBytes.push(...encodeULEB128(this.locals.length));
     for (const { type, count } of this.locals) {
-      localBytes.push(...encodeULEB128(count), type);
+      localBytes.push(...encodeULEB128(count));
+      if (typeof type === 'object' && type.ref !== undefined) {
+        // GC ref type: (ref $typeIdx) = 0x64 typeIdx, (ref null $typeIdx) = 0x63 typeIdx
+        localBytes.push(type.nullable ? 0x63 : 0x64);
+        localBytes.push(...encodeULEB128(type.ref));
+      } else {
+        localBytes.push(type);
+      }
     }
     // Body = locals + code + end
     const body = [...localBytes, ...this.code, Op.end];
