@@ -133,7 +133,7 @@ describe('WASM Performance Benchmarks', () => {
   });
 
   describe('tail-call optimization', () => {
-    it('tail-recursive sum handles 1M calls', { skip: parseInt(process.versions.node) < 20 ? 'stack may overflow on Node 18' : false },, async () => {
+    it('tail-recursive sum handles 1M calls', { skip: parseInt(process.versions.node) < 20 ? 'stack may overflow on Node 18' : false }, async () => {
       const { result, execute } = await bench(
         'let sum = fn(n, acc) { if (n <= 0) { acc } else { sum(n - 1, acc + n) } }; sum(1000000, 0)'
       );
