@@ -317,6 +317,61 @@ const builtins = new Map([
     if (args.length !== 1 || !(args[0] instanceof MonkeyArray)) return newError('reverse requires one array argument');
     return new MonkeyArray([...args[0].elements].reverse());
   })],
+  ['flat', new MonkeyBuiltin((...args) => {
+    if (args.length < 1 || args.length > 2) return newError('flat requires 1-2 arguments');
+    if (!(args[0] instanceof MonkeyArray)) return newError(`argument to flat must be ARRAY`);
+    const depth = args.length === 2 && args[1] instanceof MonkeyInteger ? args[1].value : 1;
+    const flatten = (arr, d) => {
+      const result = [];
+      for (const elem of arr.elements) {
+        if (d > 0 && elem instanceof MonkeyArray) {
+          result.push(...flatten(elem, d - 1));
+        } else {
+          result.push(elem);
+        }
+      }
+      return result;
+    };
+    return new MonkeyArray(flatten(args[0], depth));
+  })],
+  ['flatMap', new MonkeyBuiltin((...args) => {
+    if (args.length !== 2) return newError('flatMap requires 2 arguments');
+    if (!(args[0] instanceof MonkeyArray)) return newError(`first argument to flatMap must be ARRAY`);
+    const fn = args[1];
+    const result = [];
+    for (const elem of args[0].elements) {
+      const mapped = applyFunction(fn, [elem]);
+      if (isError(mapped)) return mapped;
+      if (mapped instanceof MonkeyArray) {
+        result.push(...mapped.elements);
+      } else {
+        result.push(mapped);
+      }
+    }
+    return new MonkeyArray(result);
+  })],
+  ['range', new MonkeyBuiltin((...args) => {
+    if (args.length < 1 || args.length > 3) return newError('range requires 1-3 arguments');
+    let start = 0, end, step = 1;
+    if (args.length === 1) {
+      end = args[0] instanceof MonkeyInteger ? args[0].value : 0;
+    } else if (args.length === 2) {
+      start = args[0] instanceof MonkeyInteger ? args[0].value : 0;
+      end = args[1] instanceof MonkeyInteger ? args[1].value : 0;
+    } else {
+      start = args[0] instanceof MonkeyInteger ? args[0].value : 0;
+      end = args[1] instanceof MonkeyInteger ? args[1].value : 0;
+      step = args[2] instanceof MonkeyInteger ? args[2].value : 1;
+    }
+    if (step === 0) return newError('range step cannot be 0');
+    const result = [];
+    if (step > 0) {
+      for (let i = start; i < end; i += step) result.push(new MonkeyInteger(i));
+    } else {
+      for (let i = start; i > end; i += step) result.push(new MonkeyInteger(i));
+    }
+    return new MonkeyArray(result);
+  })],
   ['contains', new MonkeyBuiltin((...args) => {
     if (args.length !== 2) return newError('contains requires two arguments');
     if (args[0] instanceof MonkeyArray) {
