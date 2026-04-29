@@ -795,7 +795,7 @@ class WasmCompiler {
         if (name === 'len') return 'int';
         if (name === 'push') return 'int';
         if (name === 'indexOf') return 'int';
-        if (name === 'map' || name === 'filter') return 'array';
+        if (name === 'map' || name === 'filter' || name === 'split') return 'array';
         if (name === 'charAt' || name === 'substring' || name === 'toUpperCase' || name === 'toLowerCase') return 'string';
       }
       return 'unknown';
@@ -1263,6 +1263,280 @@ class WasmCompiler {
     body.push(WasmOp.br, 0);          // br to loop start (continue)
     body.push(WasmOp.end);            // end loop
     body.push(WasmOp.end);            // end block
+  }
+
+  // split(str, delim) → array of substrings
+  // Implementation: walk through str, find delim positions, extract substrings
+  _compileSplit(strExpr, delimExpr, body) {
+    const allocIdx = this._getAllocFunc();
+    const ensureCapIdx = this._getArrayEnsureCapFunc();
+    const indexOfIdx = this._getIndexOfFunc();
+    
+    // Allocate temp locals
+    const strPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const delimPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const strLenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const delimLenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const arrPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const posLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const startLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const subPtrLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const subLenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const arrLenLocal = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    const copyIdx = this.currentLocalCount + this.currentExtraLocals;
+    this.currentExtraLocals++;
+    
+    // Evaluate string and delimiter
+    this._compileExpr(strExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(strPtrLocal));
+    
+    this._compileExpr(delimExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.local_set, ...encodeULEB128(delimPtrLocal));
+    
+    // Read lengths
+    body.push(WasmOp.local_get, ...encodeULEB128(strPtrLocal));
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(strLenLocal));
+    
+    body.push(WasmOp.local_get, ...encodeULEB128(delimPtrLocal));
+    body.push(WasmOp.i32_load, 2, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(delimLenLocal));
+    
+    // Allocate result array: capacity 8, empty
+    body.push(WasmOp.i32_const, ...encodeSLEB128(8 * 4 + 8)); // 8 elements capacity
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(arrPtrLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(arrPtrLocal));
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.i32_store, 2, 0); // len = 0
+    body.push(WasmOp.local_get, ...encodeULEB128(arrPtrLocal));
+    body.push(WasmOp.i32_const, 8);
+    body.push(WasmOp.i32_store, 2, 4); // cap = 8
+    
+    // Initialize: start = 0, pos = 0, arrLen = 0
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(arrLenLocal));
+    
+    // Main loop: search for delimiter starting from 'start'
+    body.push(WasmOp.block, 0x40); // outer break
+    body.push(WasmOp.loop, 0x40);  // outer continue
+    
+    // if start > strLen, break
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(strLenLocal));
+    body.push(WasmOp.i32_gt_s);
+    body.push(WasmOp.br_if, 1);
+    
+    // Create a temporary substring from 'start' to search within
+    // Actually, use a simpler approach: manually scan for delimiter
+    // Find delimiter at current position using byte comparison
+    
+    // pos = start
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.local_set, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_const, ...encodeSLEB128(-1)); // found = -1
+    body.push(WasmOp.local_set, ...encodeULEB128(subLenLocal)); // reuse as "found position"
+    
+    // Inner loop: search for delimiter from pos
+    body.push(WasmOp.block, 0x40); // inner break
+    body.push(WasmOp.loop, 0x40);  // inner continue
+    
+    // if pos + delimLen > strLen, break
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(delimLenLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(strLenLocal));
+    body.push(WasmOp.i32_gt_s);
+    body.push(WasmOp.br_if, 1);
+    
+    // Check if delimiter matches at pos
+    // Compare delimLen bytes starting at str[pos] vs delim[0]
+    body.push(WasmOp.i32_const, 1); // assume match
+    body.push(WasmOp.local_set, ...encodeULEB128(copyIdx)); // reuse as match flag
+    
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(subPtrLocal)); // reuse as j
+    
+    // byte comparison loop
+    body.push(WasmOp.block, 0x40);
+    body.push(WasmOp.loop, 0x40);
+    body.push(WasmOp.local_get, ...encodeULEB128(subPtrLocal)); // j
+    body.push(WasmOp.local_get, ...encodeULEB128(delimLenLocal));
+    body.push(WasmOp.i32_ge_u);
+    body.push(WasmOp.br_if, 1);
+    
+    // if str[4+pos+j] != delim[4+j], set match=0 and break
+    body.push(WasmOp.local_get, ...encodeULEB128(strPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(subPtrLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    
+    body.push(WasmOp.local_get, ...encodeULEB128(delimPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(subPtrLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    
+    body.push(WasmOp.i32_ne);
+    body.push(WasmOp.if_, 0x40);
+      body.push(WasmOp.i32_const, 0);
+      body.push(WasmOp.local_set, ...encodeULEB128(copyIdx)); // match = 0
+      body.push(WasmOp.br, 2); // break comparison loop
+    body.push(WasmOp.end);
+    
+    body.push(WasmOp.local_get, ...encodeULEB128(subPtrLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(subPtrLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    
+    // If match, record found position and break search
+    body.push(WasmOp.local_get, ...encodeULEB128(copyIdx));
+    body.push(WasmOp.if_, 0x40);
+      body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+      body.push(WasmOp.local_set, ...encodeULEB128(subLenLocal)); // found = pos
+      body.push(WasmOp.br, 2); // break inner search
+    body.push(WasmOp.end);
+    
+    // pos++
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(posLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end); // end inner loop
+    body.push(WasmOp.end); // end inner block
+    
+    // At this point, subLenLocal = found position (or -1 if not found)
+    // Create substring from start to found (or start to strLen if not found)
+    
+    // Determine end position
+    body.push(WasmOp.local_get, ...encodeULEB128(subLenLocal)); // found
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.i32_lt_s); // found < 0?
+    body.push(WasmOp.if_, 0x7F); // i32 result
+      body.push(WasmOp.local_get, ...encodeULEB128(strLenLocal)); // use strLen
+    body.push(WasmOp.else_);
+      body.push(WasmOp.local_get, ...encodeULEB128(subLenLocal)); // use found
+    body.push(WasmOp.end);
+    // Stack: endPos
+    
+    // subLen = endPos - start
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_sub);
+    // Stack: subLen (could be 0)
+    
+    // Allocate substring: 4 + subLen bytes
+    body.push(WasmOp.local_tee, ...encodeULEB128(subPtrLocal)); // save subLen temporarily
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.call, ...encodeULEB128(allocIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(copyIdx)); // newSubPtr
+    
+    // Store subLen
+    body.push(WasmOp.local_get, ...encodeULEB128(copyIdx));
+    body.push(WasmOp.local_get, ...encodeULEB128(subPtrLocal)); // subLen
+    body.push(WasmOp.i32_store, 2, 0);
+    
+    // Copy bytes: str[4+start..4+start+subLen] → newSub[4..]
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.local_set, ...encodeULEB128(posLocal)); // reuse pos as copy i
+    body.push(WasmOp.block, 0x40);
+    body.push(WasmOp.loop, 0x40);
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(subPtrLocal));
+    body.push(WasmOp.i32_ge_u);
+    body.push(WasmOp.br_if, 1);
+    body.push(WasmOp.local_get, ...encodeULEB128(copyIdx)); // newSub
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(strPtrLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(startLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.i32_load8_u, 0, 0);
+    body.push(WasmOp.i32_store8, 0, 0);
+    body.push(WasmOp.local_get, ...encodeULEB128(posLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(posLocal));
+    body.push(WasmOp.br, 0);
+    body.push(WasmOp.end);
+    body.push(WasmOp.end);
+    
+    // Push substring pointer into result array
+    // Ensure capacity
+    body.push(WasmOp.local_get, ...encodeULEB128(arrPtrLocal));
+    body.push(WasmOp.call, ...encodeULEB128(ensureCapIdx));
+    body.push(WasmOp.local_set, ...encodeULEB128(arrPtrLocal));
+    
+    // arr[8 + arrLen*4] = newSubPtr
+    body.push(WasmOp.local_get, ...encodeULEB128(arrPtrLocal));
+    body.push(WasmOp.i32_const, 8);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(arrLenLocal));
+    body.push(WasmOp.i32_const, 4);
+    body.push(WasmOp.i32_mul);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_get, ...encodeULEB128(copyIdx)); // newSubPtr
+    body.push(WasmOp.i32_store, 2, 0);
+    
+    // arrLen++
+    body.push(WasmOp.local_get, ...encodeULEB128(arrLenLocal));
+    body.push(WasmOp.i32_const, 1);
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(arrLenLocal));
+    
+    // Update array length header
+    body.push(WasmOp.local_get, ...encodeULEB128(arrPtrLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(arrLenLocal));
+    body.push(WasmOp.i32_store, 2, 0);
+    
+    // If delimiter was found, advance start past delimiter and continue
+    body.push(WasmOp.local_get, ...encodeULEB128(subLenLocal));
+    body.push(WasmOp.i32_const, 0);
+    body.push(WasmOp.i32_lt_s); // found < 0?
+    body.push(WasmOp.br_if, 1); // break outer — no more delimiters
+    
+    // start = found + delimLen
+    body.push(WasmOp.local_get, ...encodeULEB128(subLenLocal));
+    body.push(WasmOp.local_get, ...encodeULEB128(delimLenLocal));
+    body.push(WasmOp.i32_add);
+    body.push(WasmOp.local_set, ...encodeULEB128(startLocal));
+    
+    body.push(WasmOp.br, 0); // continue outer
+    body.push(WasmOp.end); // end outer loop
+    body.push(WasmOp.end); // end outer block
+    
+    // Return array pointer
+    body.push(WasmOp.local_get, ...encodeULEB128(arrPtrLocal));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
   }
 
   // toUpperCase/toLowerCase(str) → returns new string with case converted
@@ -2183,6 +2457,12 @@ class WasmCompiler {
       // Built-in: toLowerCase(string) — returns new lowercase string
       if (funcName === 'toLowerCase' && expr.arguments.length === 1) {
         this._compileCaseConvert(expr.arguments[0], body, false);
+        return;
+      }
+      
+      // Built-in: split(string, delimiter) — returns array of strings
+      if (funcName === 'split' && expr.arguments.length === 2) {
+        this._compileSplit(expr.arguments[0], expr.arguments[1], body);
         return;
       }
       

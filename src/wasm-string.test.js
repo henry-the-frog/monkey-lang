@@ -434,3 +434,61 @@ describe('WASM strings — toUpperCase/toLowerCase', () => {
     `), 1);
   });
 });
+
+describe('WASM strings — split', () => {
+  it('split by space', async () => {
+    assert.equal(await run(`
+      let parts = split("hello world foo", " ");
+      len(parts)
+    `), 3);
+  });
+
+  it('split content verification', async () => {
+    assert.equal(await run(`
+      let parts = split("a,b,c", ",");
+      parts[0] == "a"
+    `), 1);
+  });
+
+  it('split all parts correct', async () => {
+    assert.equal(await run(`
+      let parts = split("hello,world,foo", ",");
+      let ok1 = parts[0] == "hello";
+      let ok2 = parts[1] == "world";
+      let ok3 = parts[2] == "foo";
+      ok1 + ok2 + ok3
+    `), 3);
+  });
+
+  it('split with multi-char delimiter', async () => {
+    assert.equal(await run(`
+      let parts = split("one::two::three", "::");
+      len(parts)
+    `), 3);
+  });
+
+  it('split no delimiter found', async () => {
+    assert.equal(await run(`
+      let parts = split("hello", ",");
+      len(parts)
+    `), 1);
+  });
+
+  it('split iterate with for-in', async () => {
+    assert.equal(await run(`
+      let parts = split("1,2,3,4,5", ",");
+      let count = 0;
+      for (p in parts) {
+        set count = count + 1
+      };
+      count
+    `), 5);
+  });
+
+  it('split lengths sum', async () => {
+    assert.equal(await run(`
+      let parts = split("hello world", " ");
+      len(parts[0]) + len(parts[1])
+    `), 5 + 5);
+  });
+});
