@@ -88,6 +88,24 @@ const BENCHMARKS = [
     input: 'let a = 0; let b = 0; let i = 0; while (i < 10000) { if (i > 4999) { b = b + 1; } else { a = a + 1; } i = i + 1; } a + b',
     expected: 10000,
   },
+  {
+    name: 'hash set/get 1k',
+    category: 'hash',
+    input: 'let h = {}; let i = 0; while (i < 1000) { h[i] = i * 2; i = i + 1 } h[500] + h[999]',
+    expected: 2998,
+  },
+  {
+    name: 'hash iterate 100',
+    category: 'hash',
+    input: 'let h = {}; let i = 0; while (i < 100) { h[i] = i; i = i + 1 } let sum = 0; for (k in keys(h)) { sum = sum + h[k] } sum',
+    expected: 4950,
+  },
+  {
+    name: 'hash string keys',
+    category: 'hash',
+    input: 'let h = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6, "g": 7, "h": 8, "i": 9, "j": 10}; let sum = 0; for (v in values(h)) { sum = sum + v } sum',
+    expected: 55,
+  },
 ];
 
 function parse(input) {
