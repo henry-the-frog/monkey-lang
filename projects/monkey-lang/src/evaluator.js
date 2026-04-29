@@ -242,6 +242,24 @@ const builtins = new Map([
     }
     return new MonkeyHash(pairs);
   })],
+  ['groupBy', new MonkeyBuiltin((...args) => {
+    if (args.length !== 2 || !(args[0] instanceof MonkeyArray)) return newError('groupBy requires an array and a function');
+    const arr = args[0];
+    const fn = args[1];
+    const groups = new Map();
+    for (const elem of arr.elements) {
+      const key = applyFunction(fn, [elem]);
+      if (isError(key)) return key;
+      const hashKey = key.fastHashKey ? key.fastHashKey() : (key.hashKey ? key.hashKey() : null);
+      if (!hashKey) return newError('groupBy key function must return a hashable value');
+      if (groups.has(hashKey)) {
+        groups.get(hashKey).value.elements.push(elem);
+      } else {
+        groups.set(hashKey, { key, value: new MonkeyArray([elem]) });
+      }
+    }
+    return new MonkeyHash(groups);
+  })],
   ['delete', new MonkeyBuiltin((...args) => {
     if (args.length !== 2 || args[0].type() !== OBJ.HASH) return newError('delete requires a hash and a key');
     const hash = args[0];
