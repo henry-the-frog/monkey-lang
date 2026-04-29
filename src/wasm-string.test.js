@@ -548,3 +548,37 @@ describe('WASM strings — trim', () => {
     assert.equal(await run('trim("  hello  ") == "hello"'), 1);
   });
 });
+
+describe('WASM strings — intToString', () => {
+  it('positive integer', async () => {
+    assert.equal(await runStr('intToString(42)'), '42');
+  });
+
+  it('zero', async () => {
+    assert.equal(await runStr('intToString(0)'), '0');
+  });
+
+  it('large number', async () => {
+    assert.equal(await runStr('intToString(12345)'), '12345');
+  });
+
+  it('negative number', async () => {
+    assert.equal(await runStr('intToString(0 - 42)'), '-42');
+  });
+
+  it('single digit', async () => {
+    assert.equal(await runStr('intToString(7)'), '7');
+  });
+
+  it('comparison', async () => {
+    assert.equal(await run('intToString(100) == "100"'), 1);
+  });
+
+  it('concat with string', async () => {
+    assert.equal(await runStr('"value: " + intToString(42)'), 'value: 42');
+  });
+
+  it('len of number string', async () => {
+    assert.equal(await run('len(intToString(12345))'), 5);
+  });
+});

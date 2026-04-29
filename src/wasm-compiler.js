@@ -56,6 +56,7 @@ class WasmCompiler {
     this._strConcatFuncIdx = null; // lazily added __str_concat function
     this._strEqFuncIdx = null; // lazily added __str_eq function
     this._indexOfFuncIdx = null; // lazily added __str_indexOf function
+    this._intToStrFuncIdx = null; // lazily added __int_to_str function
     this._needsMemory = false; // set when arrays or dynamic allocation needed
     this._anonCounter = 0; // counter for anonymous function names
     this._anonMap = new Map(); // FunctionLiteral node → name string
@@ -107,6 +108,7 @@ class WasmCompiler {
       this._getStrConcatFunc(); // adds __str_concat before any user functions
       this._getStrEqFunc(); // adds __str_eq before any user functions
       this._getIndexOfFunc(); // adds __str_indexOf before any user functions
+      this._getIntToStringFunc(); // adds __int_to_str before any user functions
     }
 
     // Pass 0.5: Process top-level let bindings as globals (non-function values)
@@ -542,6 +544,154 @@ class WasmCompiler {
     return funcIdx;
   }
 
+  // __int_to_str(n: i32) -> str_ptr: i32
+  // Converts an integer to its string representation
+  _getIntToStringFunc() {
+    if (this._intToStrFuncIdx !== null) return this._intToStrFuncIdx;
+    
+    const allocIdx = this._getAllocFunc();
+    const typeIdx = this.module.addType([WASM_TYPE.I32], [WASM_TYPE.I32]);
+    
+    // Params: 0=n. Locals: 1=isNeg, 2=abs, 3=digitCount, 4=temp, 5=newPtr, 6=i
+    // Algorithm:
+    //   1. Handle negative: isNeg = n < 0; abs = isNeg ? -n : n
+    //   2. Count digits by dividing by 10
+    //   3. Allocate string: 4 + digitCount + isNeg
+    //   4. Fill digits from right to left
+    //   5. Add '-' if negative
+    const body = [
+      // isNeg = (n < 0) ? 1 : 0
+      WasmOp.local_get, 0,
+      WasmOp.i32_const, 0,
+      WasmOp.i32_lt_s,
+      WasmOp.local_set, 1,
+      
+      // abs = isNeg ? (0 - n) : n
+      WasmOp.local_get, 1,
+      WasmOp.if_, 0x7F,
+        WasmOp.i32_const, 0,
+        WasmOp.local_get, 0,
+        WasmOp.i32_sub,
+      WasmOp.else_,
+        WasmOp.local_get, 0,
+      WasmOp.end,
+      WasmOp.local_set, 2, // abs
+      
+      // Handle 0 specially
+      WasmOp.local_get, 2,
+      WasmOp.i32_eqz,
+      WasmOp.if_, 0x40,
+        // Allocate "0": [1, 0, 0, 0, '0']
+        WasmOp.i32_const, 5,
+        WasmOp.call, ...encodeULEB128(allocIdx),
+        WasmOp.local_set, 5,
+        WasmOp.local_get, 5,
+        WasmOp.i32_const, 1,
+        WasmOp.i32_store, 2, 0,
+        WasmOp.local_get, 5,
+        WasmOp.i32_const, ...encodeSLEB128(48), // '0'
+        WasmOp.i32_store8, 0, 4,
+        WasmOp.local_get, 5,
+        WasmOp.return_,
+      WasmOp.end,
+      
+      // Count digits
+      WasmOp.i32_const, 0,
+      WasmOp.local_set, 3, // digitCount = 0
+      WasmOp.local_get, 2,
+      WasmOp.local_set, 4, // temp = abs
+      WasmOp.block, 0x40,
+      WasmOp.loop, 0x40,
+        WasmOp.local_get, 4,
+        WasmOp.i32_eqz,
+        WasmOp.br_if, 1,
+        WasmOp.local_get, 3,
+        WasmOp.i32_const, 1,
+        WasmOp.i32_add,
+        WasmOp.local_set, 3,
+        WasmOp.local_get, 4,
+        WasmOp.i32_const, 10,
+        WasmOp.i32_div_u,
+        WasmOp.local_set, 4,
+        WasmOp.br, 0,
+      WasmOp.end,
+      WasmOp.end,
+      
+      // Total length = digitCount + isNeg
+      // Allocate: 4 + totalLen
+      WasmOp.local_get, 3,
+      WasmOp.local_get, 1,
+      WasmOp.i32_add,
+      WasmOp.local_tee, 6, // total length
+      WasmOp.i32_const, 4,
+      WasmOp.i32_add,
+      WasmOp.call, ...encodeULEB128(allocIdx),
+      WasmOp.local_set, 5, // newPtr
+      
+      // Store string length
+      WasmOp.local_get, 5,
+      WasmOp.local_get, 6, // total length
+      WasmOp.i32_store, 2, 0,
+      
+      // Fill digits from right to left
+      // i = totalLen - 1
+      WasmOp.local_get, 6,
+      WasmOp.i32_const, 1,
+      WasmOp.i32_sub,
+      WasmOp.local_set, 6, // i = totalLen - 1
+      WasmOp.local_get, 2,
+      WasmOp.local_set, 4, // temp = abs
+      WasmOp.block, 0x40,
+      WasmOp.loop, 0x40,
+        WasmOp.local_get, 4,
+        WasmOp.i32_eqz,
+        WasmOp.br_if, 1,
+        // newPtr[4 + i] = '0' + (temp % 10)
+        WasmOp.local_get, 5,
+        WasmOp.i32_const, 4,
+        WasmOp.i32_add,
+        WasmOp.local_get, 6,
+        WasmOp.i32_add,
+        WasmOp.local_get, 4,
+        WasmOp.i32_const, 10,
+        WasmOp.i32_rem_u,
+        WasmOp.i32_const, ...encodeSLEB128(48), // '0'
+        WasmOp.i32_add,
+        WasmOp.i32_store8, 0, 0,
+        // temp /= 10
+        WasmOp.local_get, 4,
+        WasmOp.i32_const, 10,
+        WasmOp.i32_div_u,
+        WasmOp.local_set, 4,
+        // i--
+        WasmOp.local_get, 6,
+        WasmOp.i32_const, 1,
+        WasmOp.i32_sub,
+        WasmOp.local_set, 6,
+        WasmOp.br, 0,
+      WasmOp.end,
+      WasmOp.end,
+      
+      // If negative, add '-' at position 0
+      WasmOp.local_get, 1,
+      WasmOp.if_, 0x40,
+        WasmOp.local_get, 5,
+        WasmOp.i32_const, ...encodeSLEB128(45), // '-'
+        WasmOp.i32_store8, 0, 4,
+      WasmOp.end,
+      
+      // return newPtr
+      WasmOp.local_get, 5,
+    ];
+    
+    const funcIdx = this.module.imports.length + this.module.functions.length;
+    this.module.addFunction(typeIdx, [
+      { count: 6, type: WASM_TYPE.I32 }
+    ], body);
+    this._intToStrFuncIdx = funcIdx;
+    return funcIdx;
+  }
+
   // Ensure memory exists and heap pointer global is initialized
   _ensureMemory() {
     if (this._needsMemory) return;
@@ -796,7 +946,7 @@ class WasmCompiler {
         if (name === 'push') return 'int';
         if (name === 'indexOf') return 'int';
         if (name === 'map' || name === 'filter' || name === 'split') return 'array';
-        if (name === 'charAt' || name === 'substring' || name === 'toUpperCase' || name === 'toLowerCase' || name === 'replace' || name === 'trim') return 'string';
+        if (name === 'charAt' || name === 'substring' || name === 'toUpperCase' || name === 'toLowerCase' || name === 'replace' || name === 'trim' || name === 'intToString') return 'string';
       }
       return 'unknown';
     }
@@ -1263,6 +1413,16 @@ class WasmCompiler {
     body.push(WasmOp.br, 0);          // br to loop start (continue)
     body.push(WasmOp.end);            // end loop
     body.push(WasmOp.end);            // end block
+  }
+
+  // intToString(n) → converts integer to string representation
+  _compileIntToString(numExpr, body) {
+    const intToStrIdx = this._getIntToStringFunc();
+    
+    this._compileExpr(numExpr, body);
+    if (this.useI64) body.push(WasmOp.i32_wrap_i64);
+    body.push(WasmOp.call, ...encodeULEB128(intToStrIdx));
+    if (this.useI64) body.push(WasmOp.i64_extend_i32_s);
   }
 
   // replace(str, search, replacement) → new string with first occurrence replaced
@@ -2803,6 +2963,12 @@ class WasmCompiler {
       // Built-in: trim(string) — removes leading/trailing whitespace
       if (funcName === 'trim' && expr.arguments.length === 1) {
         this._compileTrim(expr.arguments[0], body);
+        return;
+      }
+      
+      // Built-in: intToString(n) — converts integer to string
+      if (funcName === 'intToString' && expr.arguments.length === 1) {
+        this._compileIntToString(expr.arguments[0], body);
         return;
       }
       
