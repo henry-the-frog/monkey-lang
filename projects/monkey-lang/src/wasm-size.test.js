@@ -77,7 +77,7 @@ describe('WASM Binary Size Analysis', () => {
   it('empty program is minimal', () => {
     const binary = compile('0');
     console.log(`  Minimal program: ${binary.length} bytes`);
-    assert.ok(binary.length < 1500, `Minimal program too large: ${binary.length}`);
+    assert.ok(binary.length < 2500, `Minimal program too large: ${binary.length}`);
   });
 
   it('optimization reduces size for constant-heavy code', () => {

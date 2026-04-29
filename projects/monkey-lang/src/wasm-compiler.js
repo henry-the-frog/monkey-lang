@@ -3859,23 +3859,29 @@ export class WasmCompiler {
         this.currentBody.drop();
       }
       this.currentBody.localGet(hashLocal);
-    } else {
-      // JS-hosted hash map (handles string keys correctly)
-      this.currentBody.call(this._runtimeFuncs.hashNew);
+    } else if (node.pairs && node.pairs.size > 0) {
+      // Native WASM hash map with string keys
+      this.currentBody.call(this._runtimeFuncs.hashNewNative);
       const hashLocal = this.nextLocalIndex++;
       this.currentBody.addLocal(ValType.i32);
       this.currentBody.localSet(hashLocal);
 
-      if (node.pairs) {
-        for (const [key, value] of node.pairs) {
-          this.currentBody.localGet(hashLocal);
-          this.compileNode(key);
-          this.compileNode(value);
-          this.currentBody.call(this._runtimeFuncs.hashSet);
-          this.currentBody.drop();
+      for (const [key, value] of node.pairs) {
+        this.currentBody.localGet(hashLocal);
+        this.compileNode(key);
+        this.compileNode(value);
+        // Use string variant for string keys, int variant otherwise
+        if (key instanceof ast.StringLiteral) {
+          this.currentBody.call(this._runtimeFuncs.hashSetStrNative);
+        } else {
+          this.currentBody.call(this._runtimeFuncs.hashSetNative);
         }
+        this.currentBody.drop();
       }
       this.currentBody.localGet(hashLocal);
+    } else {
+      // Empty hash literal
+      this.currentBody.call(this._runtimeFuncs.hashNewNative);
     }
   }
 
@@ -5458,7 +5464,50 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
           const capacity = view.getInt32(obj + 4, true);
           const entriesPtr = view.getInt32(obj + 12, true);
           const mask = capacity - 1;
-          // Hash the key (same golden ratio as WASM-side __hash_fnv)
+          
+          // Detect if key is a string pointer (TAG_STRING at that address)
+          let isStrKey = false;
+          if (key > 0) {
+            try { isStrKey = view.getInt32(key, true) === TAG_STRING; } catch(e) {}
+          }
+          
+          if (isStrKey) {
+            // String key: FNV-1a hash of string bytes, compare with __str_eq
+            const keyLen = view.getInt32(key + 4, true);
+            let hash = 0x811c9dc5 | 0;
+            for (let b = 0; b < keyLen; b++) {
+              hash ^= view.getUint8(key + 8 + b);
+              hash = Math.imul(hash, 0x01000193);
+            }
+            let idx = ((hash >>> 0) & mask) >>> 0;
+            for (let probe = 0; probe < capacity; probe++) {
+              const entryAddr = entriesPtr + idx * 12;
+              const status = view.getInt32(entryAddr, true);
+              if (status === 0) return 0;
+              if (status === 1) {
+                const storedKey = view.getInt32(entryAddr + 4, true);
+                // Compare strings byte-by-byte
+                try {
+                  if (view.getInt32(storedKey, true) === TAG_STRING) {
+                    const storedLen = view.getInt32(storedKey + 4, true);
+                    if (storedLen === keyLen) {
+                      let match = true;
+                      for (let b = 0; b < keyLen; b++) {
+                        if (view.getUint8(storedKey + 8 + b) !== view.getUint8(key + 8 + b)) {
+                          match = false; break;
+                        }
+                      }
+                      if (match) return view.getInt32(entryAddr + 8, true);
+                    }
+                  }
+                } catch(e) {}
+              }
+              idx = (idx + 1) & mask;
+            }
+            return 0;
+          }
+          
+          // Integer key: golden ratio hash
           let hash = Math.imul(key, 0x9e3779b9) ^ (key >>> 16);
           let idx = (hash & mask) >>> 0;
           for (let probe = 0; probe < capacity; probe++) {
@@ -5512,8 +5561,168 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
           const capacity = view.getInt32(obj + 4, true);
           const entriesPtr = view.getInt32(obj + 12, true);
           const mask = capacity - 1;
+          
+          // Detect if key is a string pointer
+          let isStrKey = false;
+          if (key > 0) {
+            try { isStrKey = view.getInt32(key, true) === TAG_STRING; } catch(e) {}
+          }
+          
+          if (isStrKey) {
+            // String key: FNV-1a hash
+            const keyLen = view.getInt32(key + 4, true);
+            
+            // Helper: compute FNV-1a hash of a string at given ptr
+            const fnvHashStr = (ptr) => {
+              const len = view.getInt32(ptr + 4, true);
+              let h = 0x811c9dc5 | 0;
+              for (let b = 0; b < len; b++) {
+                h ^= view.getUint8(ptr + 8 + b);
+                h = Math.imul(h, 0x01000193);
+              }
+              return h >>> 0;
+            };
+            
+            // Check load factor and resize if needed
+            let curSize = view.getInt32(obj + 8, true);
+            let curCap = capacity;
+            let curEntries = entriesPtr;
+            let curMask = mask;
+            if (curSize * 4 >= curCap * 3 && memoryRef.alloc) {
+              const newCap = curCap * 2;
+              const newEntriesPtr = memoryRef.alloc(newCap * 12);
+              const bytes = new Uint8Array(mem.buffer, newEntriesPtr, newCap * 12);
+              bytes.fill(0);
+              // Rehash all occupied entries using string FNV
+              for (let i = 0; i < curCap; i++) {
+                const ea = curEntries + i * 12;
+                if (view.getInt32(ea, true) === 1) {
+                  const k = view.getInt32(ea + 4, true);
+                  const v = view.getInt32(ea + 8, true);
+                  const h2 = fnvHashStr(k);
+                  let ni = (h2 & (newCap - 1)) >>> 0;
+                  for (let p = 0; p < newCap; p++) {
+                    const na = newEntriesPtr + ni * 12;
+                    if (view.getInt32(na, true) === 0) {
+                      view.setInt32(na, 1, true);
+                      view.setInt32(na + 4, k, true);
+                      view.setInt32(na + 8, v, true);
+                      break;
+                    }
+                    ni = (ni + 1) & (newCap - 1);
+                  }
+                }
+              }
+              view.setInt32(obj + 4, newCap, true);
+              view.setInt32(obj + 12, newEntriesPtr, true);
+              curCap = newCap;
+              curEntries = newEntriesPtr;
+              curMask = newCap - 1;
+            }
+            
+            let hash = 0x811c9dc5 | 0;
+            for (let b = 0; b < keyLen; b++) {
+              hash ^= view.getUint8(key + 8 + b);
+              hash = Math.imul(hash, 0x01000193);
+            }
+            let idx = ((hash >>> 0) & curMask) >>> 0;
+            for (let probe = 0; probe < curCap; probe++) {
+              const entryAddr = curEntries + idx * 12;
+              const status = view.getInt32(entryAddr, true);
+              if (status === 0 || status === 2) {
+                view.setInt32(entryAddr, 1, true);
+                view.setInt32(entryAddr + 4, key, true);
+                view.setInt32(entryAddr + 8, value, true);
+                view.setInt32(obj + 8, view.getInt32(obj + 8, true) + 1, true);
+                return;
+              }
+              if (status === 1) {
+                const storedKey = view.getInt32(entryAddr + 4, true);
+                try {
+                  if (view.getInt32(storedKey, true) === TAG_STRING) {
+                    const storedLen = view.getInt32(storedKey + 4, true);
+                    if (storedLen === keyLen) {
+                      let match = true;
+                      for (let b = 0; b < keyLen; b++) {
+                        if (view.getUint8(storedKey + 8 + b) !== view.getUint8(key + 8 + b)) {
+                          match = false; break;
+                        }
+                      }
+                      if (match) { view.setInt32(entryAddr + 8, value, true); return; }
+                    }
+                  }
+                } catch(e) {}
+              }
+              idx = (idx + 1) & curMask;
+            }
+            return;
+          }
+          
+          // Integer key
           let hash = Math.imul(key, 0x9e3779b9) ^ (key >>> 16);
           let idx = (hash & mask) >>> 0;
+          let size = view.getInt32(obj + 8, true);
+          
+          // Check load factor before insert: resize if size * 4 >= capacity * 3
+          if (size * 4 >= capacity * 3) {
+            // Resize: double capacity, reallocate entries, rehash
+            const newCap = capacity * 2;
+            const newEntriesSize = newCap * 12;
+            // Use the allocator (call __alloc WASM export if available, else grow inline)
+            const allocExport = memoryRef.alloc;
+            if (allocExport) {
+              const newEntriesPtr = allocExport(newEntriesSize);
+              // Zero-init new entries
+              const bytes = new Uint8Array(mem.buffer, newEntriesPtr, newEntriesSize);
+              bytes.fill(0);
+              // Rehash all occupied entries
+              for (let i = 0; i < capacity; i++) {
+                const ea = entriesPtr + i * 12;
+                if (view.getInt32(ea, true) === 1) {
+                  const k = view.getInt32(ea + 4, true);
+                  const v = view.getInt32(ea + 8, true);
+                  let h2 = Math.imul(k, 0x9e3779b9) ^ (k >>> 16);
+                  let ni = ((h2 >>> 0) & (newCap - 1)) >>> 0;
+                  for (let p = 0; p < newCap; p++) {
+                    const na = newEntriesPtr + ni * 12;
+                    if (view.getInt32(na, true) === 0) {
+                      view.setInt32(na, 1, true);
+                      view.setInt32(na + 4, k, true);
+                      view.setInt32(na + 8, v, true);
+                      break;
+                    }
+                    ni = (ni + 1) & (newCap - 1);
+                  }
+                }
+              }
+              // Update map header
+              view.setInt32(obj + 4, newCap, true);
+              view.setInt32(obj + 12, newEntriesPtr, true);
+              // Re-read for the insert below
+              const updatedEntriesPtr = newEntriesPtr;
+              const updatedMask = newCap - 1;
+              hash = Math.imul(key, 0x9e3779b9) ^ (key >>> 16);
+              idx = ((hash >>> 0) & updatedMask) >>> 0;
+              for (let probe = 0; probe < newCap; probe++) {
+                const entryAddr = updatedEntriesPtr + idx * 12;
+                const status = view.getInt32(entryAddr, true);
+                if (status === 0 || status === 2) {
+                  view.setInt32(entryAddr, 1, true);
+                  view.setInt32(entryAddr + 4, key, true);
+                  view.setInt32(entryAddr + 8, value, true);
+                  view.setInt32(obj + 8, size + 1, true);
+                  return;
+                }
+                if (status === 1 && view.getInt32(entryAddr + 4, true) === key) {
+                  view.setInt32(entryAddr + 8, value, true);
+                  return;
+                }
+                idx = (idx + 1) & updatedMask;
+              }
+              return;
+            }
+          }
+          
           for (let probe = 0; probe < capacity; probe++) {
             const entryAddr = entriesPtr + idx * 12;
             const status = view.getInt32(entryAddr, true);

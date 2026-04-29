@@ -158,3 +158,80 @@ describe('WASM Native Hash Map', () => {
     assert.equal(result, 12);
   });
 });
+
+describe('WASM String Key Hash Maps', () => {
+  it('string literal keys in hash literal', async () => {
+    const result = await compileAndRun('let h = {"a": 1, "b": 2, "c": 3}; h["b"]');
+    assert.equal(result, 2);
+  });
+
+  it('string key set and get', async () => {
+    const result = await compileAndRun(`
+      let h = {"hello": 10};
+      h["world"] = 20;
+      h["hello"] + h["world"]
+    `);
+    assert.equal(result, 30);
+  });
+
+  it('string key overwrite', async () => {
+    const result = await compileAndRun(`
+      let h = {"x": 1};
+      h["x"] = 42;
+      h["x"]
+    `);
+    assert.equal(result, 42);
+  });
+
+  it('multiple string keys', async () => {
+    const result = await compileAndRun(`
+      let h = {"name": 1, "age": 2, "city": 3, "country": 4};
+      h["name"] + h["age"] + h["city"] + h["country"]
+    `);
+    assert.equal(result, 10);
+  });
+
+  it('string key not found returns 0', async () => {
+    const result = await compileAndRun(`
+      let h = {"a": 99};
+      h["b"]
+    `);
+    assert.equal(result, 0);
+  });
+
+  it('many string keys (triggers resize)', async () => {
+    const result = await compileAndRun(`
+      let h = {};
+      h["a"] = 1;
+      h["b"] = 2;
+      h["c"] = 3;
+      h["d"] = 4;
+      h["e"] = 5;
+      h["f"] = 6;
+      h["g"] = 7;
+      h["h"] = 8;
+      h["i"] = 9;
+      h["j"] = 10;
+      h["a"] + h["e"] + h["j"]
+    `);
+    assert.equal(result, 16);
+  });
+
+  it('hash as function argument', async () => {
+    const result = await compileAndRun(`
+      let getVal = fn(h) { h["key"] };
+      let m = {"key": 42};
+      getVal(m)
+    `);
+    assert.equal(result, 42);
+  });
+
+  it('hash returned from function', async () => {
+    const result = await compileAndRun(`
+      let makeMap = fn() { {"result": 99} };
+      let m = makeMap();
+      m["result"]
+    `);
+    assert.equal(result, 99);
+  });
+});
