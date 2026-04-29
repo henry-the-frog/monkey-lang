@@ -404,16 +404,27 @@ const builtins = new Map([
   })],
   ['reduce', new MonkeyBuiltin((...args) => {
     if (args.length < 2 || args.length > 3) return newError(`wrong number of arguments. got=${args.length}, want=2 or 3`);
-    const arr = args[0];
+    const collection = args[0];
     const fn = args[1];
-    if (!(arr instanceof MonkeyArray)) return newError(`first argument to reduce must be ARRAY, got ${arr.type()}`);
-    let acc = args.length === 3 ? args[2] : (arr.elements.length > 0 ? arr.elements[0] : NULL);
-    const startIdx = args.length === 3 ? 0 : 1;
-    for (let i = startIdx; i < arr.elements.length; i++) {
-      acc = applyFunction(fn, [acc, arr.elements[i]]);
-      if (isError(acc)) return acc;
+    if (collection instanceof MonkeyArray) {
+      let acc = args.length === 3 ? args[2] : (collection.elements.length > 0 ? collection.elements[0] : NULL);
+      const startIdx = args.length === 3 ? 0 : 1;
+      for (let i = startIdx; i < collection.elements.length; i++) {
+        acc = applyFunction(fn, [acc, collection.elements[i]]);
+        if (isError(acc)) return acc;
+      }
+      return acc;
     }
-    return acc;
+    if (collection instanceof MonkeyHash) {
+      if (args.length < 3) return newError('reduce on hash requires an initial value (3 arguments)');
+      let acc = args[2];
+      for (const [, { key, value }] of collection.pairs) {
+        acc = applyFunction(fn, [acc, key, value]);
+        if (isError(acc)) return acc;
+      }
+      return acc;
+    }
+    return newError(`first argument to reduce must be ARRAY or HASH, got ${collection.type()}`);
   })],
   ['find', new MonkeyBuiltin((...args) => {
     if (args.length !== 2) return newError(`wrong number of arguments. got=${args.length}, want=2`);
