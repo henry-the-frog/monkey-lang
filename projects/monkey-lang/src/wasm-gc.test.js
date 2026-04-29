@@ -271,3 +271,90 @@ describe('WASM GC Module Builder', () => {
     });
   });
 });
+
+describe('GC Array Proof-of-Concept (loop fill + sum)', () => {
+  it('fills array with loop and sums elements', async () => {
+    const { WasmModuleBuilder, ValType, Op, refNullType } = await import('./wasm.js');
+    const builder = new WasmModuleBuilder();
+    const arrayIdx = builder.addArrayType(ValType.i32, true);
+    const { index, body } = builder.addFunction([ValType.i32], [ValType.i32]);
+    body.addLocal(refNullType(arrayIdx)); // arr
+    body.addLocal(ValType.i32);            // i
+    body.addLocal(ValType.i32);            // sum
+
+    // arr = array.new(0, n)
+    body.i32Const(0);
+    body.localGet(0);
+    body.arrayNew(arrayIdx);
+    body.localSet(1);
+
+    // Fill: arr[i] = i
+    body.i32Const(0); body.localSet(2);
+    body.block(); body.loop();
+      body.localGet(2); body.localGet(0); body.emit(Op.i32_ge_s); body.brIf(1);
+      body.localGet(1); body.localGet(2); body.localGet(2); body.arraySet(arrayIdx);
+      body.localGet(2); body.i32Const(1); body.emit(Op.i32_add); body.localSet(2);
+      body.br(0);
+    body.end(); body.end();
+
+    // Sum: sum += arr[i]
+    body.i32Const(0); body.localSet(2);
+    body.i32Const(0); body.localSet(3);
+    body.block(); body.loop();
+      body.localGet(2); body.localGet(0); body.emit(Op.i32_ge_s); body.brIf(1);
+      body.localGet(3); body.localGet(1); body.localGet(2); body.arrayGet(arrayIdx);
+      body.emit(Op.i32_add); body.localSet(3);
+      body.localGet(2); body.i32Const(1); body.emit(Op.i32_add); body.localSet(2);
+      body.br(0);
+    body.end(); body.end();
+
+    body.localGet(3);
+    builder.addMemory(1);
+    builder.addExport('sum_array', 0x00, index);
+
+    const binary = builder.build();
+    const mod = new WebAssembly.Module(binary);
+    const inst = new WebAssembly.Instance(mod);
+
+    assert.equal(inst.exports.sum_array(10), 45);
+    assert.equal(inst.exports.sum_array(100), 4950);
+    assert.equal(inst.exports.sum_array(1000), 499500);
+  });
+
+  it('performs well (10K iterations under 100ms)', async () => {
+    const { WasmModuleBuilder, ValType, Op, refNullType } = await import('./wasm.js');
+    const builder = new WasmModuleBuilder();
+    const arrayIdx = builder.addArrayType(ValType.i32, true);
+    const { index, body } = builder.addFunction([ValType.i32], [ValType.i32]);
+    body.addLocal(refNullType(arrayIdx));
+    body.addLocal(ValType.i32);
+    body.addLocal(ValType.i32);
+    body.i32Const(0); body.localGet(0); body.arrayNew(arrayIdx); body.localSet(1);
+    body.i32Const(0); body.localSet(2);
+    body.block(); body.loop();
+      body.localGet(2); body.localGet(0); body.emit(Op.i32_ge_s); body.brIf(1);
+      body.localGet(1); body.localGet(2); body.localGet(2); body.arraySet(arrayIdx);
+      body.localGet(2); body.i32Const(1); body.emit(Op.i32_add); body.localSet(2);
+      body.br(0);
+    body.end(); body.end();
+    body.i32Const(0); body.localSet(2);
+    body.i32Const(0); body.localSet(3);
+    body.block(); body.loop();
+      body.localGet(2); body.localGet(0); body.emit(Op.i32_ge_s); body.brIf(1);
+      body.localGet(3); body.localGet(1); body.localGet(2); body.arrayGet(arrayIdx);
+      body.emit(Op.i32_add); body.localSet(3);
+      body.localGet(2); body.i32Const(1); body.emit(Op.i32_add); body.localSet(2);
+      body.br(0);
+    body.end(); body.end();
+    body.localGet(3);
+    builder.addMemory(1);
+    builder.addExport('f', 0x00, index);
+    const binary = builder.build();
+    const mod = new WebAssembly.Module(binary);
+    const inst = new WebAssembly.Instance(mod);
+    const start = Date.now();
+    for (let i = 0; i < 10000; i++) inst.exports.f(100);
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 100, `GC array loop took ${elapsed}ms (expected < 100ms)`);
+  });
+});
