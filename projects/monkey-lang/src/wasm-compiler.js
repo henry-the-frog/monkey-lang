@@ -390,6 +390,10 @@ export class WasmCompiler {
     const hashDeleteIdx = this.builder.addImport('env', '__hash_delete', [ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.hashDelete = hashDeleteIdx;
 
+    // __hash_has: check if key exists in hash map, returns 1 or 0
+    const hashHasIdx = this.builder.addImport('env', '__hash_has', [ValType.i32, ValType.i32], [ValType.i32]);
+    this._runtimeFuncs.hashHas = hashHasIdx;
+
     const containsIdx = this.builder.addImport('env', '__contains', [ValType.i32, ValType.i32], [ValType.i32]);
     this._runtimeFuncs.contains = containsIdx;
 
@@ -2213,6 +2217,12 @@ export class WasmCompiler {
         this.compileNode(node.arguments[0]); // hash
         this.compileNode(node.arguments[1]); // key
         this.currentBody.call(this._runtimeFuncs.hashDelete);
+        return;
+      }
+      if (name === 'has' && node.arguments.length === 2) {
+        this.compileNode(node.arguments[0]); // hash
+        this.compileNode(node.arguments[1]); // key
+        this.currentBody.call(this._runtimeFuncs.hashHas);
         return;
       }
       if (name === 'contains' && node.arguments.length === 2) {
@@ -4932,6 +4942,68 @@ function createWasmImports(outputLines = [], memoryRef = { memory: null }) {
           return writeArray(keys);
         }
         return ptr; // Not a hash — return unchanged
+      },
+      __hash_has(hashPtr, key) {
+        // Check if key exists in hash map. Returns 1 (true) or 0 (false).
+        const mem = memoryRef.memory;
+        if (!mem || hashPtr < 16) return 0;
+        const view = new DataView(mem.buffer);
+        const tag = view.getInt32(hashPtr, true);
+        if (tag !== TAG_HASH) return 0;
+        const capacity = view.getInt32(hashPtr + 4, true);
+        const entriesPtr = view.getInt32(hashPtr + 12, true);
+        const mask = capacity - 1;
+        
+        let isStrKey = false;
+        if (key > 0) {
+          try { isStrKey = view.getInt32(key, true) === TAG_STRING; } catch(e) {}
+        }
+        
+        if (isStrKey) {
+          const keyLen = view.getInt32(key + 4, true);
+          let hash = 0x811c9dc5 | 0;
+          for (let b = 0; b < keyLen; b++) {
+            hash ^= view.getUint8(key + 8 + b);
+            hash = Math.imul(hash, 0x01000193);
+          }
+          let idx = ((hash >>> 0) & mask) >>> 0;
+          for (let probe = 0; probe < capacity; probe++) {
+            const entryAddr = entriesPtr + idx * 12;
+            const status = view.getInt32(entryAddr, true);
+            if (status === 0) return 0;
+            if (status === 1) {
+              const storedKey = view.getInt32(entryAddr + 4, true);
+              try {
+                if (view.getInt32(storedKey, true) === TAG_STRING) {
+                  const storedLen = view.getInt32(storedKey + 4, true);
+                  if (storedLen === keyLen) {
+                    let match = true;
+                    for (let b = 0; b < keyLen; b++) {
+                      if (view.getUint8(storedKey + 8 + b) !== view.getUint8(key + 8 + b)) {
+                        match = false; break;
+                      }
+                    }
+                    if (match) return 1;
+                  }
+                }
+              } catch(e) {}
+            }
+            idx = (idx + 1) & mask;
+          }
+          return 0;
+        }
+        
+        // Integer key
+        let hash = Math.imul(key, 0x9e3779b9) ^ (key >>> 16);
+        let idx = ((hash >>> 0) & mask) >>> 0;
+        for (let probe = 0; probe < capacity; probe++) {
+          const entryAddr = entriesPtr + idx * 12;
+          const status = view.getInt32(entryAddr, true);
+          if (status === 0) return 0;
+          if (status === 1 && view.getInt32(entryAddr + 4, true) === key) return 1;
+          idx = (idx + 1) & mask;
+        }
+        return 0;
       },
       __hash_delete(hashPtr, key) {
         // Delete a key from hash map. Marks entry as DELETED (status=2).

@@ -21,6 +21,7 @@ const builtins = new Map([
     const arg = args[0];
     if (arg instanceof MonkeyString) return new MonkeyInteger(arg.value.length);
     if (arg instanceof MonkeyArray) return new MonkeyInteger(arg.elements.length);
+    if (arg instanceof MonkeyHash) return new MonkeyInteger(arg.pairs.size);
     // __len__ protocol for instances
     if (arg.get && typeof arg.get === 'function') {
       const lenFn = arg.get('__len__');
@@ -227,11 +228,19 @@ const builtins = new Map([
     if (args.length !== 2 || args[0].type() !== OBJ.HASH) return newError('delete requires a hash and a key');
     const hash = args[0];
     const key = args[1];
-    const hashKey = key.hashKey ? key.hashKey() : null;
+    const hashKey = key.fastHashKey ? key.fastHashKey() : (key.hashKey ? key.hashKey() : null);
     if (hashKey === null) return newError('unusable as hash key: ' + key.type());
     const newPairs = new Map(hash.pairs);
     newPairs.delete(hashKey);
     return new MonkeyHash(newPairs);
+  })],
+  ['has', new MonkeyBuiltin((...args) => {
+    if (args.length !== 2 || args[0].type() !== OBJ.HASH) return newError('has requires a hash and a key');
+    const hash = args[0];
+    const key = args[1];
+    const hashKey = key.fastHashKey ? key.fastHashKey() : (key.hashKey ? key.hashKey() : null);
+    if (hashKey === null) return newError('unusable as hash key: ' + key.type());
+    return hash.pairs.has(hashKey) ? TRUE : FALSE;
   })],
   ['sort', new MonkeyBuiltin((...args) => {
     if (args.length !== 1 || !(args[0] instanceof MonkeyArray)) return newError('sort requires one array argument');
