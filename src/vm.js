@@ -10,7 +10,6 @@ import {
     MonkeyInteger, MonkeyFloat, MonkeyString, MonkeyBoolean, MonkeyArray, MonkeyHash,
   MonkeyNull, MonkeyError, MonkeyBuiltin, ShapedHash, objectKeyString, internString,
   TRUE, FALSE, NULL, OBJ,
-  isInt, isFloat, isNumeric, isStr, unwrapInt, unwrapNum, wrapInt, inspectValue, typeOf, hashKeyOf,
 } from './object.js';
 import { getShape, getIC, createICTable } from './shape.js';
 
@@ -20,10 +19,19 @@ const STACK_SIZE = 8192;
 const GLOBALS_SIZE = 65536;
 const MAX_FRAMES = 1024;
 
-// VM uses raw JS numbers for integers (unboxed) — no heap allocation needed.
-// cachedInteger now returns raw numbers instead of MonkeyInteger objects.
+// Integer cache for common values (-1 to 256)
+const INT_CACHE_MIN = -1;
+const INT_CACHE_MAX = 256;
+const intCache = new Array(INT_CACHE_MAX - INT_CACHE_MIN + 1);
+for (let i = INT_CACHE_MIN; i <= INT_CACHE_MAX; i++) {
+  intCache[i - INT_CACHE_MIN] = new MonkeyInteger(i);
+}
+
 function cachedInteger(value) {
-  return value;
+  if (value >= INT_CACHE_MIN && value <= INT_CACHE_MAX && Number.isInteger(value)) {
+    return intCache[value - INT_CACHE_MIN];
+  }
+  return new MonkeyInteger(value);
 }
 
 /**
@@ -158,9 +166,9 @@ export const builtins = [
     if (step === 0) return new MonkeyError('range step cannot be zero');
     const elements = [];
     if (step > 0) {
-      for (let i = start; i < end; i += step) elements.push(wrapInt(i));
+      for (let i = start; i < end; i += step) elements.push(cachedInteger(i));
     } else {
-      for (let i = start; i > end; i += step) elements.push(wrapInt(i));
+      for (let i = start; i > end; i += step) elements.push(cachedInteger(i));
     }
     return new MonkeyArray(elements);
   }),
@@ -506,9 +514,9 @@ export const builtins = [
     const start = args[0].value, end = args[1].value;
     const elements = [];
     if (start <= end) {
-      for (let i = start; i <= end; i++) elements.push(wrapInt(i));
+      for (let i = start; i <= end; i++) elements.push(cachedInteger(i));
     } else {
-      for (let i = start; i >= end; i--) elements.push(wrapInt(i));
+      for (let i = start; i >= end; i--) elements.push(cachedInteger(i));
     }
     return new MonkeyArray(elements);
   }),
@@ -608,10 +616,7 @@ export class VM {
    * Get the last popped element from the stack.
    */
   lastPoppedStackElem() {
-    const v = this.stack[this.sp];
-    // Re-box raw numbers for external consumers expecting MonkeyInteger
-    if (typeof v === 'number') return wrapInt(v);
-    return v;
+    return this.stack[this.sp];
   }
 
   /**
@@ -628,9 +633,7 @@ export class VM {
         case Opcodes.OpConstant: {
           const constIndex = (instructions[ip + 1] << 8) | instructions[ip + 2];
           this.currentFrame().ip += 2;
-          const c = this.constants[constIndex];
-          // Unbox MonkeyInteger constants to raw numbers
-          this.push(c instanceof MonkeyInteger ? c.value : c);
+          this.push(this.constants[constIndex]);
           break;
         }
 
@@ -669,10 +672,8 @@ export class VM {
 
         case Opcodes.OpMinus: {
           const operand = this.pop();
-          if (typeof operand === 'number') {
-            this.push(-operand);
-          } else if (operand instanceof MonkeyInteger) {
-            this.push(-operand.value);
+          if (operand instanceof MonkeyInteger) {
+            this.push(cachedInteger(-operand.value));
           } else if (operand instanceof MonkeyFloat) {
             this.push(this._track(new MonkeyFloat(-operand.value)));
           } else {
@@ -725,9 +726,7 @@ export class VM {
           this.currentFrame().ip += 2;
           const elements = [];
           for (let i = this.sp - numElements; i < this.sp; i++) {
-            // Re-box raw numbers when storing to arrays (external compatibility)
-            const v = this.stack[i];
-            elements.push(typeof v === 'number' ? wrapInt(v) : v);
+            elements.push(this.stack[i]);
           }
           this.sp -= numElements;
           this.push(this._track(new MonkeyArray(elements)));
@@ -741,11 +740,8 @@ export class VM {
           const keys = [];
           const values = [];
           for (let i = this.sp - numElements; i < this.sp; i += 2) {
-            let key = this.stack[i];
-            let value = this.stack[i + 1];
-            // Re-box raw numbers for hash key/value compatibility
-            if (typeof key === 'number') key = wrapInt(key);
-            if (typeof value === 'number') value = wrapInt(value);
+            const key = this.stack[i];
+            const value = this.stack[i + 1];
             keyStrs.push(objectKeyString(key));
             keys.push(key);
             values.push(value);
@@ -766,12 +762,9 @@ export class VM {
 
         case Opcodes.OpSetIndex: {
           // Stack: [obj, key, value] → set obj[key] = value, push obj
-          let value = this.pop();
-          let key = this.pop();
+          const value = this.pop();
+          const key = this.pop();
           const obj = this.pop();
-          // Re-box raw numbers for hash/array storage
-          if (typeof key === 'number') key = wrapInt(key);
-          if (typeof value === 'number') value = wrapInt(value);
           if (obj instanceof MonkeyHash) {
             const hashKey = key.hashKey ? key.hashKey() : String(key.value);
             obj.pairs.set(hashKey, { key, value });
@@ -1085,54 +1078,51 @@ export class VM {
     const right = this.pop();
     const left = this.pop();
 
-    // Fast path: both raw numbers (unboxed integers)
-    if (typeof left === 'number' && typeof right === 'number') {
+    if (left instanceof MonkeyInteger && right instanceof MonkeyInteger) {
       this.executeBinaryIntegerOperation(op, left, right);
-    } else if (isInt(left) && isInt(right)) {
-      // Mixed: one raw, one boxed
-      this.executeBinaryIntegerOperation(op, unwrapInt(left), unwrapInt(right));
-    } else if (isNumeric(left) && isNumeric(right)) {
-      this.executeBinaryFloatOperation(op, unwrapNum(left), unwrapNum(right));
-    } else if (isStr(left) && isStr(right)) {
+    } else if ((left instanceof MonkeyFloat || left instanceof MonkeyInteger) &&
+               (right instanceof MonkeyFloat || right instanceof MonkeyInteger)) {
+      this.executeBinaryFloatOperation(op, left, right);
+    } else if (left instanceof MonkeyString && right instanceof MonkeyString) {
       if (op === Opcodes.OpAdd) {
         this.push(this._track(internString(left.value + right.value)));
       } else {
         throw new Error(`unknown string operator: ${op}`);
       }
-    } else if (isStr(left) && isInt(right) && op === Opcodes.OpMul) {
-      this.push(this._track(internString(left.value.repeat(Math.max(0, unwrapInt(right))))));
-    } else if (isInt(left) && isStr(right) && op === Opcodes.OpMul) {
-      this.push(this._track(internString(right.value.repeat(Math.max(0, unwrapInt(left))))));
+    } else if (left instanceof MonkeyString && right instanceof MonkeyInteger && op === Opcodes.OpMul) {
+      this.push(this._track(internString(left.value.repeat(Math.max(0, right.value)))));
+    } else if (left instanceof MonkeyInteger && right instanceof MonkeyString && op === Opcodes.OpMul) {
+      this.push(this._track(internString(right.value.repeat(Math.max(0, left.value)))));
     } else if (left instanceof MonkeyArray && right instanceof MonkeyArray && op === Opcodes.OpAdd) {
       this.push(this._track(new MonkeyArray([...left.elements, ...right.elements])));
     } else {
-      throw new Error(`unsupported types for binary operation: ${typeOf(left)} ${typeOf(right)}`);
+      throw new Error(`unsupported types for binary operation: ${left.type()} ${right.type()}`);
     }
   }
 
   executeBinaryIntegerOperation(op, left, right) {
     let result;
     switch (op) {
-      case Opcodes.OpAdd: result = left + right; break;
-      case Opcodes.OpSub: result = left - right; break;
-      case Opcodes.OpMul: result = left * right; break;
-      case Opcodes.OpDiv: result = Math.trunc(left / right); break;
-      case Opcodes.OpMod: result = left % right; break;
-      case Opcodes.OpPower: result = left ** right; break;
+      case Opcodes.OpAdd: result = left.value + right.value; break;
+      case Opcodes.OpSub: result = left.value - right.value; break;
+      case Opcodes.OpMul: result = left.value * right.value; break;
+      case Opcodes.OpDiv: result = Math.trunc(left.value / right.value); break;
+      case Opcodes.OpMod: result = left.value % right.value; break;
+      case Opcodes.OpPower: result = left.value ** right.value; break;
       default: throw new Error(`unknown integer operator: ${op}`);
     }
-    this.push(result);
+    this.push(cachedInteger(result));
   }
 
   executeBinaryFloatOperation(op, left, right) {
     let result;
     switch (op) {
-      case Opcodes.OpAdd: result = left + right; break;
-      case Opcodes.OpSub: result = left - right; break;
-      case Opcodes.OpMul: result = left * right; break;
-      case Opcodes.OpDiv: result = left / right; break;
-      case Opcodes.OpMod: result = left % right; break;
-      case Opcodes.OpPower: result = left ** right; break;
+      case Opcodes.OpAdd: result = left.value + right.value; break;
+      case Opcodes.OpSub: result = left.value - right.value; break;
+      case Opcodes.OpMul: result = left.value * right.value; break;
+      case Opcodes.OpDiv: result = left.value / right.value; break;
+      case Opcodes.OpMod: result = left.value % right.value; break;
+      case Opcodes.OpPower: result = left.value ** right.value; break;
       default: throw new Error(`unknown float operator: ${op}`);
     }
     this.push(this._track(new MonkeyFloat(result)));
@@ -1142,28 +1132,20 @@ export class VM {
     const right = this.pop();
     const left = this.pop();
 
-    // Fast path: both raw numbers
-    if (typeof left === 'number' && typeof right === 'number') {
+    if (left instanceof MonkeyInteger && right instanceof MonkeyInteger) {
       switch (op) {
-        case Opcodes.OpEqual: this.push(left === right ? TRUE : FALSE); break;
-        case Opcodes.OpNotEqual: this.push(left !== right ? TRUE : FALSE); break;
-        case Opcodes.OpGreaterThan: this.push(left > right ? TRUE : FALSE); break;
+        case Opcodes.OpEqual: this.push(left.value === right.value ? TRUE : FALSE); break;
+        case Opcodes.OpNotEqual: this.push(left.value !== right.value ? TRUE : FALSE); break;
+        case Opcodes.OpGreaterThan: this.push(left.value > right.value ? TRUE : FALSE); break;
       }
-    } else if (isInt(left) && isInt(right)) {
-      const l = unwrapInt(left), r = unwrapInt(right);
+    } else if ((left instanceof MonkeyFloat || left instanceof MonkeyInteger) &&
+               (right instanceof MonkeyFloat || right instanceof MonkeyInteger)) {
       switch (op) {
-        case Opcodes.OpEqual: this.push(l === r ? TRUE : FALSE); break;
-        case Opcodes.OpNotEqual: this.push(l !== r ? TRUE : FALSE); break;
-        case Opcodes.OpGreaterThan: this.push(l > r ? TRUE : FALSE); break;
+        case Opcodes.OpEqual: this.push(left.value === right.value ? TRUE : FALSE); break;
+        case Opcodes.OpNotEqual: this.push(left.value !== right.value ? TRUE : FALSE); break;
+        case Opcodes.OpGreaterThan: this.push(left.value > right.value ? TRUE : FALSE); break;
       }
-    } else if (isNumeric(left) && isNumeric(right)) {
-      const l = unwrapNum(left), r = unwrapNum(right);
-      switch (op) {
-        case Opcodes.OpEqual: this.push(l === r ? TRUE : FALSE); break;
-        case Opcodes.OpNotEqual: this.push(l !== r ? TRUE : FALSE); break;
-        case Opcodes.OpGreaterThan: this.push(l > r ? TRUE : FALSE); break;
-      }
-    } else if (isStr(left) && isStr(right)) {
+    } else if (left instanceof MonkeyString && right instanceof MonkeyString) {
       switch (op) {
         case Opcodes.OpEqual: this.push(left.value === right.value ? TRUE : FALSE); break;
         case Opcodes.OpNotEqual: this.push(left.value !== right.value ? TRUE : FALSE); break;
@@ -1179,8 +1161,8 @@ export class VM {
   }
 
   executeIndexExpression(left, index, icIp = -1) {
-    if (left instanceof MonkeyArray && isInt(index)) {
-      let idx = unwrapInt(index);
+    if (left instanceof MonkeyArray && index instanceof MonkeyInteger) {
+      let idx = index.value;
       if (idx < 0) idx = left.elements.length + idx; // negative indexing
       if (idx < 0 || idx >= left.elements.length) {
         this.push(NULL);
@@ -1191,14 +1173,14 @@ export class VM {
       // Range/array slice: arr[start..end] → arr[start], arr[start+1], ..., arr[end]
       const indices = index.elements;
       if (indices.length >= 2) {
-        const start = Math.max(0, unwrapInt(indices[0]));
-        const end = Math.min(left.elements.length, unwrapInt(indices[indices.length - 1]) + 1);
+        const start = Math.max(0, indices[0].value);
+        const end = Math.min(left.elements.length, indices[indices.length - 1].value + 1);
         this.push(this._track(new MonkeyArray(left.elements.slice(start, end))));
       } else {
         this.push(NULL);
       }
-    } else if (left instanceof MonkeyString && isInt(index)) {
-      let idx = unwrapInt(index);
+    } else if (left instanceof MonkeyString && index instanceof MonkeyInteger) {
+      let idx = index.value;
       if (idx < 0) idx = left.value.length + idx; // negative indexing
       if (idx < 0 || idx >= left.value.length) {
         this.push(NULL);
@@ -1236,7 +1218,7 @@ export class VM {
       const key = left.pairs.get(index) || 
                   // MonkeyHash uses reference keys — need value-based lookup
                   this.hashLookup(left, index);
-      this.push(key ?? NULL);
+      this.push(key || NULL);
     } else {
       throw new Error(`index operator not supported: ${left.type()}`);
     }
@@ -1244,7 +1226,7 @@ export class VM {
 
   hashLookup(hash, key) {
     for (const [k, v] of hash.pairs) {
-      if (isInt(k) && isInt(key) && unwrapInt(k) === unwrapInt(key)) return v;
+      if (k instanceof MonkeyInteger && key instanceof MonkeyInteger && k.value === key.value) return v;
       if (k instanceof MonkeyString && key instanceof MonkeyString && k.value === key.value) return v;
       if (k instanceof MonkeyBoolean && key instanceof MonkeyBoolean && k.value === key.value) return v;
       if (k === key) return v;
@@ -1290,9 +1272,7 @@ export class VM {
       const restEnd = this.sp;
       const restElements = [];
       for (let i = restStart; i < restEnd; i++) {
-        // Re-box raw numbers for array storage
-        const v = this.stack[i];
-        restElements.push(typeof v === 'number' ? wrapInt(v) : v);
+        restElements.push(this.stack[i]);
       }
       const restArray = this._track(new MonkeyArray(restElements));
       
@@ -1339,20 +1319,13 @@ export class VM {
   callBuiltin(builtin, numArgs) {
     const args = [];
     for (let i = this.sp - numArgs; i < this.sp; i++) {
-      // Re-box raw numbers for builtin compatibility
-      const v = this.stack[i];
-      args.push(typeof v === 'number' ? wrapInt(v) : v);
+      args.push(this.stack[i]);
     }
     this.sp -= numArgs + 1; // pop args + function
 
     // VM-aware builtins receive the VM as first arg (for callClosureSync)
     const result = builtin.needsVM ? builtin.fn(this, ...args) : builtin.fn(...args);
-    // Unbox result if it's a MonkeyInteger (keep stack in raw number format)
-    if (result instanceof MonkeyInteger) {
-      this.push(result.value);
-    } else {
-      this.push(result != null ? result : NULL);
-    }
+    this.push(result != null ? result : NULL);
   }
 
   /**
@@ -1393,18 +1366,16 @@ export class VM {
     // After run() returns at the floor:
     // - OpReturnValue placed the value at stack[sp] without popping the frame
     // - We need to: read the value, pop the frame, restore sp
-    const returnValue = this.stack[this.sp] ?? NULL;
+    const returnValue = this.stack[this.sp] || NULL;
     this.framesIndex = callFrameIndex - 1;
     this.sp = callBasePointer - 1; // -1 to also pop the closure reference
-    // Re-box raw numbers for callers expecting MonkeyInteger
-    return typeof returnValue === 'number' ? wrapInt(returnValue) : returnValue;
+    return returnValue;
   }
 
   isTruthy(obj) {
-    if (typeof obj === 'number') return obj !== 0; // raw integers: 0 is falsy
     if (obj instanceof MonkeyBoolean) return obj.value;
     if (obj === NULL) return false;
-    return true; // objects are truthy
+    return true; // integers are truthy
   }
 
   /**
@@ -1412,12 +1383,13 @@ export class VM {
    * Compares arrays/hashes by value, not reference.
    */
   _deepEqual(a, b) {
-    if (a === b) return true; // same reference (includes TRUE/FALSE/NULL singletons and equal raw numbers)
+    if (a === b) return true; // same reference (includes TRUE/FALSE/NULL singletons)
     if (a === null || b === null || a === undefined || b === undefined) return false;
     
-    // Raw number vs boxed integer comparison
-    if (isNumeric(a) && isNumeric(b)) {
-      return unwrapNum(a) === unwrapNum(b);
+    // Integer/Float comparison
+    if ((a instanceof MonkeyInteger || a instanceof MonkeyFloat) &&
+        (b instanceof MonkeyInteger || b instanceof MonkeyFloat)) {
+      return a.value === b.value;
     }
     
     // String comparison
