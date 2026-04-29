@@ -224,6 +224,12 @@ const builtins = new Map([
     for (const [, {value}] of args[0].pairs) arr.push(value);
     return new MonkeyArray(arr);
   })],
+  ['entries', new MonkeyBuiltin((...args) => {
+    if (args.length !== 1 || args[0].type() !== OBJ.HASH) return newError('entries requires one hash argument');
+    const arr = [];
+    for (const [, {key, value}] of args[0].pairs) arr.push(new MonkeyArray([key, value]));
+    return new MonkeyArray(arr);
+  })],
   ['delete', new MonkeyBuiltin((...args) => {
     if (args.length !== 2 || args[0].type() !== OBJ.HASH) return newError('delete requires a hash and a key');
     const hash = args[0];
