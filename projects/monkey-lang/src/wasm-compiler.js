@@ -680,6 +680,43 @@ export class WasmCompiler {
       .emit(Op.i32_xor);     // key * golden_ratio ^ (key >> 16)
     this._runtimeFuncs.hashFnv = hashFnvIdx;
 
+    // __hash_fnv_str(str_ptr: i32) → i32 — FNV-1a hash of string bytes
+    const { index: hashFnvStrIdx, body: hashFnvStrBody } = this.builder.addFunction(
+      [ValType.i32], [ValType.i32]
+    );
+    hashFnvStrBody.addLocal(ValType.i32); // local[1] = length
+    hashFnvStrBody.addLocal(ValType.i32); // local[2] = data_ptr (str_ptr + 8)
+    hashFnvStrBody.addLocal(ValType.i32); // local[3] = i (loop counter)
+    hashFnvStrBody.addLocal(ValType.i32); // local[4] = hash
+    hashFnvStrBody
+      // Read length from string header (offset 4)
+      .localGet(0).i32Const(4).emit(Op.i32_add).i32Load().localSet(1)
+      // data_ptr = str_ptr + 8
+      .localGet(0).i32Const(8).emit(Op.i32_add).localSet(2)
+      // hash = FNV offset basis (2166136261)
+      .i32Const(0x811c9dc5 | 0).localSet(4)  // needs signed since > 2^31
+      // i = 0
+      .i32Const(0).localSet(3)
+      .block().loop()
+        // if i >= length, break
+        .localGet(3).localGet(1).emit(Op.i32_ge_u).brIf(1)
+        // hash = hash XOR byte[i]
+        .localGet(4)
+        .localGet(2).localGet(3).emit(Op.i32_add)
+        .emit(Op.i32_load8_u, 0, 0)  // load byte (alignment=0, offset=0)
+        .emit(Op.i32_xor)
+        // hash = hash * FNV prime (16777619)
+        .i32Const(0x01000193)
+        .emit(Op.i32_mul)
+        .localSet(4)
+        // i++
+        .localGet(3).i32Const(1).emit(Op.i32_add).localSet(3)
+        .br(0)
+      .end().end()
+      // return hash
+      .localGet(4);
+    this._runtimeFuncs.hashFnvStr = hashFnvStrIdx;
+
     // __hash_new_native() → ptr — allocate a new hash map
     const { index: hashNewNativeIdx, body: hashNewNativeBody } = this.builder.addFunction(
       [], [ValType.i32]
