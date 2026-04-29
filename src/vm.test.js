@@ -19,8 +19,13 @@ function runVM(input) {
 }
 
 function testIntegerObject(obj, expected) {
-  assert.ok(obj instanceof MonkeyInteger, `expected MonkeyInteger, got ${obj?.constructor?.name}: ${obj?.inspect?.()}`);
-  assert.equal(obj.value, expected);
+  // Accept both raw numbers (unboxed VM representation) and MonkeyInteger objects
+  if (typeof obj === 'number') {
+    assert.equal(obj, expected);
+  } else {
+    assert.ok(obj instanceof MonkeyInteger, `expected MonkeyInteger or number, got ${obj?.constructor?.name}: ${obj?.inspect?.()}`);
+    assert.equal(obj.value, expected);
+  }
 }
 
 function testBooleanObject(obj, expected) {

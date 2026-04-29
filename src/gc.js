@@ -332,6 +332,8 @@ export class GarbageCollector {
    */
   markObject(obj) {
     if (obj === null || obj === undefined) return;
+    // Skip raw primitives (unboxed integers, booleans) — not heap-allocated
+    if (typeof obj !== 'object' && typeof obj !== 'function') return;
     if (this.immortals.has(obj)) return;
     
     // Already marked? Skip (prevents infinite loops on circular refs)

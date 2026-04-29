@@ -163,6 +163,7 @@ export class ShapedHash {
 
 /** Convert a MonkeyObject key to its string form for shape lookup */
 export function objectKeyString(obj) {
+  if (typeof obj === 'number') return `int:${obj}`;
   if (obj instanceof MonkeyString) return `str:${obj.value}`;
   if (obj instanceof MonkeyInteger) return `int:${obj.value}`;
   if (obj instanceof MonkeyBoolean) return `bool:${obj.value}`;
